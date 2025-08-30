@@ -53,7 +53,7 @@ Master the design patterns that form the vocabulary of professional software dev
 
 These aren't just academic concepts—they're proven solutions that make your code maintainable, testable, and extensible. Every architectural decision ultimately manifests in code, making these patterns essential tools.
 
-<Link className="button button--secondary button--lg" to="/docs/programming-patterns">Programming Patterns →</Link>
+<Link className="button button--secondary button--lg" to="/docs/programming-patterns/overview">Programming Patterns →</Link>
 :::
 
 :::tip 3️⃣ Architectural Patterns  
@@ -162,7 +162,7 @@ The most common path for developers wanting to grow into architectural roles.
 **Why this order:** You need decision-making frameworks before you can evaluate patterns, and you need patterns before you can design systems. Each step builds the mental models for the next.
 
 1. [Architecture Foundations](/docs/foundations/overview) — Learn decision-making frameworks and ADRs
-2. [Programming Patterns](/docs/programming-patterns) — Master clean code design patterns  
+2. [Programming Patterns](/docs/programming-patterns/overview) — Master clean code design patterns  
 3. [Architectural Patterns](/docs/architectural-patterns/overview) — Essential distributed system patterns
 4. [System Design](/docs/system-design/overview) — Design scalable, reliable systems
 5. [Testing & Observability](/docs/testing-observability/overview) — Ensure production readiness
@@ -190,7 +190,7 @@ Specialized track for data-focused engineering and architecture roles.
 
 **Why this order:** Data systems fail differently than web apps. Start with data-specific patterns, then learn how to scale them, finally add operational concerns. Programming patterns come first because data pipelines are code.
 
-1. [Programming Patterns](/docs/programming-patterns) — Clean code for data processing pipelines
+1. [Programming Patterns](/docs/programming-patterns/overview) — Clean code for data processing pipelines
 2. [Data Architecture](/docs/data/overview) — Core data patterns, consistency, and trade-offs
 3. [System Design](/docs/system-design/overview) — Scale data processing and analytics systems
 4. [Cloud Platforms](/docs/cloud/overview) — Cloud data services, pipelines, and storage
