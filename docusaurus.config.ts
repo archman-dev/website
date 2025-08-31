@@ -85,25 +85,25 @@ const config: Config = {
   clientModules: [require.resolve("./src/client/gtag-fallback.js")],
 
   plugins: [
-    // [
-    //   "@easyops-cn/docusaurus-search-local",
-    //   {
-    //     // whether to index docs pages
-    //     docsRouteBasePath: "/docs",
+    [
+      "@easyops-cn/docusaurus-search-local",
+      {
+        // whether to index docs pages
+        docsRouteBasePath: "/docs",
 
-    //     // whether to index blog pages
-    //     blogRouteBasePath: "/blog",
+        // whether to index blog pages
+        blogRouteBasePath: "/blog",
 
-    //     // whether to index static pages
-    //     indexPages: true,
+        // whether to index static pages
+        indexPages: true,
 
-    //     // language of your documentation
-    //     language: "en",
+        // language of your documentation
+        language: "en",
 
-    //     // Highlight matched terms in search results
-    //     highlightSearchTermsOnTargetPage: true,
-    //   },
-    // ],
+        // Highlight matched terms in search results
+        highlightSearchTermsOnTargetPage: true,
+      },
+    ],
   ],
 
   markdown: {
@@ -180,36 +180,39 @@ const config: Config = {
       darkTheme: prismThemes.dracula,
     },
     // Temporarily comment out Algolia for local testing
-    algolia: {
-      // The application ID provided by Algolia
-      appId: 'LP3N4A03RL',
+    // algolia: {
+    //   // The application ID provided by Algolia
+    //   appId: 'LP3N4A03RL',
 
-      // Public API key: it is safe to commit it
-      apiKey: 'YOUR_SEARCH_API_KEY',
+    //   // Public API key: it is safe to commit it
+    //   apiKey: 'b5c2ed99a88f5f2719696be254ba7282',
 
-      indexName: 'archman',
+    //   indexName: 'archman_dev_lp3n4a03rl_pages',
 
-      // Optional: see doc section below
-      contextualSearch: true,
+    //   // Optional: see doc section below
+    //   contextualSearch: true,
 
-      // Optional: Specify domains where the navigation should occur through window.location instead on history.push. Useful when our Algolia config crawls multiple documentation sites and we want to navigate with window.location.href to them.
-      // externalUrlRegex: 'external\\.com|domain\\.com',
+    //   // Optional: Specify domains where the navigation should occur through window.location instead on history.push. Useful when our Algolia config crawls multiple documentation sites and we want to navigate with window.location.href to them.
+    //   // externalUrlRegex: 'external\\.com|domain\\.com',
 
-      // Optional: Replace parts of the item URLs from Algolia. Useful when using the same search index for multiple deployments using a different baseUrl. You can use regexp or string in the `from` param. For example: localhost:3000 vs myCompany.com/docs
-      // replaceSearchResultPathname: {
-      //   from: '/docs/', // or as RegExp: /\/docs\//
-      //   to: '/',
-      // },
+    //   // Optional: Replace parts of the item URLs from Algolia. Useful when using the same search index for multiple deployments using a different baseUrl. You can use regexp or string in the `from` param. For example: localhost:3000 vs myCompany.com/docs
+    //   // replaceSearchResultPathname: {
+    //   //   from: '/docs/', // or as RegExp: /\/docs\//
+    //   //   to: '/',
+    //   // },
 
-      // Optional: Algolia search parameters
-      searchParameters: {},
+    //   // Optional: Algolia search parameters
+    //   // searchParameters: {
+    //   //   facetFilters: ['language:en'],
+    //   //   attributesToHighlight: ['title', 'content', 'description', 'keywords', 'url'],
+    //   // },
 
-      // Optional: path for search page that enabled by default (`false` to disable it)
-      searchPagePath: 'search',
+    //   // Optional: path for search page that enabled by default (`false` to disable it)
+    //   searchPagePath: 'search',
 
-      // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
-      insights: false,
-    },
+    //   // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
+    //   insights: false,
+    // },
   } satisfies Preset.ThemeConfig,
   themes: ["@docusaurus/theme-mermaid"],
 };
