@@ -10,6 +10,14 @@ const config: Config = {
     "Learn software architecture from first principles to real-world systems.",
   favicon: "img/favicon.ico",
 
+  // Site-wide <head> tags
+  headTags: [
+    {
+      tagName: 'meta',
+      attributes: { name: 'algolia-site-verification', content: '752CD9023ECFB28B' },
+    },
+  ],
+
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
     v4: true, // Improve compatibility with the upcoming Docusaurus v4
@@ -74,26 +82,29 @@ const config: Config = {
     ],
   ],
 
+  // Ensure a resilient GA setup: define a gtag stub early if the network script is blocked/slow
+  clientModules: [require.resolve("./src/client/gtag-fallback.js")],
+
   plugins: [
-    [
-      "@easyops-cn/docusaurus-search-local",
-      {
-        // whether to index docs pages
-        docsRouteBasePath: "/docs",
+    // [
+    //   "@easyops-cn/docusaurus-search-local",
+    //   {
+    //     // whether to index docs pages
+    //     docsRouteBasePath: "/docs",
 
-        // whether to index blog pages
-        blogRouteBasePath: "/blog",
+    //     // whether to index blog pages
+    //     blogRouteBasePath: "/blog",
 
-        // whether to index static pages
-        indexPages: true,
+    //     // whether to index static pages
+    //     indexPages: true,
 
-        // language of your documentation
-        language: "en",
+    //     // language of your documentation
+    //     language: "en",
 
-        // Highlight matched terms in search results
-        highlightSearchTermsOnTargetPage: true,
-      },
-    ],
+    //     // Highlight matched terms in search results
+    //     highlightSearchTermsOnTargetPage: true,
+    //   },
+    // ],
   ],
 
   markdown: {
@@ -170,36 +181,36 @@ const config: Config = {
       darkTheme: prismThemes.dracula,
     },
     // Temporarily comment out Algolia for local testing
-    // algolia: {
-    //   // The application ID provided by Algolia
-    //   appId: 'LP3N4A03RL',
-    //
-    //   // Public API key: it is safe to commit it
-    //   apiKey: 'YOUR_SEARCH_API_KEY',
-    //
-    //   indexName: 'archman',
+    algolia: {
+      // The application ID provided by Algolia
+      appId: 'LP3N4A03RL',
 
-    //   // Optional: see doc section below
-    //   contextualSearch: true,
+      // Public API key: it is safe to commit it
+      apiKey: 'YOUR_SEARCH_API_KEY',
 
-    //   // Optional: Specify domains where the navigation should occur through window.location instead on history.push. Useful when our Algolia config crawls multiple documentation sites and we want to navigate with window.location.href to them.
-    //   // externalUrlRegex: 'external\\.com|domain\\.com',
+      indexName: 'archman',
 
-    //   // Optional: Replace parts of the item URLs from Algolia. Useful when using the same search index for multiple deployments using a different baseUrl. You can use regexp or string in the `from` param. For example: localhost:3000 vs myCompany.com/docs
-    //   // replaceSearchResultPathname: {
-    //   //   from: '/docs/', // or as RegExp: /\/docs\//
-    //   //   to: '/',
-    //   // },
+      // Optional: see doc section below
+      contextualSearch: true,
 
-    //   // Optional: Algolia search parameters
-    //   searchParameters: {},
+      // Optional: Specify domains where the navigation should occur through window.location instead on history.push. Useful when our Algolia config crawls multiple documentation sites and we want to navigate with window.location.href to them.
+      // externalUrlRegex: 'external\\.com|domain\\.com',
 
-    //   // Optional: path for search page that enabled by default (`false` to disable it)
-    //   searchPagePath: 'search',
+      // Optional: Replace parts of the item URLs from Algolia. Useful when using the same search index for multiple deployments using a different baseUrl. You can use regexp or string in the `from` param. For example: localhost:3000 vs myCompany.com/docs
+      // replaceSearchResultPathname: {
+      //   from: '/docs/', // or as RegExp: /\/docs\//
+      //   to: '/',
+      // },
 
-    //   // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
-    //   insights: false,
-    // },
+      // Optional: Algolia search parameters
+      searchParameters: {},
+
+      // Optional: path for search page that enabled by default (`false` to disable it)
+      searchPagePath: 'search',
+
+      // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
+      insights: false,
+    },
   } satisfies Preset.ThemeConfig,
   themes: ["@docusaurus/theme-mermaid"],
 };
