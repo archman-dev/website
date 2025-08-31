@@ -26,7 +26,7 @@ const config: Config = {
   organizationName: "archman", // Usually your GitHub org/user name.
   projectName: "archman.dev", // Usually your repo name.
 
-  onBrokenLinks: "throw",
+  onBrokenLinks: "warn",
   onBrokenMarkdownLinks: "warn",
 
   // Even if you don't use internationalization, you can use this field to set
@@ -110,40 +110,45 @@ const config: Config = {
       },
       items: [
         {
-          type: "docSidebar",
-          sidebarId: "tutorialSidebar",
+          to: "/docs/welcome/",
           position: "left",
           label: "Learn",
         },
         { to: "/blog", label: "Blog", position: "left" },
         {
-          href: "https://github.com/",
+          href: "https://github.com/archman-dev",
           label: "GitHub",
           position: "right",
         },
       ],
+    },
+    docs: {
+      sidebar: {
+        autoCollapseCategories: true,
+        hideable: true,
+      },
     },
     footer: {
       style: "dark",
       links: [
         {
           title: "Docs",
-          items: [{ label: "Start Here", to: "/docs/intro" }],
+          items: [{ label: "Start Here", to: "/docs/welcome/" }],
         },
-        {
-          title: "Community",
-          items: [
-            {
-              label: "Stack Overflow",
-              href: "https://stackoverflow.com/questions/tagged/docusaurus",
-            },
-            {
-              label: "Discord",
-              href: "https://discordapp.com/invite/docusaurus",
-            },
-            { label: "X", href: "https://x.com/" },
-          ],
-        },
+        // {
+        //   title: "Community",
+        //   items: [
+        //     {
+        //       label: "Stack Overflow",
+        //       href: "https://stackoverflow.com/questions/tagged/docusaurus",
+        //     },
+        //     {
+        //       label: "Discord",
+        //       href: "https://discordapp.com/invite/docusaurus",
+        //     },
+        //     { label: "X", href: "https://x.com/" },
+        //   ],
+        // },
         {
           title: "More",
           items: [
