@@ -10,7 +10,6 @@ const config: Config = {
     "Learn software architecture from first principles to real-world systems.",
   favicon: "img/favicon.ico",
 
-  // Site-wide <head> tags
   headTags: [
     {
       tagName: 'meta',
