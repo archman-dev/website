@@ -1,0 +1,264 @@
+---
+sidebar_position: 1
+---
+
+import Showcase from "@site/src/components/Showcase";
+import Vs from "@site/src/components/Vs";
+
+# Architecture vs. Design vs. Implementation
+
+This article clarifies the boundaries and handoffs between architecture, design, and implementation so teams make decisions at the right level and avoid rework.
+
+- Scope: definitions, responsibilities, decision types, and how to tell which level a decision belongs to. Includes examples, trade‑offs, and a quick decision flow.
+- Out of scope: deep analysis of change economics (see [Architectural Decision Impact & Cost of Change](./architectural-decision-impact-and-cost-of-change)), and stakeholder roles/process (see [Stakeholders & Concerns](./stakeholders-and-concerns)).
+
+<Vs
+  title="At a glance"
+  items={[
+    {
+      label: "Architecture",
+      points: [
+        "Aligns to business goals & quality attributes",
+        "Sets boundaries, runtime topology, data & integration",
+        "Long‑lived; costly to change",
+      ],
+    },
+    {
+      label: "Design",
+      points: [
+        "Shapes modules/components & contracts",
+        "Patterns, data models, error/caching strategies",
+        "Medium horizon; medium cost to change",
+      ],
+    },
+    {
+      label: "Implementation",
+      points: [
+        "Turns design into code, tests, configs",
+        "Local choices: language, libs, structure, logging",
+        "Short‑lived; relatively cheap to change",
+      ],
+    },
+  ]}
+  highlightTone="info"
+/>
+
+## Core definitions
+
+| Level          | Primary goal                                              | Typical scope                                           | Decision examples                                                                               | Time horizon | Cost of change | Common artifacts                                         |
+| -------------- | --------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------ | -------------- | -------------------------------------------------------- |
+| Architecture   | Align the system to business goals and quality attributes | System boundaries, runtime topology, data & integration | Monolith vs microservices; sync vs async; data ownership; security posture; deployment topology | Long‑lived   | High           | Architecture principles, views/diagrams, ADRs            |
+| Design         | Shape modules/components to realize the architecture      | Module/API boundaries, data models, patterns            | Aggregates and repositories; interfaces; error handling strategy; caching strategy              | Medium       | Medium         | UML/C4 component views, API contracts, sequence diagrams |
+| Implementation | Make the design executable, correct, and maintainable     | Code, tests, frameworks, configuration                  | Language, framework, libraries; function/class structure; logging; retries; feature flags       | Short        | Low            | Source code, tests, configs                              |
+
+<Showcase
+  title="Decision placement cues"
+  sections={[
+    {
+      label: "Architecture",
+      body: (
+        <>
+          If reversing the decision requires changing multiple services or data
+          stores, or it changes quality attributes (availability, latency,
+          security, evolvability), it’s architectural.
+        </>
+      ),
+      tone: "info",
+    },
+    {
+      label: "Design",
+      body: (
+        <>
+          Changes public interfaces/contracts or cross‑cutting policies (error
+          format, pagination, cache strategy) → design.
+        </>
+      ),
+    },
+    {
+      label: "Implementation",
+      body: (
+        <>Local code choices with contained blast radius are implementation.</>
+      ),
+    },
+  ]}
+/>
+
+## Quick decision flow
+
+Use this mental model to place a decision at the right level.
+
+```mermaid
+flowchart TB
+ A([Decision]) --> B{Affects system wide qualities}
+ B -- Yes --> C[Architecture level]
+ B -- No --> D{Cross cutting across many components}
+ D -- Yes --> E[Design level]
+ D -- No --> F[Implementation level]
+  C --> C1[Capture ADR]
+  E --> E1[Define patterns and contracts]
+ F --> F1[Code, tests, configs]
+```
+
+## Real‑world scenario: checkout service
+
+Business goal: “Enable online checkout with low latency and high availability.”
+
+<Showcase
+  title="Checkout service plan"
+  sections={[
+    {
+      label: "Architecture",
+      body: (
+        <>
+          Choose modular monolith now with seams for later extraction; async
+          outbox for payment events; database per module boundary; 99.9%
+          availability target; blue/green deployment. Security posture: mTLS
+          internal, OAuth2 for external APIs, PII encryption at rest.
+        </>
+      ),
+      tone: "info",
+    },
+    {
+      label: "Design",
+      body: (
+        <>
+          Domain model with Order aggregate; Payment as domain service;
+          anti‑corruption layer for payment provider; idempotent command
+          handling; standard error envelope for APIs. Sequence: API →
+          Application service → Domain → Outbox → Worker → PSP.
+        </>
+      ),
+    },
+    {
+      label: "Implementation",
+      body: (
+        <>
+          Language/framework, retry with jitter on PSP calls, circuit breaker,
+          structured logging with correlation IDs, feature flag to toggle a new
+          PSP.
+        </>
+      ),
+    },
+  ]}
+/>
+
+### Example artifacts (abbreviated)
+
+```yaml title="adr-0005-payment-integration.md (excerpt)" showLineNumbers
+Status: Accepted
+Context: External PSP has variable latency and failure modes.
+Decision: Use async outbox + worker; PSP calls via circuit breaker; idempotency keys.
+Consequences: Eventual consistency for payment status; simpler failure isolation.
+```
+
+```plaintext title="order-sequence.plain (simplified sequence)" showLineNumbers
+Client -> API: POST /orders
+API -> AppSvc: CreateOrder(cmd)
+AppSvc -> Domain: Order.create()
+Domain -> Outbox: enqueue(PaymentRequested)
+Worker -> PSP: authorize()
+PSP -> Worker: result
+Worker -> Domain: apply(PaymentAuthorized|Failed)
+```
+
+```python title="payment_client.py (implementation detail)" showLineNumbers
+import requests, time, random
+
+def call_psp(payload, retries=3):
+ for attempt in range(1, retries+1):
+  try:
+   resp = requests.post('https://psp.example/authorize', json=payload, timeout=2)
+   resp.raise_for_status()
+   return resp.json()
+  except Exception as e:
+   if attempt == retries:
+    raise
+   time.sleep(min(0.25 * (2 ** attempt) + random.uniform(0, 0.1), 2.0))
+```
+
+The ADR and sequence are architectural/design artifacts; the Python snippet is implementation—replaceable without revisiting the architecture.
+
+## Patterns, anti‑patterns, and tips
+
+<Showcase
+  title="Do’s and don’ts"
+  sections={[
+    {
+      label: "Do",
+      body: (
+        <>
+          Encourage thin architecture docs (principles, constraints, a few key
+          views). Prefer decisions that keep options open (e.g., modular
+          monolith with clear seams). Capture significant choices as ADRs; link
+          to code and docs. Keep public contracts explicit; use contract tests.
+          Treat quality attributes as first‑class.
+        </>
+      ),
+      tone: "positive",
+    },
+    {
+      label: "Avoid",
+      body: (
+        <>
+          Architecture by library; design leakage across boundaries;
+          over‑abstraction with layers that don’t add clarity.
+        </>
+      ),
+      tone: "warning",
+    },
+  ]}
+/>
+
+## When to use vs. when not to use formal architecture
+
+<Vs
+  items={[
+    {
+      label: "Use",
+      points: [
+        "Decisions shape quality attributes or require coordinated change",
+        "Cross trust boundaries or regulated data",
+        "Many consumers depend on your contracts",
+      ],
+    },
+    {
+      label: "Don’t overdo",
+      points: [
+        "Exploratory spikes or short‑lived tools where speed dominates",
+        "Local refactors with contained impact—use lightweight notes in reviews",
+      ],
+    },
+  ]}
+  highlightTone="neutral"
+/>
+
+## Related topics
+
+- [Architectural Decision Impact & Cost of Change](./architectural-decision-impact-and-cost-of-change)
+- [Stakeholders & Concerns](./stakeholders-and-concerns)
+- See categories for deeper dives: [Core Design & Programming Principles](../../core-design-and-programming-principles/) and [Documentation & Modeling](../../documentation-and-modeling/)
+
+## References
+
+- <a
+    href="https://www.iso.org/standard/74393.html"
+    target="_blank"
+    rel="nofollow noopener noreferrer"
+  >
+    ISO/IEC/IEEE 42010: Systems and software engineering — Architecture
+    description ↗️
+  </a>
+- <a
+    href="https://dl.acm.org/doi/10.5555/869077"
+    target="_blank"
+    rel="nofollow noopener noreferrer"
+  >
+    Bass, Clements, and Kazman. Software Architecture in Practice ↗️
+  </a>
+- <a
+    href="https://martinfowler.com/architecture/"
+    target="_blank"
+    rel="nofollow noopener noreferrer"
+  >
+    Martin Fowler, Architecture topics ↗️
+  </a>

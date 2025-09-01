@@ -104,6 +104,16 @@ const config: Config = {
         highlightSearchTermsOnTargetPage: true,
       },
     ],
+    [
+      '@docusaurus/plugin-content-docs',
+      {
+        id: 'editing',
+        path: 'editing',
+        routeBasePath: 'editing',
+        sidebarPath: require.resolve('./editing/sidebars.ts'),
+        editUrl: 'https://github.com/archman-dev/website/tree/main',
+      },
+    ],
   ],
 
   markdown: {
@@ -125,6 +135,7 @@ const config: Config = {
           label: "Learn",
         },
         { to: "/blog", label: "Blog", position: "left" },
+  { to: "/editing/", label: "Editing", position: "left" },
         {
           href: "https://github.com/archman-dev",
           label: "GitHub",
