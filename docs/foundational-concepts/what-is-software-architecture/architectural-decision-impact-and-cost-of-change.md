@@ -55,75 +55,93 @@ Practical cues:
 
 <Vs
   title="Database per service vs Shared database"
-  a={{
-    label: 'Database per service',
-    points: [
-      'Autonomous scaling & deploys',
-      'Clear ownership boundaries',
-      'Consistency work and duplication',
-    ],
-  }}
-  b={{
-    label: 'Shared database',
-    points: [
-      'Easy joins early',
-      'Hidden coupling, cross‑team blast radius',
-      'Hard to evolve schemas independently',
-    ],
-  }}
-  highlight="a"
-  highlightTone="positive"
+  items={[
+    {
+      label: 'Database per service',
+      points: [
+        'Autonomous scaling & deploys',
+        'Clear ownership boundaries',
+        'Consistency work and duplication',
+      ],
+      highlightTone: 'positive',
+    },
+    {
+      label: 'Shared database',
+      points: [
+        'Easy joins early',
+        'Hidden coupling, cross‑team blast radius',
+        'Hard to evolve schemas independently',
+      ],
+      highlightTone: 'warning',
+    },
+  ]}
+  highlight={[0,1]}
 />
 
 <Vs
   title="Sync request‑reply vs Async messaging (core workflows)"
-  a={{
-    label: 'Sync request‑reply',
-    points: [
-      'Simple mental model',
-      'Predictable latency when healthy',
-      'Fragile under partial failure',
-    ],
-  }}
-  b={{
-    label: 'Async messaging',
-    points: [
-      'Throughput smoothing & isolation',
-      'Eventual consistency complexity',
-      'Operational overhead (brokers, DLQs)',
-    ],
-  }}
-  highlight="none"
+  items={[
+    {
+      label: 'Sync request‑reply',
+      points: [
+        'Simple mental model',
+        'Predictable latency when healthy',
+        'Fragile under partial failure',
+      ],
+    },
+    {
+      label: 'Async messaging',
+      points: [
+        'Throughput smoothing & isolation',
+        'Eventual consistency complexity',
+        'Operational overhead (brokers, DLQs)',
+      ],
+    },
+  ]}
 />
 
 <Vs
   title="Multi‑region: Active‑active vs Active‑passive"
-  a={{
-    label: 'Active‑active',
-    points: [
-      'Lower RTO/RPO',
-      'Conflict/consistency challenges',
-      'Higher operational cost',
-    ],
-  }}
-  b={{
-    label: 'Active‑passive',
-    points: [
-      'Simpler runbooks',
-      'Longer failovers acceptable',
-      'Lower infra/complexity',
-    ],
-  }}
-  highlight="none"
+  items={[
+    {
+      label: 'Active‑active',
+      points: [
+        'Lower RTO/RPO',
+        'Conflict/consistency challenges',
+        'Higher operational cost',
+      ],
+    },
+    {
+      label: 'Active‑passive',
+      points: [
+        'Simpler runbooks',
+        'Longer failovers acceptable',
+        'Lower infra/complexity',
+      ],
+    },
+  ]}
 />
 
 ## Lowering the cost of change
 
 <Showcase
   title="Preserve options with seams"
-  impact="Keeps alternatives open and localizes risk, so late changes affect fewer modules and teams."
-  tradeoffs="Adds indirection and upfront design effort; unused seams can become accidental complexity. Requires discipline to keep boundaries real."
-  tone="info"
+  sections={[
+    {
+      label: 'Impact',
+      body: (
+        <>Keeps alternatives open and localizes risk, so late changes affect fewer modules and teams.</>
+      ),
+      tone: 'positive',
+    },
+    {
+      label: 'Trade‑offs',
+      body: (
+        <>Adds indirection and upfront design effort; unused seams can become accidental complexity. Requires discipline to keep boundaries real.</>
+      ),
+      tone: 'warning',
+    },
+  ]}
 >
 - Modular monolith with clear boundaries before extracting services.
 - Ports and adapters to isolate frameworks and external systems.
@@ -131,9 +149,22 @@ Practical cues:
 
 <Showcase
   title="Shift left on evidence"
-  impact="Exposes feasibility and performance risks early, shrinking costly late‑stage reversals."
-  tradeoffs="Spikes and canaries cost time/infra and can be noisy; avoid analysis paralysis with timeboxes and clear exit criteria."
-  tone="info"
+  sections={[
+    {
+      label: 'Impact',
+      body: (
+        <>Exposes feasibility and performance risks early, shrinking costly late‑stage reversals.</>
+      ),
+      tone: 'positive',
+    },
+    {
+      label: 'Trade‑offs',
+      body: (
+        <>Spikes and canaries cost time/infra and can be noisy; avoid analysis paralysis with timeboxes and clear exit criteria.</>
+      ),
+      tone: 'warning',
+    },
+  ]}
 >
 - Timeboxed spikes; measure latency, throughput, and error behavior under load.
 - Small A/B or canary rollouts to validate assumptions in production.
@@ -141,9 +172,22 @@ Practical cues:
 
 <Showcase
   title="Reduce coupling"
-  impact="Decouples teams and deployables so changes can ship independently with fewer cascades."
-  tradeoffs="Versioning, deprecations, and CDC add overhead; contract‑first slows initial delivery but pays back with safer evolution."
-  tone="neutral"
+  sections={[
+    {
+      label: 'Impact',
+      body: (
+        <>Decouples teams and deployables so changes can ship independently with fewer cascades.</>
+      ),
+      tone: 'positive',
+    },
+    {
+      label: 'Trade‑offs',
+      body: (
+        <>Versioning, deprecations, and CDC add overhead; contract‑first slows initial delivery but pays back with safer evolution.</>
+      ),
+      tone: 'warning',
+    },
+  ]}
 >
 - Contract‑first APIs and consumer‑driven tests to avoid accidental drift.
 - Events as integration contracts with versioning and deprecation policy.
@@ -151,9 +195,22 @@ Practical cues:
 
 <Showcase
   title="Make change safe"
-  impact="Introduce changes gradually, observe, and roll back quickly when needed."
-  tradeoffs="Feature flags create config sprawl and test matrix growth; clean up stale flags to reduce debt."
-  tone="positive"
+  sections={[
+    {
+      label: 'Impact',
+      body: (
+        <>Introduce changes gradually, observe, and roll back quickly when needed.</>
+      ),
+      tone: 'positive',
+    },
+    {
+      label: 'Trade‑offs',
+      body: (
+        <>Feature flags create config sprawl and test matrix growth; clean up stale flags to reduce debt.</>
+      ),
+      tone: 'warning',
+    },
+  ]}
 >
 - Feature flags, dark launches, and kill switches.
 - Strangler fig for legacy replacement; branch by abstraction for live migrations.
@@ -181,7 +238,7 @@ If a decision is low impact and reversible, prefer quick notes in issues or PRs 
 ## References
 
 <!-- markdownlint-disable MD033 -->
-- <a href="https://www.aboutamazon.com/news/company-news/2016-letter-to-shareholders" target="_blank" rel="nofollow noopener noreferrer">Bezos, 2016 Letter to Shareholders — high‑velocity decisions & two‑way doors ↗️</a>
-- <a href="https://evolutionaryarchitecture.com/precis.html" target="_blank" rel="nofollow noopener noreferrer">Ford, Parsons, Kua — Building Evolutionary Architectures (précis) ↗️</a>
-- <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions" target="_blank" rel="nofollow noopener noreferrer">Nygard, Documenting Architecture Decisions ↗️</a>
+1. <a href="https://www.aboutamazon.com/news/company-news/2016-letter-to-shareholders" target="_blank" rel="nofollow noopener noreferrer">Bezos, 2016 Letter to Shareholders — high‑velocity decisions & two‑way doors ↗️</a>
+2. <a href="https://evolutionaryarchitecture.com/precis.html" target="_blank" rel="nofollow noopener noreferrer">Ford, Parsons, Kua — Building Evolutionary Architectures (précis) ↗️</a>
+3. <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions" target="_blank" rel="nofollow noopener noreferrer">Nygard, Documenting Architecture Decisions ↗️</a>
 <!-- markdownlint-enable MD033 -->

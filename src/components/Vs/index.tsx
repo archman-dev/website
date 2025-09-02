@@ -5,6 +5,8 @@ import styles from './styles.module.css';
 export type VsItem = {
   label: React.ReactNode;
   points: Array<string | React.ReactNode>;
+  /** Optional: highlight tone specifically for this item; overrides Vs.highlightTone when this item is highlighted */
+  highlightTone?: 'neutral' | 'positive' | 'warning' | 'info';
 };
 
 export type VsProps = {
@@ -12,35 +14,42 @@ export type VsProps = {
   items?: VsItem[];
   /** Alternative: map syntax for items. Keys not shown; values include label/points. */
   itemsMap?: Record<string, VsItem>;
-  /** Back-compat: exactly two items */
-  a?: VsItem;
-  b?: VsItem;
-  /** Highlight by index (0-based) or legacy 'a'/'b'/'none' */
-  highlight?: number | 'a' | 'b' | 'none';
+  /** Highlight by index (0-based). Supports single index or multiple via number[]. */
+  highlight?: number | number[];
   /** Highlight tone for the emphasized card background/border */
   highlightTone?: 'neutral' | 'positive' | 'warning' | 'info';
   title?: React.ReactNode;
 };
 
-export default function Vs({ items, itemsMap, a, b, highlight = 'none', highlightTone = 'neutral', title }: VsProps) {
+export default function Vs({ items, itemsMap, highlight, highlightTone = 'neutral', title }: VsProps) {
   const computed: VsItem[] = React.useMemo(() => {
-    if (items && items.length >= 2) return items;
+    if (items && items.length >= 2) {
+      return items;
+    }
     if (itemsMap && Object.keys(itemsMap).length >= 2) {
       return Object.values(itemsMap);
     }
-    if (a && b) return [a, b];
     // If not enough items, return empty array to avoid render errors
     return [];
-  }, [items, itemsMap, a, b]);
+  }, [items, itemsMap]);
 
-  const highlightIndex: number | undefined = React.useMemo(() => {
-    if (typeof highlight === 'number') return highlight;
-    if (highlight === 'a') return 0;
-    if (highlight === 'b') return 1;
-    return undefined;
+  const highlightSet: Set<number> = React.useMemo(() => {
+    const set = new Set<number>();
+  if (Array.isArray(highlight)) {
+      highlight.forEach((h) => {
+        if (typeof h === 'number') {
+          set.add(h);
+        }
+      });
+  } else if (typeof highlight === 'number') {
+      set.add(highlight);
+    }
+    return set;
   }, [highlight]);
 
-  if (computed.length < 2) return null;
+  if (computed.length < 2) {
+    return null;
+  }
 
   return (
     <div className={styles.wrapper}>
@@ -51,18 +60,19 @@ export default function Vs({ items, itemsMap, a, b, highlight = 'none', highligh
             key={idx}
             className={clsx(
               styles.card,
-              highlightIndex === idx && highlightTone === 'neutral' && styles.emNeutral,
-              highlightIndex === idx && highlightTone === 'positive' && styles.emPositive,
-              highlightIndex === idx && highlightTone === 'warning' && styles.emWarning,
-              highlightIndex === idx && highlightTone === 'info' && styles.emInfo,
+              // Use per-item highlightTone if provided; otherwise fall back to Vs-level highlightTone
+              highlightSet.has(idx) && (item.highlightTone ?? highlightTone) === 'neutral' && styles.emNeutral,
+              highlightSet.has(idx) && (item.highlightTone ?? highlightTone) === 'positive' && styles.emPositive,
+              highlightSet.has(idx) && (item.highlightTone ?? highlightTone) === 'warning' && styles.emWarning,
+              highlightSet.has(idx) && (item.highlightTone ?? highlightTone) === 'info' && styles.emInfo,
             )}
           >
             <div className={styles.header}>{item.label}</div>
-            <ul className={styles.list}>
+            <ol className={styles.list}>
               {item.points.map((p, i) => (
                 <li key={i} className={styles.point}>{p}</li>
               ))}
-            </ul>
+            </ol>
           </div>
         ))}
       </div>

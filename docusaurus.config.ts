@@ -88,11 +88,11 @@ const config: Config = {
     [
       "@easyops-cn/docusaurus-search-local",
       {
-        // whether to index docs pages
-        docsRouteBasePath: "/docs",
+  // whether to index docs pages (support multiple docs instances)
+  docsRouteBasePath: ["/docs", "/editing"],
 
-        // whether to index blog pages
-        blogRouteBasePath: "/blog",
+  // whether to index blog pages
+  blogRouteBasePath: "/blog",
 
         // whether to index static pages
         indexPages: true,

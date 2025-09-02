@@ -92,10 +92,17 @@ Reusable visual widgets (Showcase, Vs)
   - The highlight uses a tinted background rather than thick borders to keep the UI calm.
   - Authoring examples are maintained in editing/showcase-widgets (route: /editing/showcase-widgets).
 
+Tone semantics when using Showcase/Vs
+
+- Positive guidance or recommended options: use tone "positive".
+- Negative, risky, or cautionary guidance: use tone "warning". If you need an "error-like" emphasis, use "warning" (the components do not expose a separate "error" tone).
+- Neutral-but-notable callouts: use tone "info". Default/untinted is "neutral".
+- For Vs, per-item highlightTone takes priority over the component-level tone; set highlight to the option to emphasize, and set highlightTone according to the same rules above.
+
 When to use which tone
 
 - positive: Recommend or preferred option in your context; a “good” leaning.
-- warning: Caution readers—risk, complexity, or notable pitfalls.
+- warning: Caution readers—risk, complexity, or notable pitfalls. Use this for negative or error-like messages.
 - info: Neutral but notable information; draw attention without implying danger or endorsement.
 - neutral: No strong guidance; present facts evenly.
 
@@ -295,12 +302,25 @@ Links and references (strict)
   ```
 
 - Always include a References section at the end if any external materials are cited:
+  - Use an ordered list (1., 2., 3., …), not bullets. This is mandatory for all articles.
   - Example:
 
   ```md
   ## References
-  - <a href="https://example.com/guide" target="_blank" rel="nofollow noopener noreferrer">Author, Title ↗️</a>
+  1. <a href="https://example.com/guide" target="_blank" rel="nofollow noopener noreferrer">Author, Title ↗️</a>
+  2. <a href="https://example.com/another" target="_blank" rel="nofollow noopener noreferrer">Another Source ↗️</a>
   ```
+
+Internal cross-linking (canonical-driven)
+
+- Before writing, read the canonical structure file completely: `.github/instructions/canonical/docs-structure.v1.0.0.md`.
+- Build a mental (or temporary) map of topic → expected location/slug from the canonical outline.
+- While authoring, if you mention a concept that has its own article in the canonical outline, link to that article instead of leaving plain text.
+- Resolve links by:
+  1) Using the canonical outline to determine the correct target topic and its parent/child lineage.
+  2) Finding the corresponding file under `./docs/**` that matches the canonical topic (title/slug/path).
+  3) Using a correct relative doc link to that file.
+- Do not guess the path purely from text; prefer the canonical outline first, then verify the path exists in `./docs`. If ambiguous or missing, leave a TODO comment and surface it in your output.
 
 Tone and style
 
@@ -346,5 +366,7 @@ Author checklist (must-verify)
 - [ ] Pseudocode/config/code samples have filenames and `showLineNumbers`; programming examples include Python, Go, and Node.js tabs when appropriate.
 - [ ] Tables used where they improve clarity.
 - [ ] External links open in new tab, include `rel="nofollow noopener noreferrer"`, and show ↗️.
-- [ ] References section included when any external materials are cited.
+- [ ] References section included when any external materials are cited and uses an ordered list (1., 2., …).
+- [ ] For Showcase/Vs, tone semantics applied: positive → "positive"; negative/error-like → "warning"; neutral-but-notable → "info".
+- [ ] Internal cross-links added for canonical topics mentioned in the text, with paths verified against `./docs/**` (canonical-first, then existence check).
 - [ ] Any generated images placed under `./static/img/**` mirroring the doc path.
