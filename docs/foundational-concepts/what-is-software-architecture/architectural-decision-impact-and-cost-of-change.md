@@ -216,6 +216,15 @@ Practical cues:
 - Strangler fig for legacy replacement; branch by abstraction for live migrations.
 </Showcase>
 
+### Rigor calibration matrix (choose the lane)
+
+| Impact | Reversibility | Uncertainty | Recommended rigor                          |
+| ------ | ------------- | ----------- | ------------------------------------------ |
+| High   | Low           | High        | Prototype + benchmark, ADR, review, canary |
+| High   | Low           | Low         | ADR, staged rollout, guardrails            |
+| Medium | Medium        | Medium      | Timeboxed spike, notes, lightweight review |
+| Low    | High          | Low         | Decide fast; document in PR/issue          |
+
 ## When to formalize with ADRs
 
 Use Architecture Decision Records (ADRs) for decisions that are any of: high blast radius, cross‑team impact, long‑lived constraints, regulated or risky. Keep entries short: context, decision, consequences, status. See the ADR materials:
@@ -228,6 +237,40 @@ Use Architecture Decision Records (ADRs) for decisions that are any of: high bla
 ### Lightweight decisions
 
 If a decision is low impact and reversible, prefer quick notes in issues or PRs over formal ADRs. Momentum is also a cost.
+
+### Example: Feature flag to preserve options
+
+```yaml title="flags/payment.yml" showLineNumbers
+flags:
+  psp_v2_enabled:
+    default: false
+    description: "Enable new PSP client for a subset of traffic"
+    owners: ["payments-team"]
+```
+
+```go title="payment/client.go" showLineNumbers
+package payment
+
+import (
+  "context"
+)
+
+type PSP interface { Authorize(ctx context.Context, req Request) (Response, error) }
+
+func Client(flagOn bool, v1 PSP, v2 PSP) PSP {
+  if flagOn { return v2 }
+  return v1
+}
+```
+
+```javascript title="payment/route.js" showLineNumbers
+export async function postAuthorize(req, res) {
+  const flagOn = await flags.isEnabled('psp_v2_enabled', { user: req.user?.id });
+  const client = flagOn ? pspV2 : pspV1;
+  const result = await client.authorize(req.body);
+  return res.status(200).json(result);
+}
+```
 
 ## Related topics
 
@@ -242,3 +285,21 @@ If a decision is low impact and reversible, prefer quick notes in issues or PRs 
 2. <a href="https://evolutionaryarchitecture.com/precis.html" target="_blank" rel="nofollow noopener noreferrer">Ford, Parsons, Kua — Building Evolutionary Architectures (précis) ↗️</a>
 3. <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions" target="_blank" rel="nofollow noopener noreferrer">Nygard, Documenting Architecture Decisions ↗️</a>
 <!-- markdownlint-enable MD033 -->
+
+## Design review checklist
+
+import Checklist from '@site/src/components/Checklist';
+
+<Checklist
+  title="Design review checklist (decision impact)"
+  items={[
+    { label: 'Stakeholders and concerns identified; quality attribute scenarios drafted' },
+    { label: 'Decision impact and reversibility assessed (one‑way vs two‑way door)' },
+    { label: 'Evidence gathered for risky assumptions (prototype/benchmark/canary)' },
+    { label: 'Contracts and data shapes versioned with deprecation policy' },
+    { label: 'Operational plan: rollout, rollback, kill switch, SLO alerts' },
+    { label: 'Security/privacy implications mapped (authn/z, data class, secrets)' },
+    { label: 'Observability in place (logs/metrics/traces, correlation IDs)' },
+    { label: 'ADR captured with context, decision, consequences, and status' },
+  ]}
+/>

@@ -188,7 +188,8 @@ const config: Config = {
     },
     prism: {
       theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+  darkTheme: prismThemes.dracula,
+  additionalLanguages: ['yaml', 'toml'],
     },
     // Temporarily comment out Algolia for local testing
     // algolia: {
