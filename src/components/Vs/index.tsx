@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import React from 'react';
+import MarkdownRenderer from '../Markdown';
 import styles from './styles.module.css';
 
 export type VsItem = {
@@ -69,8 +70,10 @@ export default function Vs({ items, itemsMap, highlight, highlightTone = 'neutra
           >
             <div className={styles.header}>{item.label}</div>
             <ol className={styles.list}>
-              {item.points.map((p, i) => (
-                <li key={i} className={styles.point}>{p}</li>
+                            {item.points.map((p, i) => (
+                <li key={i} className={styles.point}>
+                  {typeof p === 'string' ? <MarkdownRenderer content={p} /> : p}
+                </li>
               ))}
             </ol>
           </div>

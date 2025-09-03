@@ -1,0 +1,208 @@
+---
+title: "Aspect-Oriented Programming"
+description: "Learn about Aspect-Oriented Programming (AOP), a paradigm for modularizing cross-cutting concerns like logging and security."
+sidebar_position: 6
+---
+
+import Checklist from "@site/src/components/Checklist";
+import Figure from '@site/src/components/Figure';
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+import Vs from "@site/src/components/Vs";
+import Showcase from "@site/src/components/Showcase";
+
+# Aspect-Oriented Programming
+
+> "Aspect-Oriented Programming is about modularizing things that would otherwise be scattered and tangled throughout your code."
+> — Gregor Kiczales
+
+Aspect-Oriented Programming (AOP) is a paradigm that aims to increase modularity by allowing the separation of **cross-cutting concerns**. These are functionalities like logging, authentication, or transaction management that "cut across" multiple points in an application's business logic. AOP provides mechanisms to define these concerns in one place (an "aspect") and apply them declaratively.
+
+## Core ideas
+
+- **Aspect**: A module that encapsulates a cross-cutting concern. For example, a `LoggingAspect` could contain all logging-related logic.
+- **Join Point**: A specific point during the execution of a program, such as a method call or an exception being thrown. This is where an aspect *can* be applied.
+- **Advice**: The action taken by an aspect at a particular join point. Common advice types include `before`, `after`, and `around` (wrapping the join point).
+- **Pointcut**: A predicate that matches join points. A pointcut expression (e.g., "all public methods in the `service` package") determines where advice is executed.
+- **Weaving**: The process of linking aspects with the main application code. This can be done at compile time, load time, or runtime.
+
+<Figure caption="AOP Weaving Process: Aspects are woven into the application code at specified join points to create composed behavior.">
+```mermaid
+flowchart TD
+  subgraph "Application Code"
+    direction LR
+    A[Business Method Call]
+  end
+
+  subgraph "Aspects"
+    direction TB
+    X[Logging Aspect]
+    Y[Security Aspect]
+  end
+
+  A -- join point --> W{Weaver}
+  X -- advice --> W
+  Y -- advice --> W
+  W -- woven code --> Z[Composed Behavior]
+```
+</Figure>
+
+## Examples
+
+Modern AOP is often implemented using decorators (in Python, TypeScript) or middleware/proxies (in Go, Java) which act as a lightweight form of runtime weaving.
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+```python title="middleware.py" showLineNumbers
+import functools
+import time
+
+def timing_aspect(fn):
+    """A decorator that logs the execution time of a function."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        start_time = time.perf_counter()
+        try:
+            result = fn(*args, **kwargs)
+            return result
+        finally:
+            end_time = time.perf_counter()
+            run_time = end_time - start_time
+            print(f"Finished {fn.__name__!r} in {run_time:.4f} secs")
+    return wrapper
+
+@timing_aspect
+def process_data(data):
+    """Simulates a business logic function."""
+    time.sleep(0.1)
+    return len(data)
+
+process_data([1, 2, 3])
+```
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go title="middleware.go" showLineNumbers
+package main
+
+import (
+	"log"
+	"time"
+)
+
+// BusinessLogic is the core function type.
+type BusinessLogic func(string) error
+
+// LoggingMiddleware is an aspect that logs method entry and exit.
+func LoggingMiddleware(next BusinessLogic) BusinessLogic {
+	return func(data string) error {
+		log.Printf("Executing with data: %s", data)
+		defer log.Println("Finished execution.")
+		return next(data)
+	}
+}
+
+// TimingMiddleware measures execution time.
+func TimingMiddleware(next BusinessLogic) BusinessLogic {
+	return func(data string) error {
+		start := time.Now()
+		defer func() {
+			log.Printf("Execution time: %v", time.Since(start))
+		}()
+		return next(data)
+	}
+}
+
+func main() {
+	// Core business logic
+	coreLogic := func(data string) error {
+		log.Printf("Core logic processing: %s", data)
+		return nil
+	}
+
+	// Weave aspects via middleware chaining
+	chainedLogic := TimingMiddleware(LoggingMiddleware(coreLogic))
+	chainedLogic("my-data")
+}
+```
+  </TabItem>
+  <TabItem value="node" label="Node.js (Proxy)">
+```javascript title="proxy.js" showLineNumbers
+const performanceAspect = {
+  apply(target, thisArg, args) {
+    console.time(target.name);
+    const result = Reflect.apply(target, thisArg, args);
+    console.timeEnd(target.name);
+    return result;
+  }
+};
+
+function someBusinessLogic(a, b) {
+  // complex calculation
+  return a + b;
+}
+
+// Weave the aspect using a Proxy
+const proxiedLogic = new Proxy(someBusinessLogic, performanceAspect);
+
+proxiedLogic(10, 20); // Logs execution time to the console
+```
+  </TabItem>
+</Tabs>
+
+<Vs
+  title="When to Use vs. When to Reconsider"
+  items={[
+    {
+      label: "When to Use",
+      points: [
+        "**Centralizing common concerns**: Perfect for logging, caching, security checks, and transaction management that would otherwise be scattered across the codebase.",
+        "**Enforcing policies**: When you need to uniformly apply a policy (e.g., all service-layer methods must be timed) without relying on developers to remember.",
+        "**Extending third-party code**: Can be used to add functionality to libraries or frameworks where you don't control the source code.",
+      ],
+    },
+    {
+      label: "When to Reconsider",
+      points: [
+        "**Core business logic**: Aspects should not contain business rules. Doing so obscures the primary logic of the application.",
+        "**Complex control flow**: If an aspect significantly alters the control flow (e.g., by catching and swallowing exceptions), it can make the code extremely difficult to debug.",
+        "**Overuse**: Applying too many 'magic' aspects can lead to a system that is hard to understand and reason about, as behavior is injected from many hidden places.",
+      ],
+    },
+  ]}
+  highlight={0}
+  highlightTone="positive"
+/>
+
+<Showcase
+  title="Operational Considerations"
+  sections={[
+    {
+      label: "Weaving Strategy",
+      body: "Runtime weaving (decorators, proxies) is flexible but can have a performance cost. Compile-time weaving is faster but less dynamic. Choose based on your needs.",
+    },
+    {
+      label: "Observability",
+      body: "Aspects are a great place to implement tracing and metrics, but the aspects themselves must be lightweight to avoid adding significant overhead.",
+    },
+    {
+      label: "Debugging",
+      body: "Stack traces can become cluttered by aspect code. Ensure your aspects have clear names and that your debugger can easily step through or over them.",
+    },
+  ]}
+/>
+
+<Checklist
+  title="Design Review Checklist"
+  items={[
+    "Is the concern truly cross-cutting, or is it part of the domain's core logic?",
+    "Is the pointcut expression specific enough to avoid unintended side effects?",
+    "Does the aspect introduce 'action at a distance' that makes the code hard to follow?",
+    "Is the performance impact of runtime weaving acceptable for the use case?",
+    "Are aspects and their configurations well-documented?",
+  ]}
+/>
+
+## Related topics
+
+- [Architecture Governance & Organization](/docs/architecture-governance-and-organization)
+- [Design Patterns](/docs/design-patterns) (specifically Decorator and Proxy)

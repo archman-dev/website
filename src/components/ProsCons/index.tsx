@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import React from 'react';
+import MarkdownRenderer from '../Markdown';
 import styles from './styles.module.css';
 
 type HighlightSide = 'pros' | 'cons';
@@ -46,7 +47,7 @@ export default function ProsCons({ title, prosTitle, pros, consTitle, cons, high
           <strong>{prosTitle}</strong>
           <ul>
             {pros.map((p, i) => (
-              <li key={i}>{p}</li>
+              <li key={i}>{typeof p === 'string' ? <MarkdownRenderer content={p} /> : p}</li>
             ))}
           </ul>
         </div>
@@ -62,7 +63,7 @@ export default function ProsCons({ title, prosTitle, pros, consTitle, cons, high
           <strong>{consTitle}</strong>
           <ul>
             {cons.map((c, i) => (
-              <li key={i}>{c}</li>
+              <li key={i}>{typeof c === 'string' ? <MarkdownRenderer content={c} /> : c}</li>
             ))}
           </ul>
         </div>

@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import React from 'react';
+import MarkdownRenderer from '../Markdown';
 import styles from './styles.module.css';
 
 export type ShowcaseSection = {
@@ -84,8 +85,8 @@ export function Showcase({ title, sections, sectionsMap, children, icon, tone = 
               isHighlighted && effHighlightTone === 'info' && styles.emInfo,
             )}
           >
-            <div className={styles.sectionLabel}>{s.label}</div>
-            <div className={styles.sectionBody}>{s.body}</div>
+            <div className={styles.sectionLabel}>{typeof s.label === 'string' ? <MarkdownRenderer content={s.label} /> : s.label}</div>
+            <div className={styles.sectionBody}>{typeof s.body === 'string' ? <MarkdownRenderer content={s.body} /> : s.body}</div>
           </div>
         );
       })}

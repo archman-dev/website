@@ -1,0 +1,191 @@
+---
+title: "Components, Connectors, and Configurations"
+sidebar_label: "Components & Connectors"
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import Figure from '@site/src/components/Figure';
+import Checklist from '@site/src/components/Checklist';
+import Vs from '@site/src/components/Vs';
+import Showcase from '@site/src/components/Showcase';
+import ProsCons from '@site/src/components/ProsCons';
+
+# Components, Connectors, and Configurations
+
+In software architecture, **system thinking** is the practice of viewing a system as a holistic collection of interacting parts. The most fundamental of these parts are **components**, the **connectors** that link them, and the **configurations** that arrange them. Understanding these three elements is the first step toward designing robust, scalable, and maintainable systems.
+
+A system's architecture is defined by its components, how they are connected, and the rules that govern their interaction. This structure dictates the system's capabilities, its quality attributes (like performance and reliability), and how it can evolve over time.
+
+## Core Concepts
+
+### Components
+A **component** is a unit of computation or a data store. It is a modular, deployable, and replaceable part of a system that encapsulates a set of related functions or data. Components have well-defined interfaces that hide their internal implementation details.
+
+- **Examples**: A microservice, a database, a message queue, a client-side web application, or even a well-defined library.
+
+### Connectors
+A **connector** is a mechanism that mediates communication, coordination, or cooperation among components. Connectors are the "plumbing" of an architecture, enabling data and control flow. They are distinct from the components themselves and can range from simple procedure calls to complex, network-based protocols.
+
+- **Examples**: A REST API call, a gRPC connection, a message bus, an event stream, or a shared memory buffer.
+
+### Configurations
+A **configuration** is the structural arrangement of components and connectors. It describes the topology of the system—how the parts are wired together to form a whole. The configuration defines the system's runtime structure and dictates how components interact to fulfill the system's purpose.
+
+- **Examples**: A client-server topology, a pipeline of data-processing services, a star-shaped topology with a central message broker.
+
+<Figure caption="A simple client-server configuration showing two components (Client, Server) linked by a connector (REST API).">
+```mermaid
+graph TD
+    subgraph "System Configuration"
+        Client -- "REST API (Connector)" --> Server
+    end
+    classDef component fill:#f9f,stroke:#333,stroke-width:2px,color:#333;
+    class Client,Server component;
+```
+</Figure>
+
+## Practical Examples and Real-World Scenarios
+
+Let's consider a simple e-commerce system.
+
+- **Components**:
+    - `ProductService`: Manages product information.
+    - `OrderService`: Handles order creation and processing.
+    - `PostgreSQL DB`: A relational database for storing order data.
+    - `Kafka Topic`: An event stream for publishing order events.
+- **Connectors**:
+    - `gRPC`: Used for synchronous, internal communication between `OrderService` and `ProductService`.
+    - `Postgres Driver`: The connector used by `OrderService` to interact with its database.
+    - `Kafka Producer/Consumer`: The mechanism for writing to and reading from the `Order-Events` topic.
+- **Configuration**:
+    The `OrderService` receives a request, calls the `ProductService` via gRPC to validate product details, persists the order to its `PostgreSQL DB`, and publishes an `OrderCreated` event to a `Kafka Topic`.
+
+<Figure caption="Configuration for an e-commerce system's order processing flow.">
+```mermaid
+graph TD
+    A[Client] -- "HTTP POST /orders" --> B(OrderService)
+    B -- "gRPC GetProduct" --> C(ProductService)
+    B -- "SQL INSERT" --> D(PostgreSQL DB)
+    B -- "Publish Event" --> E(Kafka Topic: order-events)
+
+    classDef service fill:#D6EAF8,stroke:#2E86C1,stroke-width:2px,color:#000;
+    classDef db fill:#E8DAEF,stroke:#8E44AD,stroke-width:2px,color:#000;
+    classDef topic fill:#D5F5E3,stroke:#28B463,stroke-width:2px,color:#000;
+
+    class B,C service;
+    class D db;
+    class E topic;
+```
+</Figure>
+
+## Decision Model: Choosing the Right Connector
+
+The choice of connector is a critical architectural decision that impacts performance, reliability, and coupling. Use this mental model to guide your selection.
+
+<Figure caption="A decision flow for selecting a connector based on communication style and guarantees.">
+```mermaid
+flowchart TB
+    A[Start] --> B{Sync or Async Communication?};
+    B -- Sync --> C{Internal or External?};
+    B -- Async --> G{Point-to-Point or Pub/Sub?};
+
+    C -- Internal --> D{Performance critical?};
+    C -- External --> E["Use HTTP/REST (or GraphQL)"];
+    D -- Yes --> F["Use gRPC (or other binary RPC)"];
+    D -- No --> E;
+
+    G -- "Point-to-Point" --> H["Use a Message Queue (e.g., RabbitMQ, SQS)"];
+    G -- "Pub/Sub" --> I{Real-time or Event Log?};
+
+    I -- "Real-time" --> J["Use a Message Broker (e.g., RabbitMQ, NATS)"];
+    I -- "Event Log" --> K["Use a Streaming Platform (e.g., Kafka, Pulsar)"];
+```
+</Figure>
+
+## Decision Matrix: Connector Trade-offs
+
+| Connector Type      | Coupling | Performance | Complexity | Use Case                               |
+| ------------------- | -------- | ----------- | ---------- | -------------------------------------- |
+| **REST API**        | Low      | Medium      | Low        | External-facing APIs, simple services. |
+| **gRPC**            | Medium   | High        | Medium     | Internal service-to-service comms.     |
+| **Message Queue**   | Very Low | High        | Medium     | Decoupled tasks, load leveling.        |
+| **Event Stream**    | Very Low | Very High   | High       | Event sourcing, stream processing.     |
+| **Shared Database** | High     | High        | Low        | (Anti-pattern) Monoliths, simple apps. |
+
+## Implementation Notes / Patterns / Pitfalls
+
+<ProsCons
+  prosTitle="Do"
+  consTitle="Don't"
+  pros={[
+    'Define clear, stable interfaces for your components.',
+    'Choose connectors that match your coupling and performance needs.',
+    'Isolate components to allow for independent deployment and scaling.',
+    'Use asynchronous connectors to improve resilience and elasticity.'
+  ]}
+  cons={[
+    'Do not let components bypass connectors and interact directly (e.g., direct DB access across services).',
+    'Avoid creating a "distributed monolith" by using synchronous, blocking calls everywhere.',
+    'Do not share databases between components (services) as it creates high coupling.',
+    'Do not build custom connector logic when a standard, off-the-shelf solution exists.'
+  ]}
+  highlight="pros"
+  highlightTone="positive"
+/>
+
+## Operational Considerations
+
+- **SLOs/SLIs**: Each component should have defined Service Level Objectives (SLOs). For example, the `ProductService` might have an SLO for 99.9% availability and a 50ms 99th percentile latency. Connector behavior (e.g., retry policies, timeouts) directly impacts these metrics.
+- **Rollouts**: Components should be independently deployable. A change to the `OrderService` should not require a redeployment of the `ProductService`. Use techniques like blue-green or canary deployments to roll out new component versions safely.
+- **Quotas/Limits**: Implement rate limiting and quotas on component interfaces to prevent cascading failures. A connector like an API Gateway is an ideal place to enforce these policies.
+
+## Security, Privacy, and Compliance
+
+- **Authentication & Authorization**: Connectors must enforce security. For example, an API Gateway can validate JWTs for external requests, while a service mesh can enforce mTLS for internal gRPC calls.
+- **Data Classification**: Components handle data of varying sensitivity. Ensure that connectors prevent leakage. For instance, an `OrderService` should not expose PII through an insecure connector.
+- **Secrets Management**: Components often need secrets (API keys, credentials) to use connectors. These must be managed securely via a vault, not hardcoded in configurations.
+
+## Observability
+
+- **Logs**: Components should produce structured logs. Connectors should add correlation IDs to trace requests as they flow through the system.
+- **Metrics**: Each component should expose key metrics (e.g., request rate, error rate, duration - RED metrics). Connectors can also provide metrics, such as queue length for a message broker.
+- **Traces**: Use distributed tracing to visualize the entire lifecycle of a request across multiple components and connectors. This is invaluable for debugging performance issues.
+
+## When to Use / When Not to Use
+
+### When to formally define Components, Connectors, and Configurations:
+- When designing a new system from scratch.
+- When decomposing a monolith into microservices.
+- When your system is becoming complex and you need to manage dependencies.
+- When you need to communicate the architecture to new team members.
+
+### When this level of formalism might be overkill:
+- For very small, single-purpose applications or scripts.
+- In the early stages of a prototype where speed is more important than structure.
+
+## Design Review Checklist
+
+<Checklist
+  title="Component & Connector Design Checklist"
+  items={[
+    { label: 'Is the component’s responsibility well-defined and cohesive?' },
+    { label: 'Is the component’s interface clear and hiding implementation details?' },
+    { label: 'Does the chosen connector match the required performance and reliability?' },
+    { label: 'Is the communication pattern (sync/async) appropriate for the use case?' },
+    { label: 'Can the component be deployed and scaled independently?' },
+    { label: 'Are security controls (authn/authz) enforced by the connector?' },
+    { label: 'Is there a clear strategy for versioning the component’s interface?' },
+    { label: 'Are observability hooks (logs, metrics, traces) built into the component and connector?' },
+    { label: 'Have you avoided shared mutable state between components?' }
+  ]}
+/>
+
+## Related Topics
+- [Interfaces & Contracts](./interfaces-and-contracts.mdx)
+- [Abstractions & Encapsulation](./abstractions-and-encapsulation.mdx)
+- [Architectural Styles](../../architectural-styles)
+
+## References
+1. <a href="https://www.cs.cmu.edu/~able/publications/software-architecture-in-industrial-practice-tr-2005.pdf" target="_blank" rel="nofollow noopener noreferrer">Software Architecture in Practice, 3rd Edition ↗️</a>
+2. <a href="https://patterns.eecs.berkeley.edu/?page_id=10" target="_blank" rel="nofollow noopener noreferrer">Architectural Patterns ↗️</a>

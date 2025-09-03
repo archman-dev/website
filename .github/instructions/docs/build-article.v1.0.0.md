@@ -1,64 +1,127 @@
-# Build Article Prompt (v1.0.0)
 
-Purpose
+# Paradigm Docs Authoring Rules (Deterministic Version)
 
-- Generate or update one or more documentation articles under `./docs/**` from a relative glob input while strictly honoring the canonical structure and house style. Produce human-friendly, instructive, and deep, production-grade content with diagrams, examples, decision aids, and explicit operational guidance.
+All code blocks and documentation in `docs/**/*.md(x)` must follow these explicit, numbered rules. Do not skip or reinterpret any rule. If a rule cannot be followed, stop and report.
 
-Inputs
+## 1. Tabbed Code Blocks
 
-- targetGlob: A repo-relative glob under `./docs/**`, e.g. `./docs/**/*.md`, `./docs/**/topic/*.mdx`, or a single file like `./docs/foundational-concepts/system-thinking.md`.
-- canonicalPath: Path to the canonical structure file. Default: `.github/instructions/canonical/docs-structure.v1.0.0.md`.
+1. Use `<Tabs>` and `<TabItem>` for language switching.
+2. Inside each `<TabItem>`, use a triple-backtick code block (```) with:
 
-Contract (high-level)
+- The language (e.g., `python`, `go`, `javascript`)
+- The `title` attribute (e.g., `title="foo.py"`)
+- The `showLineNumbers` attribute
 
-- Read and understand the canonical structure first to determine scope, placement, and expected depth of each matched topic.
-- For each matched path:
-  - If file is `.mdx`: produce/maintain a shorter overview-style category intro (summary, mental model/decision aid, concise guidance, optional relevant quote).
-  - If file is `.md`: produce/maintain the full topic article with significant depth, sections, examples, and diagrams.
-- Keep tone professional yet engaging; avoid machine-like writing; show real-world context, trade-offs, and edge cases. Prefer concrete, actionable guidance over generic exposition.
-- All external links must open in a new tab and use `rel="nofollow noopener noreferrer"` and display an external-link emoji (↗️).
-- If generating or using images, store them under `./static/img/**` mirroring the article’s subtree path (do not put new images inside `./docs`).
+3. Do **not** use the `<CodeBlock>` component for tabbed code blocks.
+4. Example:
 
-Depth expectations and minimum deliverables
+```mdx
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+```python title="foo.py" showLineNumbers
+def hello():
+    print("Hello, world!")
+```
 
-- .mdx (overview):
-  - 300–600 words. Include one visual (Mermaid preferred) and a concise decision aid or mental model if appliable. Optionally include a short, relevant quote.
-- .md (full topic):
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go title="foo.go" showLineNumbers
+package main
+func main() { println("Hello, world!") }
+```
+  </TabItem>
+</Tabs>
+```
+
+## 2. Diagrams
+
+1. All diagrams must be wrapped in a `<Figure>` component with a descriptive `caption` prop.
+2. Example:
+
+```mdx
+<Figure caption="A descriptive caption for the diagram.">
+```mermaid
+graph TD;
+    A-->B;
+```
+
+</Figure>
+```
+
+## 3. Indentation
+
+1. All code inside code blocks must use 4-space indentation. Do not use tabs.
+
+## 4. General
+
+1. Do not create or edit `.md` files for paradigm docs; only `.mdx`.
+2. Ensure all code examples are up-to-date and use free, accessible references.
+3. **Contrast for Visibility:** Whenever highlighting, coloring, or otherwise emphasizing text (including in diagrams, code, or callouts), always ensure the text color is sufficiently contrasted against its background for good visibility in both light and dark modes. Explicitly set text color if necessary to maintain readability.
+
+# Build Article Prompt (v1.0.0) — Deterministic Authoring Contract
+
+## 5. Purpose
+
+1. Generate or update one or more documentation articles under `./docs/**` from a relative glob input while strictly honoring the canonical structure and house style. Produce human-friendly, instructive, and deep, production-grade content with diagrams, examples, decision aids, and explicit operational guidance.
+
+## 6. Inputs
+
+1. targetGlob: A repo-relative glob under `./docs/**`, e.g. `./docs/**/*.md`, `./docs/**/topic/*.mdx`, or a single file like `./docs/foundational-concepts/system-thinking.md`.
+2. canonicalPath: Path to the canonical structure file. Default: `.github/instructions/canonical/docs-structure.v1.0.0.md`.
+
+## 7. Contract (High-Level, Deterministic)
+
+1. Read and understand the canonical structure file before writing. If missing or malformed, stop and report.
+2. For each matched path:
+
+- If the file is an `index.md` or `index.mdx`, produce/maintain a shorter overview-style category intro (summary, mental model/decision aid, concise guidance, optional relevant quote).
+- For all other files, produce/maintain the full topic article with significant depth, sections, examples, and diagrams.
+
+3. Keep tone professional yet engaging; avoid machine-like writing; show real-world context, trade-offs, and edge cases. Prefer concrete, actionable guidance over generic exposition.
+4. All external links must open in a new tab and use `rel="nofollow noopener noreferrer"` and display an external-link emoji (↗️).
+5. If generating or using images, store them under `./static/img/**` mirroring the article’s subtree path (do not put new images inside `./docs`).
+6. All diagrams and visualizations must be wrapped in a `<Figure>` component with a descriptive `caption`.
+
+## 8. Depth Expectations and Minimum Deliverables
+
+- `index.mdx` or `index.md` (overview):
+  - 300–600 words. Include one visual (Mermaid preferred, wrapped in `<Figure>`) and a concise decision aid or mental model if appliable. Optionally include a short, relevant quote.
+- All other files (full topic):
   - Target 900–1600 words (minimum 800). Include at least:
-    - One decision model or sequence/state diagram (Mermaid) where applicable.
+    - One decision model or sequence/state diagram (Mermaid, wrapped in `<Figure>`) where applicable.
     - One decision matrix/table if the topic involves choices.
     - One practical example with copyable code/config (with filename + line numbers).
     - Explicit sections for: Patterns/Pitfalls, Edge cases, Operational considerations (SLO/SLI, rollouts), Security/Privacy/Compliance (if applicable), Observability (logs/metrics/traces), and Testing.
     - “When to use” and “When not to use” if applicable.
 
-Pre-flight (must do before writing)
+## 9. Pre-flight (Must Do Before Writing)
 
 1) Load `canonicalPath` and read it fully to determine:
    - Where the topic belongs, its parents/siblings, and intended scope/depth in the larger outline.
    - What adjacent topics will (or will not) cover to prevent redundancy.
 2) From the `targetGlob`, resolve matched files. For each file, derive:
    - Section lineage (parents → child) from folder path and canonical mapping.
-   - Whether it’s an overview (`.mdx`) or a full topic (`.md`).
+   - Whether it’s an overview (`index.md` or `index.mdx`) or a full topic (any other file).
 3) If canonical is missing or malformed, stop and report. Do not write.
 
-Authoring rules by file type
+## 10. Authoring Rules by File Type
 
-- .mdx (overview/category introductions)
+- `index.mdx` or `index.md` (overview/category introductions)
   - Keep it concise: a summary/overview of the subject (typically 2–5 short paragraphs).
-  - Include a decision-making aid or mental model when applicable, preferably visualized.
+  - Include a decision-making aid or mental model when applicable, preferably visualized and wrapped in `<Figure>`.
   - It may include a short, relevant quote from a recognized authority; ensure it’s clearly relevant to the topic (not generic) and attribute it.
   - Favor high-level framing, scope boundaries, and how to navigate deeper articles.
 
-- .md (full topic articles)
+- Other topic articles (e.g., `topic.md` or `topic.mdx`)
   - Establish scope: clarify what the topic covers and what’s out of scope (delegated to siblings).
   - Organize like a well-structured book section with scannable headings and a logical flow.
   - Include real-world examples, case studies, trade-offs, and edge cases (see Depth expectations above).
-  - If teaching decisions, include a vertical mental model/flow using Mermaid (top-to-bottom) and/or other suitable visualizations.
+  - If teaching decisions, include a vertical mental model/flow using Mermaid (top-to-bottom, wrapped in `<Figure>`) and/or other suitable visualizations.
   - Include “When to use” and “When not to use” sections when applicable (omit if genuinely not relevant).
   - Add a short “Design review checklist” sub-section with 6–12 bullets capturing the most important acceptance criteria for the topic. Prefer the `Checklist` widget from /editing/category/widgets for this subsection.
-  - For comparisons or showcases of options/examples, prefer the MDX components in the Editing Widgets sections (/editing/category/widgets) (e.g., `Showcase`, `Vs`, `Checklist`, `DoDonts`, `Steps`/`Timeline`) rather than ad-hoc lists; use tables only when a grid communicates better.
+  - For comparisons or showcases of options/examples, prefer the MDX components in the Editing Widgets sections (/editing/category/widgets) (e.g., `Showcase`, `Vs`, `DecisionMatrix`, `Checklist`, `ProsCons`, `Steps`/`Timeline`) rather than ad-hoc lists; use tables only when a grid communicates better.
 
-Structure template (adapt as needed for each topic)
+## 11. Structure Template (Adapt as Needed for Each Topic)
 
 - Title (H1): Canonical topic label.
 - Brief introduction: why it matters; scope and boundaries.
@@ -75,13 +138,14 @@ Structure template (adapt as needed for each topic)
 - Alternatives and related topics (link internally).
 - References (with nofollow, external-link emoji, open in new tab).
 
-Diagrams and visualizations
+## 12. Diagrams and Visualizations
 
 - Mermaid is preferred and already supported. Use vertical orientation for decision flows: `flowchart TB`.
 - Use the most suitable diagram for the idea: flowchart, sequence, state, class, ER, journey, pie/quadrant, timeline, or others the Mermaid version supports.
 - Complex architecture visuals may be authored externally and saved to `./static/img/...` (mirroring the doc path). Reference them with `/img/...` absolute paths.
+- All figures and diagrams must be oriented vertically (e.g., `flowchart TB` for Mermaid diagrams) to ensure consistency and readability. Avoid horizontal layouts unless absolutely necessary for clarity.
 
-Mermaid authoring guardrails (lint/build-safe)
+## 13. Mermaid Authoring Guardrails (Lint/Build-Safe)
 
 - No hard tabs inside code fences. Use spaces only (Mermaid blocks are sensitive and lint enforces MD010).
 - In flowcharts, quote any node label that contains punctuation, slashes, parentheses, or multiple words. Prefer the `id["Readable label"]` form:
@@ -93,13 +157,13 @@ Mermaid authoring guardrails (lint/build-safe)
 - Prefer `flowchart TB` for decision trees; split very large flows into smaller figures (5–9 nodes each) to keep parsing and readability stable.
 - If a diagram fails to parse, first quote labels with punctuation and re-check for stray tabs or unmatched brackets.
 
-Required diagrams (choose what fits best)
+## 14. Required Diagrams (Choose What Fits Best)
 
 - Decision topics: at least one vertical flowchart (TB).
 - Lifecycle/interaction topics: sequence diagram showing timing/retries/timeouts.
 - State-heavy topics: state diagram with guards and terminal states.
 
-Visuals by purpose (choose-first guidance)
+## 15. Visuals by Purpose (Choose-First Guidance)
 
 | Purpose                                       | Best fit (preferred first)                                             | Notes                                                                |
 | --------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -114,7 +178,7 @@ Visuals by purpose (choose-first guidance)
 | Exploration/overview                          | Mind map (Mermaid mindmap or mindmap plugin)                           | Great for .mdx overview pages.                                       |
 | Trade-off matrix                              | Table                                                                  | When a grid communicates better than a figure.                       |
 
-Reusable visual widgets (Showcase, Vs, and category widgets)
+## 16. Reusable Visual Widgets (Showcase, Vs, and Category Widgets)
 
 - Prefer these when you want scannable, repeatable patterns for examples, trade-offs, and comparisons.
 - Locations for docs and live examples: /editing/category/widgets.
@@ -131,7 +195,7 @@ Reusable visual widgets (Showcase, Vs, and category widgets)
   - Authoring examples are maintained under Editing Widgets (routes: /editing/category/widgets).
 - Category widgets (use when they match your content shape)
   - Checklist: Ideal for “Design review checklist” sections; compact, selectable items.
-  - DoDonts: Show recommended vs avoid patterns side-by-side.
+  - ProsCons: Show pros and cons side-by-side.
   - Steps / Timeline: For procedures, rollouts, or lifecycles.
   - FAQ: Curate common questions and concise answers.
   - Callout / Alert: Emphasize warnings, info notes, or positive guidance.
@@ -139,7 +203,7 @@ Reusable visual widgets (Showcase, Vs, and category widgets)
   - Cards / CardGrid: Curate multi-item showcases (tools, patterns, examples).
   - Use component-specific props as documented in /editing/category/widgets.
 
-Tone semantics when using Showcase/Vs and category widgets
+## 17. Tone Semantics When Using Showcase/Vs and Category Widgets
 
 - Positive guidance or recommended options: use tone "positive".
 - Negative, risky, or cautionary guidance: use tone "warning". If you need an "error-like" emphasis, use "warning" (the components do not expose a separate "error" tone).
@@ -147,14 +211,14 @@ Tone semantics when using Showcase/Vs and category widgets
 - For Vs, per-item highlightTone takes priority over the component-level tone; set highlight to the option to emphasize, and set highlightTone according to the same rules above.
 - For Callout/Alert and other category widgets that support tone, apply the same tone mapping.
 
-When to use which tone
+## 18. When to Use Which Tone
 
 - positive: Recommend or preferred option in your context; a “good” leaning.
 - warning: Caution readers—risk, complexity, or notable pitfalls. Use this for negative or error-like messages.
 - info: Neutral but notable information; draw attention without implying danger or endorsement.
 - neutral: No strong guidance; present facts evenly.
 
-Authoring snippets (quick reference)
+## 19. Authoring Snippets (Quick Reference)
 
 ```mdx title="Showcase (sections)"
 <Showcase
@@ -191,22 +255,22 @@ Authoring snippets (quick reference)
 />
 ```
 
-```mdx title="Do & Don’t"
-<DoDonts
-  do={[
-    'Use idempotent operations for retries',
-    'Prefer vertical Mermaid flowcharts for decisions',
+```mdx title="Pros & Cons"
+<ProsCons
+  pros={[
+    'Clear separation of concerns',
+    'Enables independent team velocity',
   ]}
-  dont={[
-    'Couple environment-specific secrets into code',
-    'Use tables when a comparison card is clearer',
+  cons={[
+    'Increased operational complexity',
+    'Risk of inconsistent data models',
   ]}
 />
 ```
 
 See [Editing Widgets](/editing/widgets) and [Category Widgets](/editing/category/widgets) for complete examples and evolving guidance.
 
-Optional diagram integrations (use when they add clear value)
+## 20. Optional Diagram Integrations (Use When They Add Clear Value)
 
 1. Kroki via remark-kroki (PlantUML, D2, Graphviz, etc.)
 
@@ -316,7 +380,7 @@ flowchart TB
   D --> F[Ensure clarity, scope, and examples]
 ```
 
-Code and pseudocode guidelines
+## 21. Code and Pseudocode Guidelines
 
 - Always prefer copy-friendly code blocks with a title/filename and line numbers enabled:
   - Add `title="FILENAME.ext"` and `showLineNumbers` in the code block meta.
@@ -326,7 +390,7 @@ Code and pseudocode guidelines
 - For config/infra (YAML, Terraform, Helm, etc.), use proper language highlighting and `showLineNumbers`.
 - If the topic is programming-oriented, provide the language triad (Python, Go, Node.js). If not code-centric, include at least one realistic config/example block (YAML/JSON/Terraform/etc.).
 
-Tabbed code widget (example)
+### Tabbed Code Widget (Example)
 
 ````mdx
 import Tabs from '@theme/Tabs'
@@ -361,15 +425,15 @@ import TabItem from '@theme/TabItem'
 </Tabs>
 ````
 
-Tables
+## 22. Tables
 
 - For comparisons and showcases, prefer reusable components from the Editing Widgets sections (/editing/category/widgets) first:
   - Use `Vs` for A/B/N comparisons.
   - Use `Showcase` for curated highlights with labeled sections (Impact, Trade-offs, Signals, etc.).
-  - Use category widgets where appropriate (`Checklist`, `DoDonts`, `Steps`/`Timeline`, `FAQ`, `Callout`/`Alert`, `Metric`/`KPI`, `Cards`/`CardGrid`).
+  - Use category widgets where appropriate (`Checklist`, `ProsCons`, `Steps`/`Timeline`, `FAQ`, `Callout`/`Alert`, `Metric`/`KPI`, `Cards`/`CardGrid`).
 - Use tables when a grid communicates better than cards/components (e.g., many options with many attributes) and keep it scannable.
 
-Links and references (strict)
+## 23. Links and References (Strict)
 
 - Internal links: use relative links to other docs.
 - External links: must open in a new tab, have `rel="nofollow noopener noreferrer"`, and show an external-link emoji.
@@ -389,7 +453,7 @@ Links and references (strict)
   2. <a href="https://example.com/another" target="_blank" rel="nofollow noopener noreferrer">Another Source ↗️</a>
   ```
 
-Internal cross-linking (canonical-driven)
+## 24. Internal Cross-Linking (Canonical-Driven)
 
 - Before writing, read the canonical structure file completely: `.github/instructions/canonical/docs-structure.v1.0.0.md`.
 - Build a mental (or temporary) map of topic → expected location/slug from the canonical outline.
@@ -405,7 +469,7 @@ Internal cross-linking (canonical-driven)
 - Do not guess the path purely from text; prefer the canonical outline first, then verify the path exists in `./docs`. If ambiguous or missing, leave a TODO comment and surface it in your output.
   - Minimum: include at least three “Related topics” internal links that exist in `./docs/**` and are relevant siblings/parents/children per canonical.
 
-Link validation (post-generation, required)
+## 25. Link Validation (Post-Generation, Required)
 
 - After writing, validate all links you added/edited:
   - Internal doc links: ensure they are extensionless (no .md/.mdx) and the target file exists in `./docs/**`. If a target is missing, replace the link with a TODO note and report it.
@@ -414,27 +478,27 @@ Link validation (post-generation, required)
   - Mermaid image or static asset links: confirm files exist under `/static/img/**`.
   - References section must include at least 2 reputable sources when external material informed the article; prefer standards bodies, official docs, or well-regarded texts.
 
-Automation hint (optional): when running in a repo context, use a broken-links checker or a simple script to scan for `.md`/`.mdx` suffixed links and convert them to extensionless, then re-validate.
+## 26. Automation Hint (Optional)
 
-Tone and style
+## 27. Tone and Style
 
 - Professional, clear, concise, and engaging—avoid robotic prose.
 - Use concrete examples, short anecdotes, and where helpful, brief quotes that are clearly connected to the topic.
 - Avoid redundancy across siblings; defer content to the appropriate sibling and link to it.
 
-Output expectations
+## 28. Output Expectations
 
 - Do not change canonical. Conform content to canonical scope and naming.
 - Preserve existing frontmatter if present; add missing, minimal frontmatter only when necessary.
 - Validate MD/MDX syntax so Docusaurus can build without errors.
-- Keep overview `.mdx` files short; keep topic `.md` files substantial but focused.
+- Keep overview `index.mdx` or `index.md` files short; keep other topic files substantial but focused.
 
-Workflow (per matched file)
+## 29. Workflow (Per Matched File)
 
 1) Map the file path to canonical to confirm scope and level of depth.
-2) Choose article mode based on extension:
-   - `.mdx` → overview-mode (short, framing, optional quote, one diagram if applicable).
-   - `.md` → full-topic mode (deep dive, examples, decision model if appropriate).
+2) Choose article mode based on filename:
+   - `index.mdx` or `index.md` → overview-mode (short, framing, optional quote, one diagram if applicable).
+   - Other files → full-topic mode (deep dive, examples, decision model if appropriate).
 3) Plan sections per the Structure template above; avoid overlap with siblings per canonical.
 4) Author content:
 
@@ -447,7 +511,7 @@ Workflow (per matched file)
 
 2) End with a References section when any external sources are used.
 
-Quality gates
+## 30. Quality Gates
 
 - Lint: headings are hierarchical; no orphan H1/H2 jumps; links resolve; MDX compiles.
 - Build sanity: content should not break a Docusaurus build given site config (Mermaid is enabled; Prism is present).
@@ -456,12 +520,12 @@ Quality gates
 - References: at least two external sources when external material is cited.
 - Requirements coverage: confirm the checklist below is satisfied for each article.
 
-Author checklist (must-verify)
+## 31. Author Checklist (Must-Verify)
 
 - [ ] targetGlob respected (resolved files only under `./docs/**`).
 - [ ] Canonical read and applied to scope, depth, and sibling boundaries.
-- [ ] `.mdx` files are concise, overview/decision-focused; quotes (if any) are relevant and attributed.
-- [ ] `.md` files are comprehensive (≥800 words), with structure, examples, and (if applicable) when-to-use/not-use.
+- [ ] `index.mdx` or `index.md` files are concise, overview/decision-focused; quotes (if any) are relevant and attributed.
+- [ ] Non-index files are comprehensive (≥800 words), with structure, examples, and (if applicable) when-to-use/not-use.
 - [ ] A vertical mental model (Mermaid `TB`) is included when the topic teaches decisions; otherwise, the most suitable diagram is used.
 - [ ] Visualization type chosen per purpose (see matrix); used Mermaid by default and Kroki/Draw.io/Structurizr/Mindmap when clearly beneficial.
 - [ ] Mermaid safety: no hard tabs; node labels with punctuation/slashes/parentheses are quoted using `id["Label"]`; edge labels are simple words; participant names with spaces use alias + quoted display.
@@ -481,3 +545,7 @@ Author checklist (must-verify)
 - [ ] Operational considerations section provided (SLO/SLI, rollout/rollback, limits) or explicitly N/A with reason.
 - [ ] Security/privacy/compliance and observability sections provided or explicitly N/A with reason.
 - [ ] Edge cases addressed (empty/null, large inputs, timeouts/retries, idempotency/concurrency, multi-tenant data isolation) where applicable.
+
+## 32. References Section Placement
+
+1. The 'References' section must always be the last section in the document, regardless of whether external sources are cited. This ensures consistency and clarity across all documentation articles.

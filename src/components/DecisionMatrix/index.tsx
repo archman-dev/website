@@ -17,19 +17,23 @@ type Props = {
 };
 
 export default function DecisionMatrix({ caption, columns, rows }: Props) {
+  // Defensive defaults to avoid runtime errors if props are omitted/malformed in MDX usage
+  const safeColumns: React.ReactNode[] = Array.isArray(columns) ? columns : [];
+  const safeRows: Row[] = Array.isArray(rows) ? rows : [];
+
   return (
     <figure className={styles.figure}>
       <table className={styles.table}>
         <thead>
           <tr>
             <th>Option</th>
-            {columns.map((c, i) => (
+            {safeColumns.map((c, i) => (
               <th key={i}>{c}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, ri) => (
+          {safeRows.map((r, ri) => (
             <tr
               key={ri}
               className={
@@ -48,7 +52,7 @@ export default function DecisionMatrix({ caption, columns, rows }: Props) {
                 <strong>{r.name}</strong>
                 {r.recommended ? ' ⭐' : ''}
               </td>
-              {r.cells.map((cell, ci) => (
+              {(Array.isArray(r.cells) ? r.cells : []).map((cell, ci) => (
                 <td key={ci}>{cell}</td>
               ))}
             </tr>
