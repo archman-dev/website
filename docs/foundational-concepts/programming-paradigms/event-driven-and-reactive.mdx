@@ -39,6 +39,20 @@ flowchart TD
 
 ## Examples
 
+<Figure caption="Sequential control flow for handling a single event.">
+```mermaid
+flowchart TB
+  subgraph Consumer Logic
+    A[Receive Event] --> B{"Is event ID in 'processed' set?"}
+    B -->|Yes| C[End/Ignore]
+    B -->|No| D[Perform Business Logic]
+    D --> E[Persist Result]
+    E --> F[Add event ID to 'processed' set]
+    F --> G[End]
+  end
+```
+</Figure>
+
 <Tabs groupId="lang" queryString>
   <TabItem value="python" label="Python">
 ```python title="consumer.py" showLineNumbers
@@ -80,48 +94,48 @@ async def _run(evt, sem):
 package main
 
 import (
-  "context"
-  "log"
-  "sync"
+    "context"
+    "log"
+    "sync"
 )
 
 type Event struct{ ID string; Items []Item }
 type Item struct{ Qty int; Price int }
 
 func handleEvent(ctx context.Context, e Event) error {
-  // TODO: check idempotency store for e.ID
-  var total int
-  for _, it := range e.Items {
-    total += it.Qty * it.Price
-  }
-  // TODO: persist total (use ctx)
-  _ = total
-  return nil
+    // TODO: check idempotency store for e.ID
+    var total int
+    for _, it := range e.Items {
+        total += it.Qty * it.Price
+    }
+    // TODO: persist total (use ctx)
+    _ = total
+    return nil
 }
 
 func worker(ctx context.Context, wg *sync.WaitGroup, events <-chan Event) {
-  defer wg.Done()
-  for e := range events {
-    if err := handleEvent(ctx, e); err != nil {
-      log.Printf("failed: %v", err)
-      // TODO: retry/DLQ
+    defer wg.Done()
+    for e := range events {
+        if err := handleEvent(ctx, e); err != nil {
+            log.Printf("failed: %v", err)
+            // TODO: retry/DLQ
+        }
     }
-  }
 }
 
 func main() {
-  ctx := context.Background()
-  events := make(chan Event, 100) // bounded buffer for backpressure
-  var wg sync.WaitGroup
+    ctx := context.Background()
+    events := make(chan Event, 100) // bounded buffer for backpressure
+    var wg sync.WaitGroup
 
-  for i := 0; i < 32; i++ {
-    wg.Add(1)
-    go worker(ctx, &wg, events)
-  }
+    for i := 0; i < 32; i++ {
+        wg.Add(1)
+        go worker(ctx, &wg, events)
+    }
 
-  // TODO: poll from broker, decode, push into events
-  // close(events) when done to stop workers
-  // wg.Wait() to ensure all events are processed
+    // TODO: poll from broker, decode, push into events
+    // close(events) when done to stop workers
+    // wg.Wait() to ensure all events are processed
 }
 ```
   </TabItem>
@@ -133,19 +147,19 @@ import { fromEvent, mergeMap, map, bufferCount } from "rxjs"
 const events$ = fromEvent(broker, "order-event")
 
 const totals$ = events$
-  .pipe(
-    mergeMap(evt => computeTotal(evt), 64), // concurrency limit (backpressure)
-    bufferCount(100), // micro-batches
-    map(batch => batch.reduce((acc, t) => acc + t, 0))
-  )
+    .pipe(
+        mergeMap(evt => computeTotal(evt), 64), // concurrency limit (backpressure)
+        bufferCount(100), // micro-batches
+        map(batch => batch.reduce((acc, t) => acc + t, 0))
+    )
 
 totals$.subscribe({
-  next: val => console.log("batch total", val),
-  error: err => console.error("stream error", err)
+    next: val => console.log("batch total", val),
+    error: err => console.error("stream error", err)
 })
 
 async function computeTotal(evt) {
-  return evt.items.reduce((sum, i) => sum + i.qty * i.price, 0)
+    return evt.items.reduce((sum, i) => sum + i.qty * i.price, 0)
 }
 ```
   </TabItem>
@@ -210,3 +224,27 @@ async function computeTotal(evt) {
 - [Dataflow & Stream Processing](/docs/foundational-concepts/programming-paradigms/dataflow-stream-processing)
 - [Distributed Systems & Microservices](/docs/distributed-systems-and-microservices)
 - [Reliability, Resilience & Performance](/docs/reliability-resilience-and-performance-engineering)
+
+<Showcase
+  title="Security, Privacy, and Compliance"
+  sections={[
+    {
+      label: "Event Payload Security",
+      body: "Ensure that no sensitive data (PII, credentials) is leaked into events. Use tokenization or reference-based payloads (e.g., `orderId` instead of the full order details) and require consumers to fetch sensitive data via authenticated, authorized APIs. Encrypt event payloads at rest and in transit.",
+    },
+    {
+      label: "Authentication and Authorization",
+      body: "Producers and consumers must authenticate with the broker (e.g., via mTLS, SASL). Enforce topic-level authorization so that only approved services can publish or subscribe to specific topics. This prevents unauthorized data access and rogue producers.",
+    },
+    {
+      label: "Replay Attack Prevention",
+      body: "Idempotency checks based on a unique event ID are the primary defense against replay attacks, where an attacker re-sends a valid event to trigger duplicate processing. Including a timestamp in the event and rejecting events older than a certain threshold can also help.",
+    },
+  ]}
+/>
+
+## References
+
+1.  Bonér, J., et al. (2014). [*The Reactive Manifesto*](https://www.reactivemanifesto.org/) ↗️.
+2.  Richards, M., & Ford, N. (2020). [*Fundamentals of Software Architecture*](https://www.oreilly.com/library/view/fundamentals-of-software/9781492043447/) ↗️. O'Reilly Media.
+3.  Kafka Documentation. (n.d.). [Security](https://kafka.apache.org/documentation/#security) ↗️.

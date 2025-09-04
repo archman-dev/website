@@ -8,9 +8,9 @@ All code blocks and documentation in `docs/**/*.md(x)` must follow these explici
 1. Use `<Tabs>` and `<TabItem>` for language switching.
 2. Inside each `<TabItem>`, use a triple-backtick code block (```) with:
 
-- The language (e.g., `python`, `go`, `javascript`)
-- The `title` attribute (e.g., `title="foo.py"`)
-- The `showLineNumbers` attribute
+    - The language (e.g., `python`, `go`, `javascript`)
+    - The `title` attribute (e.g., `title="foo.py"`)
+    - The `showLineNumbers` attribute
 
 3. Do **not** use the `<CodeBlock>` component for tabbed code blocks.
 4. Example:
@@ -57,8 +57,9 @@ graph TD;
 1. Do not create or edit `.md` files for paradigm docs; only `.mdx`.
 2. Ensure all code examples are up-to-date and use free, accessible references.
 3. **Contrast for Visibility:** Whenever highlighting, coloring, or otherwise emphasizing text (including in diagrams, code, or callouts), always ensure the text color is sufficiently contrasted against its background for good visibility in both light and dark modes. Explicitly set text color if necessary to maintain readability.
+4. **Emphasis with Bold:** Use bold formatting (`**text**`) to emphasize key terms, actions, or concepts. This helps create accents and improves scannability.
 
-# Build Article Prompt (v1.0.0) — Deterministic Authoring Contract
+## Build Article Prompt (v1.0.0) — Deterministic Authoring Contract
 
 ## 5. Purpose
 
@@ -74,8 +75,8 @@ graph TD;
 1. Read and understand the canonical structure file before writing. If missing or malformed, stop and report.
 2. For each matched path:
 
-- If the file is an `index.md` or `index.mdx`, produce/maintain a shorter overview-style category intro (summary, mental model/decision aid, concise guidance, optional relevant quote).
-- For all other files, produce/maintain the full topic article with significant depth, sections, examples, and diagrams.
+    - If the file is an `index.md` or `index.mdx`, produce/maintain a shorter overview-style category intro (summary, mental model/decision aid, concise guidance, optional relevant quote).
+    - For all other files, produce/maintain the full topic article with significant depth, sections, examples, and diagrams.
 
 3. Keep tone professional yet engaging; avoid machine-like writing; show real-world context, trade-offs, and edge cases. Prefer concrete, actionable guidance over generic exposition.
 4. All external links must open in a new tab and use `rel="nofollow noopener noreferrer"` and display an external-link emoji (↗️).
@@ -88,7 +89,8 @@ graph TD;
   - 300–600 words. Include one visual (Mermaid preferred, wrapped in `<Figure>`) and a concise decision aid or mental model if appliable. Optionally include a short, relevant quote.
 - All other files (full topic):
   - Target 900–1600 words (minimum 800). Include at least:
-    - One decision model or sequence/state diagram (Mermaid, wrapped in `<Figure>`) where applicable.
+  - One decision model or sequence/state diagram (Mermaid, wrapped in `<Figure>`) where applicable.
+  - For every flow-like or multi-step code example (especially those shown in multiple languages), include a sequential call flow Figure (vertical Mermaid flowchart, `flowchart TB`) before the code tabs. The diagram must clearly show the order of function/procedure calls, decision points, and error/return paths, using quoted node labels for any punctuation or multi-word text. This Figure should be shared across all language tabs for the same example.
     - One decision matrix/table if the topic involves choices.
     - One practical example with copyable code/config (with filename + line numbers).
     - Explicit sections for: Patterns/Pitfalls, Edge cases, Operational considerations (SLO/SLI, rollouts), Security/Privacy/Compliance (if applicable), Observability (logs/metrics/traces), and Testing.
@@ -138,12 +140,15 @@ graph TD;
 - Alternatives and related topics (link internally).
 - References (with nofollow, external-link emoji, open in new tab).
 
+
 ## 12. Diagrams and Visualizations
 
 - Mermaid is preferred and already supported. Use vertical orientation for decision flows: `flowchart TB`.
+- For every flow-like or multi-step code example (especially those shown in multiple languages), you must include a sequential call flow Figure (vertical Mermaid flowchart, `flowchart TB`) before the code tabs. The diagram must clearly show the order of function/procedure calls, decision points, and error/return paths, using quoted node labels for any punctuation or multi-word text. This Figure should be shared across all language tabs for the same example.
 - Use the most suitable diagram for the idea: flowchart, sequence, state, class, ER, journey, pie/quadrant, timeline, or others the Mermaid version supports.
 - Complex architecture visuals may be authored externally and saved to `./static/img/...` (mirroring the doc path). Reference them with `/img/...` absolute paths.
 - All figures and diagrams must be oriented vertically (e.g., `flowchart TB` for Mermaid diagrams) to ensure consistency and readability. Avoid horizontal layouts unless absolutely necessary for clarity.
+- **If you need to represent a long tree structure (many categories or leaves), be aware that a horizontal (left-to-right) tree may not display well on most screens due to width limitations. In such cases, prefer a vertical (top-to-bottom) orientation, as shown in `docs/foundational-concepts/programming-paradigms/index.mdx`, to maximize readability and scrolling usability.**
 
 ## 13. Mermaid Authoring Guardrails (Lint/Build-Safe)
 

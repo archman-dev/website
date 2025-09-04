@@ -5,8 +5,12 @@ sidebar_position: 3
 
 import Showcase from "@site/src/components/Showcase";
 import Vs from "@site/src/components/Vs";
+import Figure from "@site/src/components/Figure";
+import Checklist from "@site/src/components/Checklist";
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
 
-Abstraction simplifies by focusing on the essential. Encapsulation enforces boundaries by hiding internals. Together, they reduce coupling, protect invariants, and enable change.
+**Abstraction simplifies by focusing on the essential, while encapsulation enforces boundaries by hiding internals.** Together, they are foundational for creating systems that are robust, maintainable, and able to evolve safely.
 
 ## Scope and boundaries
 
@@ -15,9 +19,9 @@ Abstraction simplifies by focusing on the essential. Encapsulation enforces boun
 
 ## Core ideas
 
-- Abstraction: expose what consumers need; omit details they don’t.
-- Encapsulation: prevent direct access to internals; enforce invariants through interfaces.
-- Stable abstractions: evolve behavior compatibly; separate policy from mechanism.
+- **Abstraction**: Exposing what a system component does (its capabilities) while hiding how it does it. Consumers interact with a stable, well-defined interface, ignorant of the internal complexity.
+- **Encapsulation**: Bundling a component's data and logic together and protecting it from outside interference. This is achieved by defining explicit boundaries and preventing direct access to a component's internal state.
+- **Stable Abstractions**: Designing interfaces (like APIs or event contracts) that can evolve without breaking consumers. This often involves separating the "what" (policy) from the "how" (mechanism).
 
 ### What “good” looks like
 
@@ -27,6 +31,7 @@ Abstraction simplifies by focusing on the essential. Encapsulation enforces boun
 - Replaceable internals: swap storage/transport without consumer changes.
 - Measurable contracts: latency/throughput envelopes and error modes are explicit.
 
+<Figure caption="A client interacts with a public interface (OrderService), which hides internal components like the database, queue, and workers.">
 ```mermaid title="abstraction-encapsulation.mmd" showLineNumbers
 flowchart TB
   subgraph api["Public API (Interface)"]
@@ -43,71 +48,112 @@ flowchart TB
   Q --> W
   W --> D
 ```
+</Figure>
 
-## Practical examples
+## Architectural Examples
 
-- Repository abstraction: hides data access specifics; switch from Postgres to a read model without leaking.
-- Payment gateway port: encapsulates HTTP details; swap providers behind a stable interface. See [Hexagonal / Ports & Adapters](../../architectural-styles/hexagonal-ports-and-adapters).
+<Showcase
+  title="API Gateway as an Abstraction Layer"
+  sections={[
+    {
+      label: 'Abstraction',
+      body: 'An API Gateway provides a single, stable entry point for a group of backend services. It abstracts away the underlying service topology, discovery mechanisms, and communication protocols. Clients interact with a simplified, unified API, ignorant of the complexity behind it.',
+    },
+    {
+      label: 'Encapsulation',
+      body: 'The gateway encapsulates cross-cutting concerns like authentication, rate limiting, request logging, and response caching. This prevents logic from being scattered and duplicated across multiple services, enforcing policy at the edge.',
+    },
+  ]}
+/>
 
-### Example: module facade with enforced invariants (TypeScript)
+<Figure caption="An API Gateway abstracts multiple backend microservices, providing a single interface for clients and encapsulating shared concerns.">
+```mermaid
+graph TD
+    subgraph "Client Domain"
+        Client[Mobile/Web Client]
+    end
 
-```ts title="orders/index.ts" showLineNumbers
-// Public facade: only re-export stable types and functions
-export type { Order, CreateOrderInput } from './model';
-export { createOrder } from './service';
-// Note: repositories, mappers, and HTTP clients remain private (not exported)
+    subgraph "System Boundary"
+        Gateway["API Gateway"]
+    end
+
+    subgraph "Backend Services (Internal)"
+        ServiceA[Orders Service]
+        ServiceB[Users Service]
+        ServiceC[Payments Service]
+    end
+
+    Client --> Gateway
+    Gateway --> ServiceA
+    Gateway --> ServiceB
+    Gateway --> ServiceC
 ```
+</Figure>
 
-```ts title="orders/service.ts" showLineNumbers
-import { repo } from './repo';
-import type { CreateOrderInput, Order } from './model';
+<Showcase
+  title="Bounded Context as an Encapsulation Boundary"
+  sections={[
+    {
+      label: 'Abstraction',
+      body: 'In Domain-Driven Design (DDD), a Bounded Context exposes its capabilities through well-defined public contracts, such as APIs or published domain events. It abstracts its internal data model, business rules, and implementation details.',
+    },
+    {
+      label: 'Encapsulation',
+      body: 'A Bounded Context encapsulates a specific part of the business domain, including its own ubiquitous language, data persistence, and logic. Direct access to its database from another context is strictly forbidden, protecting its integrity and autonomy.',
+    },
+  ]}
+/>
 
-export async function createOrder(input: CreateOrderInput): Promise<Order> {
-  assertValid(input); // boundary validation enforces invariants
-  const exists = await repo.exists(input.id);
-  if (exists) throw new ConflictError('order_exists');
-  const stored = await repo.save(mapToRecord(input));
-  return mapToPublic(stored);
-}
+<Figure caption="Two Bounded Contexts interact via public APIs and an Anti-Corruption Layer (ACL), encapsulating their internal models.">
+```mermaid
+graph TD
+    subgraph "Sales Context"
+        SalesAPI[Public API]
+        SalesLogic[Business Logic]
+        SalesDB[(Sales DB)]
+        SalesAPI --> SalesLogic --> SalesDB
+    end
+
+    subgraph "Shipping Context"
+        ShippingService[Shipping Service]
+        ACL[Anti-Corruption Layer]
+        ShippingLogic[Business Logic]
+        ShippingDB[(Shipping DB)]
+        ShippingService --> ACL --> ShippingLogic --> ShippingDB
+    end
+
+    SalesAPI -- "OrderPlaced Event" --> ShippingService
 ```
-
-```json title="package.json (excerpt)" showLineNumbers
-{
-  "name": "@acme/orders",
-  "exports": {
-    ".": "./dist/index.js"
-  },
-  "types": "./dist/index.d.ts"
-}
-```
-
-This keeps implementation files unaddressable by consumers, enforcing encapsulation at package level.
+</Figure>
 
 ## Patterns and pitfalls
 
-- Favor composition over inheritance when adding behavior. See [Composition Over Inheritance](../../core-design-and-programming-principles/general-principles/composition-over-inheritance)
-- Avoid over-abstracting; too many layers harm readability. See [Over-Abstracting / Too Many Layers](../../anti-patterns-and-pitfalls/over-abstracting-too-many-layers)
-- Encapsulate what varies: create boundaries around churn-heavy parts (e.g., vendors, schemas, auth providers).
+- Favor system composition: Build systems from loosely coupled, well-bounded services or components, rather than monolithic architectures.
+- Avoid distributed monoliths: Excessive inter-service dependencies or chatty communication patterns undermine encapsulation and increase fragility.
+- Encapsulate what varies: Place boundaries around volatile or rapidly changing subsystems (e.g., vendor APIs, external data feeds, compliance modules).
 
 Additional guidance
 
-- Prefer “seams” at protocol/provider boundaries (payment, email, storage) and domain seams (policy vs mechanism).
-- Don’t abstract the unproven: let duplication live until variation is understood.
-- Use adapters at the edges; keep your core in domain language, not vendor types.
+- Prefer seams at integration points: Use gateways, message brokers, or event buses to decouple domains and enable independent evolution.
+- Don’t abstract the unproven: Let operational duplication persist until a clear need for a shared abstraction emerges at the system level.
+- Use anti-corruption layers: When integrating with legacy or external systems, mediate interactions to protect your system’s model and contracts.
 
 Common anti-patterns
 
-- Leaky abstractions: exposing DB columns, HTTP codes, or vendor error objects through public APIs.
-- Anemic façades: pass-through layers providing no invariants or simplification.
-- Generic “manager/service/util” types with unclear responsibilities.
+- Leaky boundaries: Exposing internal data models, error codes, or operational details through public APIs or events.
+- Anemic gateways: Pass-through proxies that do not enforce policy, validation, or observability at the system edge.
+- Over-centralized control: Single points of failure or bottlenecks that violate the principle of distributed responsibility.
 
 ## When to use
 
-- Libraries/SDKs, cross-team APIs, plugin points, and domain seams.
+- Distributed systems, microservices, and service-oriented architectures where independent evolution, resilience, and clear contracts are required.
+- Platform boundaries, such as between internal systems and external partners, or between business domains.
+- Any system where change isolation, compliance, or operational safety is a concern.
 
 ## When not to use
 
-- Simple scripts or prototypes where indirection slows learning.
+- Simple, single-purpose systems or prototypes where the cost of indirection and boundary management outweighs the benefits.
+- Monolithic applications with tightly coupled logic that do not require independent deployment or scaling.
 
 ## Related topics
 
@@ -117,6 +163,7 @@ Common anti-patterns
 
 ## Decision guide: introduce or tighten an abstraction?
 
+<Figure caption="A decision flow for introducing or tightening an abstraction, based on factors like volatility, team boundaries, and complexity.">
 ```mermaid title="abstraction-decision-flow.mmd" showLineNumbers
 flowchart TB
   A["Considering an abstraction?"] --> B{"Volatility likely? (vendor/schema/protocol)"}
@@ -128,6 +175,7 @@ flowchart TB
   E -- No --> F[Delay; revisit after learning]
   D --> G[Define invariants, SLOs, and contract]
 ```
+</Figure>
 
 - Volatility: does the underlying choice change (vendors, schemas, protocols)?
 - Cross-team boundary: will consumers integrate independently from implementers?
@@ -173,26 +221,18 @@ If “yes” to 3+ items, introduce or strengthen the abstraction.
 
 ## Encapsulation techniques (language-agnostic)
 
-- Package-level exports: only export façades; keep internals unexported/private.
-- Process boundaries: encapsulate via service/process; expose API/protocol, not internals.
-- Type boundaries: map external/vendor types to your domain types at the edge.
-- Access modifiers and modules: use private/internal/"internal" packages (e.g., Go internal/, Java modules).
-- Data hiding: avoid exposing mutable structures; prefer immutable views or copies.
+- Service boundaries: Encapsulate logic and data within services, exposing only well-defined APIs or event contracts.
+- Network boundaries: Use gateways, firewalls, and service meshes to enforce access control and observability at system edges.
+- Data encapsulation: Share data between systems via immutable events, APIs, or contracts—never direct database access.
+- Policy enforcement: Centralize authentication, authorization, and validation at system boundaries, not within internal components.
+- Operational isolation: Use separate deployment units, scaling policies, and failure domains to prevent cascading failures.
 
 ## Testing and verification
 
-- Black-box tests at the facade: assert invariants and observable behavior only.
-- Characterization tests around legacy internals before refactors.
-- Contract tests at seams (ports/adapters) to prevent leakage of vendor details.
-- Mutation tests or error injection to validate invariants hold under fault.
-
-```yaml title="ci.yaml (excerpt)" showLineNumbers
-jobs:
-  verify_boundary:
-    steps:
-      - run: npm run test:public # only tests under tests/public/**
-      - run: oas-diff --fail-on-breaking old.yaml new.yaml # if API exposed
-```
+- End-to-end system tests: Validate that system boundaries enforce contracts, invariants, and error handling as expected.
+- Contract testing: Ensure that APIs, events, and integration points remain compatible as systems evolve.
+- Chaos engineering: Inject failures at the network, service, or infrastructure level to verify system resilience and encapsulation.
+- Observability validation: Confirm that logs, metrics, and traces are emitted at boundaries and can be correlated across the system.
 
 ## Operational considerations
 
@@ -212,23 +252,26 @@ jobs:
 - Expose metrics: request rate, success rate, P50/P95/P99 latency, saturation.
 - Trace key steps across adapters; annotate provider choices for diagnosis.
 
-## Design review checklist
-
-- Facade exposes coherent operations and hides internals; no leaking vendor types.
-- Boundary validates inputs and enforces invariants with clear, stable errors.
-- Replaceability proven via adapter: provider swap requires no consumer changes.
-- Contract documented: schemas, error envelope, SLOs, limits/quotas.
-- Observability in place: correlation IDs, metrics, traces at the facade.
-- Security reviewed: authn/authz model, data classification, secrets handling.
-- Rollout strategy: flags/canaries; rollback is safe and fast.
-- Tests cover facade behavior (black-box), CDC at seams, and error injection.
+<Checklist
+  title="Design Review Checklist"
+  items={[
+    { label: "Facade exposes coherent operations and hides internals; no leaking vendor types." },
+    { label: "Boundary validates inputs and enforces invariants with clear, stable errors." },
+    { label: "Replaceability proven via adapter: provider swap requires no consumer changes." },
+    { label: "Contract documented: schemas, error envelope, SLOs, limits/quotas." },
+    { label: "Observability in place: correlation IDs, metrics, traces at the facade." },
+    { label: "Security reviewed: authn/authz model, data classification, secrets handling." },
+    { label: "Rollout strategy: flags/canaries; rollback is safe and fast." },
+    { label: "Tests cover facade behavior (black-box), CDC at seams, and error injection." },
+  ]}
+/>
 
 ## Edge cases and trade-offs
 
-- Performance: extra layers add overhead; measure and collapse layers that don’t add invariants.
-- Debuggability: hiding internals can hinder diagnosis; add structured logs/metrics at the boundary.
-- Concurrency: encapsulate synchronization (locks/ETags/idempotency), don’t leak retry semantics.
-- Evolution: keep mapping/adapter layers thin to ease provider swaps.
+- Performance: Additional boundaries (gateways, brokers) can introduce latency and operational overhead; balance encapsulation with system efficiency.
+- Debuggability: Encapsulation can obscure root causes; invest in distributed tracing and boundary-level logging.
+- Consistency: System boundaries may require eventual consistency and careful contract management.
+- Evolution: Keep integration layers and anti-corruption boundaries as thin as possible to ease future migrations or provider swaps.
 
 ## References
 

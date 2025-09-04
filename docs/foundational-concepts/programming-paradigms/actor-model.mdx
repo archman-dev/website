@@ -50,11 +50,56 @@ graph TD
 - **Behavior**: An actor processes one message at a time, and can change its behavior for the next message it processes. This allows for stateful, finite-state-machine-like logic.
 - **Supervision**: Actors form hierarchies. A parent actor can supervise its children, deciding how to handle their failures (e.g., restart, stop, or escalate). This "let it crash" philosophy is key to building resilient systems.
 
-
-
 ## Examples
 
 These examples demonstrate the basic concept of an actor as an isolated process with a message queue, not a full-fledged, fault-tolerant implementation like Akka or Erlang/OTP.
+
+<Figure caption="Sequential call flow for the counter actor example.">
+```mermaid
+flowchart TB
+    subgraph Main Thread
+        A["main()"]
+        B["actor = CounterActor()"]
+        C["asyncio.create_task(actor.run())"]
+        D["actor.send(1)"]
+        E["actor.send(1)"]
+        F["actor.send('get')"]
+        G["await asyncio.sleep(0.1)"]
+    end
+
+    subgraph Actor Thread
+        H["actor.run()"]
+        I{"while True"}
+        J["message = await mailbox.get()"]
+        K{"if message == 'get'"}
+        L["print(f'Count is: {count}')"]
+        M{"elif isinstance(message, int)"}
+        N["count += message"]
+    end
+
+    A --> B
+    B --> C
+    C -- starts --> H
+    A --> D
+    D -- message --> J
+    J -- message=1 --> M
+    M -- Yes --> N
+    N --> I
+    A --> E
+    E -- message --> J
+    J -- message=1 --> M
+    M -- Yes --> N
+    N --> I
+    A --> F
+    F -- message --> J
+    J -- message='get' --> K
+    K -- Yes --> L
+    L --> I
+    A --> G
+    H --> I
+    I --> J
+```
+</Figure>
 
 <Tabs groupId="lang" queryString>
   <TabItem value="python" label="Python (asyncio)">
@@ -99,58 +144,58 @@ if __name__ == "__main__":
 package main
 
 import (
-	"fmt"
-	"sync"
+    "fmt"
+    "sync"
 )
 
 // An Actor is a goroutine that processes messages from a channel.
 type Actor struct {
-	mailbox chan interface{}
-	wg      *sync.WaitGroup
-	state   int
+    mailbox chan interface{}
+    wg      *sync.WaitGroup
+    state   int
 }
 
 func NewActor(wg *sync.WaitGroup) *Actor {
-	return &Actor{
-		mailbox: make(chan interface{}, 100), // Bounded mailbox
-		wg:      wg,
-		state:   0,
-	}
+    return &Actor{
+        mailbox: make(chan interface{}, 100), // Bounded mailbox
+        wg:      wg,
+        state:   0,
+    }
 }
 
 // Run starts the actor's message processing loop.
 func (a *Actor) Run() {
-	defer a.wg.Done()
-	for msg := range a.mailbox {
-		switch m := msg.(type) {
-		case int:
-			a.state += m
-		case string:
-			if m == "get" {
-				fmt.Printf("State is: %d\n", a.state)
-			}
-		}
-	}
+    defer a.wg.Done()
+    for msg := range a.mailbox {
+        switch m := msg.(type) {
+        case int:
+            a.state += m
+        case string:
+            if m == "get" {
+                fmt.Printf("State is: %d\n", a.state)
+            }
+        }
+    }
 }
 
 // Send posts a message to the actor's mailbox.
 func (a *Actor) Send(msg interface{}) {
-	a.mailbox <- msg
+    a.mailbox <- msg
 }
 
 func main() {
-	var wg sync.WaitGroup
-	actor := NewActor(&wg)
+    var wg sync.WaitGroup
+    actor := NewActor(&wg)
 
-	wg.Add(1)
-	go actor.Run()
+    wg.Add(1)
+    go actor.Run()
 
-	actor.Send(1)
-	actor.Send(1)
-	actor.Send("get")
+    actor.Send(1)
+    actor.Send(1)
+    actor.Send("get")
 
-	close(actor.mailbox) // Signal actor to terminate
-	wg.Wait()            // Wait for actor to finish
+    close(actor.mailbox) // Signal actor to terminate
+    wg.Wait()            // Wait for actor to finish
 }
 ```
   </TabItem>
@@ -176,16 +221,16 @@ import { parentPort } from 'node:worker_threads';
 let state = { count: 0 };
 
 parentPort.on('message', (msg) => {
-  switch (msg.type) {
-    case 'increment':
-      state.count += msg.payload;
-      break;
-    case 'get':
-      parentPort.postMessage(state);
-      break;
-    default:
-      console.log('Unknown message type');
-  }
+    switch (msg.type) {
+        case 'increment':
+            state.count += msg.payload;
+            break;
+        case 'get':
+            parentPort.postMessage(state);
+            break;
+        default:
+            console.log('Unknown message type');
+    }
 });
 ```
   </TabItem>
@@ -234,6 +279,14 @@ parentPort.on('message', (msg) => {
       label: "Message Serialization",
       body: "In a distributed system, messages must be serialized to be sent over the network. Choose an efficient and version-tolerant format.",
     },
+    {
+      label: "Observability",
+      body: "Monitoring actor systems requires visibility into message queues (mailbox depth), processing times, and error rates. Use correlation IDs to trace a single request across multiple actors. Distributed tracing is essential for understanding system behavior.",
+    },
+    {
+      label: "Security",
+      body: "Since actors encapsulate state and behavior, they can serve as security boundaries. However, in a distributed environment, messages sent over the network must be secured through encryption (TLS). Access control may be needed to ensure only authorized actors can send specific messages.",
+    },
   ]}
 />
 
@@ -278,3 +331,4 @@ parentPort.on('message', (msg) => {
     >
       The Actor Model in 10 Minutes by Brian Storti ↗️
     </a>
+4. Hewitt, Meijer and Szyperski: The Actor Model (everything you wanted to know, but were afraid to ask) - A conversation with Carl Hewitt, Erik Meijer, and Clemens Szyperski on the history and impact of the Actor model. Available on YouTube and other platforms.

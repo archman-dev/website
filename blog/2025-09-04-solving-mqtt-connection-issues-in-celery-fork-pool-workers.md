@@ -2,7 +2,9 @@
 slug: solving-mqtt-connections-in-celery-fork-pool-workers
 title: Mqtt connection management in Celery fork pool workers
 authors: [meshin-dev]
-tags: [software-development, architecture, celery, mqtt, rabbitmq, threading, connections]
+tags: [
+    "software-development", architecture, celery, mqtt, rabbitmq, threading, connections, python, multiprocessing, fork, sockets, "network-programming", "distributed-systems", message-broker, connection-pooling, thread-local, concurrency, parallelism, process-isolation, task-queue, broker, bugfix, troubleshooting, best-practices, performance, reliability, high-throughput, resource-management, "file-descriptors", debugging, code-smells, anti-patterns, python-tips, celery-tasks, mqtt-client, connection-management, "thread-safety", production, "distributed-computing"
+]
 ---
 
 # Solving MQTT Connection Issues in Celery Fork Pool Workers
