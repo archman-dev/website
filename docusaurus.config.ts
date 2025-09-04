@@ -12,8 +12,11 @@ const config: Config = {
 
   headTags: [
     {
-      tagName: 'meta',
-      attributes: { name: 'algolia-site-verification', content: '752CD9023ECFB28B' },
+      tagName: "meta",
+      attributes: {
+        name: "algolia-site-verification",
+        content: "752CD9023ECFB28B",
+      },
     },
   ],
 
@@ -52,8 +55,7 @@ const config: Config = {
           sidebarPath: "./sidebars.ts",
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
-          editUrl:
-            "https://github.com/archman-dev/website/tree/main",
+          editUrl: "https://github.com/archman-dev/website/tree/main",
         },
         blog: {
           showReadingTime: true,
@@ -63,8 +65,7 @@ const config: Config = {
           },
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
-          editUrl:
-            "https://github.com/archman-dev/website/tree/main",
+          editUrl: "https://github.com/archman-dev/website/tree/main",
           // Useful options to enforce blogging best practices
           onInlineTags: "warn",
           onInlineAuthors: "warn",
@@ -85,33 +86,33 @@ const config: Config = {
   clientModules: [require.resolve("./src/client/gtag-fallback.js")],
 
   plugins: [
+    //   [
+    //     "@easyops-cn/docusaurus-search-local",
+    //     {
+    // // whether to index docs pages (support multiple docs instances)
+    // docsRouteBasePath: ["/docs", "/editing"],
+
+    // // whether to index blog pages
+    // blogRouteBasePath: "/blog",
+
+    //       // whether to index static pages
+    //       indexPages: true,
+
+    //       // language of your documentation
+    //       language: "en",
+
+    //       // Highlight matched terms in search results
+    //       highlightSearchTermsOnTargetPage: true,
+    //     },
+    //   ],
     [
-      "@easyops-cn/docusaurus-search-local",
+      "@docusaurus/plugin-content-docs",
       {
-  // whether to index docs pages (support multiple docs instances)
-  docsRouteBasePath: ["/docs", "/editing"],
-
-  // whether to index blog pages
-  blogRouteBasePath: "/blog",
-
-        // whether to index static pages
-        indexPages: true,
-
-        // language of your documentation
-        language: "en",
-
-        // Highlight matched terms in search results
-        highlightSearchTermsOnTargetPage: true,
-      },
-    ],
-    [
-      '@docusaurus/plugin-content-docs',
-      {
-        id: 'editing',
-        path: 'editing',
-        routeBasePath: 'editing',
-        sidebarPath: require.resolve('./editing/sidebars.ts'),
-        editUrl: 'https://github.com/archman-dev/website/tree/main',
+        id: "editing",
+        path: "editing",
+        routeBasePath: "editing",
+        sidebarPath: require.resolve("./editing/sidebars.ts"),
+        editUrl: "https://github.com/archman-dev/website/tree/main",
       },
     ],
   ],
@@ -135,7 +136,7 @@ const config: Config = {
           label: "Learn",
         },
         { to: "/blog", label: "Blog", position: "left" },
-  { to: "/editing/", label: "Editing", position: "left" },
+        { to: "/editing/", label: "Editing", position: "left" },
         {
           href: "https://github.com/archman-dev",
           label: "GitHub",
@@ -188,17 +189,17 @@ const config: Config = {
     },
     prism: {
       theme: prismThemes.github,
-  darkTheme: prismThemes.dracula,
-  additionalLanguages: ['yaml', 'toml'],
+      darkTheme: prismThemes.dracula,
+      additionalLanguages: ["yaml", "toml"],
     },
     algolia: {
       // The application ID provided by Algolia
-      appId: 'LP3N4A03RL',
+      appId: "LP3N4A03RL",
 
       // Public API key: it is safe to commit it
-      apiKey: 'b5c2ed99a88f5f2719696be254ba7282',
+      apiKey: "b5c2ed99a88f5f2719696be254ba7282",
 
-      indexName: 'archman_dev_lp3n4a03rl_pages',
+      indexName: "archman_dev_lp3n4a03rl_pages",
 
       // Optional: see doc section below
       contextualSearch: true,
@@ -213,16 +214,22 @@ const config: Config = {
       // },
 
       // Optional: Algolia search parameters
-      searchParameters: {
-        facetFilters: ['language:en'],
-        attributesToHighlight: ['title', 'content', 'description', 'keywords', 'url'],
-      },
+      // searchParameters: {
+      //   facetFilters: ["language:en"],
+      //   attributesToHighlight: [
+      //     "title",
+      //     "content",
+      //     "description",
+      //     "keywords",
+      //     "url",
+      //   ],
+      // },
 
       // Optional: path for search page that enabled by default (`false` to disable it)
-      searchPagePath: 'search',
+      searchPagePath: "search",
 
       // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
-      insights: false,
+      insights: true,
     },
   } satisfies Preset.ThemeConfig,
   themes: ["@docusaurus/theme-mermaid"],
