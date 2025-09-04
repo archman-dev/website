@@ -1,29 +1,26 @@
 ---
 slug: welcome
-title: Welcome
-authors: [slorber, yangshun]
-tags: [facebook, hello, docusaurus]
+title: Welcome to the Archman.dev Blog!
+authors: [meshin-dev]
+tags: [welcome, architecture, software-development]
 ---
 
-[Docusaurus blogging features](https://docusaurus.io/docs/blog) are powered by the [blog plugin](https://docusaurus.io/docs/api/plugins/@docusaurus/plugin-content-blog).
+Welcome to the official blog for Archman.dev!
 
-Here are a few tips you might find useful.
+I'm excited to launch this space where we can dive deep into the world of software architecture. Whether you're a seasoned architect, a senior engineer looking to grow, or just passionate about building robust and scalable systems, you've come to the right place.
 
-<!-- truncate -->
+The goal of this blog is to create a community-driven resource for all things architecture. We'll be exploring a wide range of topics, including:
 
-Simply add Markdown files (or folders) to the `blog` directory.
+* **Foundational Concepts:** The core principles that every architect should know.
+* **Architectural Styles:** From monoliths to microservices and everything in between.
+* **Design Patterns:** Proven solutions to common problems.
+* **Cloud-Native Architecture:** Building for the cloud.
+* **Domain-Driven Design:** Aligning your architecture with the business domain.
+* **API Design:** Crafting clean and effective interfaces.
+* ...and much more!
 
-Regular blog authors can be added to `authors.yml`.
+This is just the beginning. I plan to share insights, best practices, and lessons learned from my own experience, and I hope you'll join the conversation. Feel free to leave comments, ask questions, and share your own perspectives.
 
-The blog post date can be extracted from filenames, such as:
+Thank you for visiting, and I look forward to building this community with you.
 
-- `2019-05-30-welcome.md`
-- `2019-05-30-welcome/index.md`
-
-A blog post folder can be convenient to co-locate blog post images:
-
-![Docusaurus Plushie](./docusaurus-plushie-banner.jpeg)
-
-The blog supports tags as well!
-
-**And if you don't want a blog**: just delete this directory, and use `blog: false` in your Docusaurus config.
+Happy architecting!
