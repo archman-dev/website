@@ -57,7 +57,11 @@ flowchart TB
   sections={[
     {
       label: 'Abstraction',
-      body: 'An API Gateway provides a single, stable entry point for a group of backend services. It abstracts away the underlying service topology, discovery mechanisms, and communication protocols. Clients interact with a simplified, unified API, ignorant of the complexity behind it.',
+      body: (
+        <>
+          An <a href="../../distributed-systems-and-microservices/communication/api-gateway" >API Gateway</a> provides a single, stable entry point for a group of backend services. It abstracts away the underlying service topology, discovery mechanisms, and communication protocols. Clients interact with a simplified, unified API, ignorant of the complexity behind it.
+        </>
+      ),
     },
     {
       label: 'Encapsulation',
@@ -67,26 +71,26 @@ flowchart TB
 />
 
 <Figure caption="An API Gateway abstracts multiple backend microservices, providing a single interface for clients and encapsulating shared concerns.">
-```mermaid
-graph TD
-    subgraph "Client Domain"
-        Client[Mobile/Web Client]
+```mermaid title="api-gateway-abstracts.mmd" showLineNumbers
+flowchart TB
+    subgraph client_domain["Client Domain"]
+        client["Mobile/Web Client"]
     end
 
-    subgraph "System Boundary"
-        Gateway["API Gateway"]
+    subgraph system_boundary["System Boundary"]
+        gateway["API Gateway"]
     end
 
-    subgraph "Backend Services (Internal)"
-        ServiceA[Orders Service]
-        ServiceB[Users Service]
-        ServiceC[Payments Service]
+    subgraph backend_services["Backend Services (Internal)"]
+        service_a["Orders Service"]
+        service_b["Users Service"]
+        service_c["Payments Service"]
     end
 
-    Client --> Gateway
-    Gateway --> ServiceA
-    Gateway --> ServiceB
-    Gateway --> ServiceC
+    client --> gateway
+    gateway --> service_a
+    gateway --> service_b
+    gateway --> service_c
 ```
 </Figure>
 
@@ -95,7 +99,11 @@ graph TD
   sections={[
     {
       label: 'Abstraction',
-      body: 'In Domain-Driven Design (DDD), a Bounded Context exposes its capabilities through well-defined public contracts, such as APIs or published domain events. It abstracts its internal data model, business rules, and implementation details.',
+      body: (
+        <>
+          In Domain-Driven Design (DDD), a <a href="../../domain-driven-design/strategic-design/bounded-contexts">Bounded Context</a> exposes its capabilities through well-defined public contracts, such as APIs or published domain events. It abstracts its internal data model, business rules, and implementation details.
+        </>
+      ),
     },
     {
       label: 'Encapsulation',
@@ -105,24 +113,24 @@ graph TD
 />
 
 <Figure caption="Two Bounded Contexts interact via public APIs and an Anti-Corruption Layer (ACL), encapsulating their internal models.">
-```mermaid
-graph TD
-    subgraph "Sales Context"
-        SalesAPI[Public API]
-        SalesLogic[Business Logic]
-        SalesDB[(Sales DB)]
-        SalesAPI --> SalesLogic --> SalesDB
+```mermaid title="bounded-contexts-acl.mmd" showLineNumbers
+flowchart TB
+    subgraph sales_ctx["Sales Context"]
+        sales_api["Public API"]
+        sales_logic["Business Logic"]
+        sales_db[("Sales DB")]
+        sales_api --> sales_logic --> sales_db
     end
 
-    subgraph "Shipping Context"
-        ShippingService[Shipping Service]
-        ACL[Anti-Corruption Layer]
-        ShippingLogic[Business Logic]
-        ShippingDB[(Shipping DB)]
-        ShippingService --> ACL --> ShippingLogic --> ShippingDB
+    subgraph shipping_ctx["Shipping Context"]
+        shipping_svc["Shipping Service"]
+        acl["Anti-Corruption Layer"]
+        shipping_logic["Business Logic"]
+        shipping_db[("Shipping DB")]
+        shipping_svc --> acl --> shipping_logic --> shipping_db
     end
 
-    SalesAPI -- "OrderPlaced Event" --> ShippingService
+    sales_api -- "OrderPlaced Event" --> shipping_svc
 ```
 </Figure>
 
@@ -132,13 +140,13 @@ graph TD
 - Avoid distributed monoliths: Excessive inter-service dependencies or chatty communication patterns undermine encapsulation and increase fragility.
 - Encapsulate what varies: Place boundaries around volatile or rapidly changing subsystems (e.g., vendor APIs, external data feeds, compliance modules).
 
-Additional guidance
+### Additional guidance
 
 - Prefer seams at integration points: Use gateways, message brokers, or event buses to decouple domains and enable independent evolution.
 - Don’t abstract the unproven: Let operational duplication persist until a clear need for a shared abstraction emerges at the system level.
 - Use anti-corruption layers: When integrating with legacy or external systems, mediate interactions to protect your system’s model and contracts.
 
-Common anti-patterns
+### Common anti-patterns
 
 - Leaky boundaries: Exposing internal data models, error codes, or operational details through public APIs or events.
 - Anemic gateways: Pass-through proxies that do not enforce policy, validation, or observability at the system edge.
@@ -218,6 +226,138 @@ If “yes” to 3+ items, introduce or strengthen the abstraction.
     },
   ]}
 />
+
+## Decision matrix
+
+| Option | Cognitive load (consumer) | Change isolation | Runtime overhead |
+| --- | --- | --- | --- |
+| No abstraction (direct calls) | High | Low | Low |
+| Library/module facade | Medium | Medium | Low |
+| Service facade / API Gateway | Low | High | Medium |
+
+## Practical example: Facade hides provider details
+
+<Figure caption="Call flow: client invokes facade which selects a provider and handles errors, keeping internals hidden from the caller.">
+```mermaid title="facade-call-flow.mmd" showLineNumbers
+flowchart TB
+    client["Client"] --> facade["StorageFacade.save()"]
+    facade --> choose["Select provider by config/feature flag"]
+    choose --> provider_a["S3Provider.put()"]
+    choose --> provider_b["GCSProvider.put()"]
+    provider_a --> ok_a["Return URL or ID"]
+    provider_b --> ok_b["Return URL or ID"]
+    ok_a --> facade
+    ok_b --> facade
+    facade --> client
+```
+</Figure>
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+
+  ```python title="storage_facade.py" showLineNumbers
+  from typing import Protocol
+
+  class Storage(Protocol):
+      def put(self, key: str, data: bytes) -> str: ...
+
+  class S3Storage:
+      def put(self, key: str, data: bytes) -> str:
+          # call AWS SDK
+          return f"s3://bucket/{key}"
+
+  class GCSStorage:
+      def put(self, key: str, data: bytes) -> str:
+          # call GCP SDK
+          return f"gs://bucket/{key}"
+
+  class StorageFacade:
+      def __init__(self, primary: Storage, fallback: Storage | None = None):
+          self.primary = primary
+          self.fallback = fallback
+
+      def save(self, key: str, data: bytes) -> str:
+          try:
+              return self.primary.put(key, data)
+          except Exception:
+              if self.fallback is None:
+                  raise
+              return self.fallback.put(key, data)
+
+  # Usage
+  facade = StorageFacade(S3Storage(), GCSStorage())
+  facade.save("order/123.json", b"{}")
+  ```
+
+  </TabItem>
+  <TabItem value="go" label="Go">
+
+  ```go title="storage_facade.go" showLineNumbers
+  package storage
+
+  type Storage interface {
+      Put(key string, data []byte) (string, error)
+  }
+
+  type S3Storage struct{}
+  func (S3Storage) Put(key string, data []byte) (string, error) {
+      return "s3://bucket/" + key, nil
+  }
+
+  type GCSStorage struct{}
+  func (GCSStorage) Put(key string, data []byte) (string, error) {
+      return "gs://bucket/" + key, nil
+  }
+
+  type Facade struct{
+      Primary Storage
+      Fallback Storage
+  }
+
+  func (f Facade) Save(key string, data []byte) (string, error) {
+      if url, err := f.Primary.Put(key, data); err == nil { return url, nil }
+      if f.Fallback == nil { return "", fmt.Errorf("no fallback") }
+      return f.Fallback.Put(key, data)
+  }
+  ```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+  ```javascript title="storageFacade.js" showLineNumbers
+  class S3Storage {
+      put(key, data) {
+          return `s3://bucket/${key}`
+      }
+  }
+
+  class GCSStorage {
+      put(key, data) {
+          return `gs://bucket/${key}`
+      }
+  }
+
+  class StorageFacade {
+      constructor(primary, fallback) {
+          this.primary = primary
+          this.fallback = fallback
+      }
+      save(key, data) {
+          try { return this.primary.put(key, data) }
+          catch (e) {
+              if (!this.fallback) throw e
+              return this.fallback.put(key, data)
+          }
+      }
+  }
+
+  // Usage
+  const facade = new StorageFacade(new S3Storage(), new GCSStorage())
+  facade.save('order/123.json', Buffer.from('{}'))
+  ```
+
+  </TabItem>
+</Tabs>
 
 ## Encapsulation techniques (language-agnostic)
 

@@ -8,6 +8,8 @@ import Figure from '@site/src/components/Figure';
 import Showcase from "@site/src/components/Showcase";
 import Vs from "@site/src/components/Vs";
 import Checklist from "@site/src/components/Checklist";
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 # Architecture vs. Design vs. Implementation
 
@@ -55,7 +57,7 @@ This article clarifies the boundaries and handoffs between architecture, design,
 
 | Level          | Primary goal                                              | Typical scope                                           | Decision examples                                                                               | Time horizon | Cost of change | Common artifacts                                         |
 | -------------- | --------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------ | -------------- | -------------------------------------------------------- |
-| Architecture   | Align the system to business goals and quality attributes | System boundaries, runtime topology, data & integration | Monolith vs microservices; sync vs async; data ownership; security posture; deployment topology | Long‑lived   | High           | Architecture principles, views/diagrams, ADRs            |
+| Architecture   | Align the system to business goals and quality attributes | System boundaries, runtime topology, data & integration | [Monolith](../../architectural-styles/monolith) vs [Microservices](../../architectural-styles/microservices); sync vs async; data ownership; security posture; deployment topology | Long‑lived   | High           | Architecture principles, views/diagrams, ADRs            |
 | Design         | Shape modules/components to realize the architecture      | Module/API boundaries, data models, patterns            | Aggregates and repositories; interfaces; error handling strategy; caching strategy              | Medium       | Medium         | UML/C4 component views, API contracts, sequence diagrams |
 | Implementation | Make the design executable, correct, and maintainable     | Code, tests, frameworks, configuration                  | Language, framework, libraries; function/class structure; logging; retries; feature flags       | Short        | Low            | Source code, tests, configs                              |
 
@@ -123,9 +125,9 @@ Business goal: “Enable online checkout with low latency and high availability.
       body: (
         <>
           Choose modular monolith now with seams for later extraction; async
-          outbox for payment events; database per module boundary; 99.9%
-          availability target; blue/green deployment. Security posture: mTLS
-          internal, OAuth2 for external APIs, PII encryption at rest.
+          [outbox](../../distributed-systems-and-microservices/data-in-microservices/outbox-inbox-change-data-capture-cdc) for payment events; [database per service](../../distributed-systems-and-microservices/data-in-microservices/database-per-service) at module boundaries; 99.9%
+          availability target; [blue/green deployment](../../delivery-engineering/ci-cd-pipelines/blue-green-rolling-canary). Security posture: [mTLS](../../cloud-native-and-runtime-topology/networking/network-policies-mtls)
+          internal, OAuth2 for external APIs, [PII encryption at rest](../../security-architecture/data-protection/encryption-at-rest-envelope-encryption).
         </>
       ),
       tone: "info",
@@ -173,20 +175,102 @@ PSP -> Worker: result
 Worker -> Domain: apply(PaymentAuthorized|Failed)
 ```
 
-```python title="payment_client.py (implementation detail)" showLineNumbers
-import requests, time, random
-
-def call_psp(payload, retries=3):
-    for attempt in range(1, retries + 1):
-        try:
-            resp = requests.post('https://psp.example/authorize', json=payload, timeout=2)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            if attempt == retries:
-                raise
-            time.sleep(min(0.25 * (2 ** attempt) + random.uniform(0, 0.1), 2.0))
+<Figure caption="Call flow with retries and backoff for PSP authorization.">
+```mermaid
+flowchart TB
+    S["Start"] --> A["Attempt 1..N"]
+    A --> T["POST authorize()"]
+    T -->|Success| R["Return result"]
+    T -->|Error/Timeout| C{"More attempts left?"}
+    C -- Yes --> B["Backoff with jitter"]
+    B --> A
+    C -- No --> E["Raise/propagate error"]
 ```
+</Figure>
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+
+  ```python title="payment_client.py" showLineNumbers
+  import requests, time, random
+
+  def call_psp(payload, retries=3):
+      for attempt in range(1, retries + 1):
+          try:
+              resp = requests.post('https://psp.example/authorize', json=payload, timeout=2)
+              resp.raise_for_status()
+              return resp.json()
+          except Exception as e:
+              if attempt == retries:
+                  raise
+              time.sleep(min(0.25 * (2 ** attempt) + random.uniform(0, 0.1), 2.0))
+  ```
+
+  </TabItem>
+  <TabItem value="go" label="Go">
+
+  ```go title="main.go" showLineNumbers
+  package main
+
+  import (
+      "errors"
+      "math"
+      "math/rand"
+      "net/http"
+      "time"
+  )
+
+  func callPSP(payload []byte, retries int) ([]byte, error) {
+      client := &http.Client{Timeout: 2 * time.Second}
+      url := "https://psp.example/authorize"
+      for attempt := 1; attempt <= retries; attempt++ {
+          req, _ := http.NewRequest(http.MethodPost, url, nil)
+          resp, err := client.Do(req)
+          if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+              return []byte("ok"), nil
+          }
+          if attempt == retries {
+              if err != nil {
+                  return nil, err
+              }
+              return nil, errors.New("psp failed")
+          }
+          backoff := math.Min(0.25*math.Pow(2, float64(attempt))+rand.Float64()*0.1, 2.0)
+          time.Sleep(time.Duration(backoff * float64(time.Second)))
+      }
+      return nil, errors.New("unreachable")
+  }
+  ```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+  ```javascript title="index.js" showLineNumbers
+  import fetch from 'node-fetch'
+
+  export async function callPsp(payload, retries = 3) {
+    const url = 'https://psp.example/authorize'
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: { 'content-type': 'application/json' },
+          // emulate a timeout using AbortController in real code
+        })
+        if (resp.ok) return await resp.json()
+        throw new Error(`psp ${resp.status}`)
+      } catch (err) {
+        if (attempt === retries) throw err
+        const backoff = Math.min(0.25 * 2 ** attempt + Math.random() * 0.1, 2.0)
+        await new Promise(r => setTimeout(r, backoff * 1000))
+      }
+    }
+  }
+  ```
+
+  </TabItem>
+</Tabs>
 
 The ADR and sequence are architectural/design artifacts; the Python snippet is implementation—replaceable without revisiting the architecture.
 
@@ -201,8 +285,8 @@ The ADR and sequence are architectural/design artifacts; the Python snippet is i
         <>
           Encourage thin architecture docs (principles, constraints, a few key
           views). Prefer decisions that keep options open (e.g., modular
-          monolith with clear seams). Capture significant choices as ADRs; link
-          to code and docs. Keep public contracts explicit; use contract tests.
+          monolith with clear seams). Capture significant choices as [ADRs](../../documentation-and-modeling/architecture-decision-records-adr/); link
+          to code and docs. Keep public contracts explicit; use [contract tests](../../quality-attributes/testability/contract-and-consumer-driven-tests).
           Treat quality attributes as first‑class.
         </>
       ),

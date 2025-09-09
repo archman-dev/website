@@ -9,6 +9,7 @@ Understanding who your stakeholders are and what they care about is the starting
 import Figure from '@site/src/components/Figure';
 import Checklist from '@site/src/components/Checklist';
 import Showcase from '@site/src/components/Showcase';
+import DecisionMatrix from '@site/src/components/DecisionMatrix';
 
 ## Core ideas
 
@@ -61,6 +62,59 @@ flowchart TB
 ```
 </Figure>
 
+## Decision matrix: prioritization approaches
+
+<DecisionMatrix
+  caption="Comparing common ways to prioritize stakeholder concerns."
+  columns={[
+    'Best for',
+    'Pros',
+    'Cons',
+    'Inputs/Signals',
+  ]}
+  rows={[
+    {
+      name: 'ATAM-style evaluation',
+      cells: [
+        'Architecture trade-off analysis across qualities',
+        'Structured scenarios, risk themes, sensitivity points',
+        'Workshop time and facilitation needed',
+        'Quality attribute scenarios, risks, sensitivity points',
+      ],
+      recommended: true,
+      highlightTone: 'positive',
+    },
+    {
+      name: 'WSJF (Weighted Shortest Job First)',
+      cells: [
+        'Economic prioritization where sequencing matters',
+        'Balances value, urgency, and effort',
+        'Quality signals may be underweighted if hard to quantify',
+        'Business value, time criticality, risk reduction, effort',
+      ],
+    },
+    {
+      name: 'RICE (Reach, Impact, Confidence, Effort)',
+      cells: [
+        'Backlog triage for product/UX-heavy concerns',
+        'Simple scoring; highlights confidence explicitly',
+        'Not tailored to cross-cutting qualities or systemic risks',
+        'Reach/impact estimates, confidence, effort',
+      ],
+    },
+    {
+      name: 'Risk-first (Likelihood × Impact)',
+      cells: [
+        'Safety, compliance, resilience-critical systems',
+        'Focuses on reducing catastrophic exposure early',
+        'May delay upside/value-oriented improvements',
+        'Threats, hazards, incident history, regulatory duties',
+      ],
+      highlightTone: 'info',
+    },
+  ]}
+/>
+
 <Showcase
   title="Examples (Scenarios)"
   sections={[
@@ -85,10 +139,15 @@ flowchart TB
 - Maintain a traceability matrix from concern → quality attribute scenario → view(s) → ADR(s) → tests/monitors.
 - Turn critical concerns into budgets and guardrails (latency/error budgets, cost/bandwidth budgets, policy-as-code for security/compliance).
 
-### Operational and observability considerations
+### Operational considerations
 
 - Capture top concerns as SLIs/SLOs and wire dashboards early; align alerting to error budgets, not just static thresholds.
+- Define rollout and rollback strategies that respect stakeholder tolerances (e.g., canary for risky security changes, staged enablement for high-impact UX changes).
+
+### Observability
+
 - Ensure trace context and correlation IDs flow across all critical paths to tie concerns to actual runtime behavior. See [Observability & Operations](../../observability-and-operations/).
+- Instrument logs and metrics using a common vocabulary for concerns (e.g., latency_budget_ms, error_budget_burn) so dashboards reflect stakeholder language.
 
 ### Common pitfalls
 
@@ -96,6 +155,45 @@ flowchart TB
 - Ignoring “quiet” stakeholders: compliance, support, or downstream integrators not present in early meetings.
 - Treating security and operability as afterthoughts—these are primary concerns, not add‑ons.
 - Design by committee: lack of a clear decision owner stalls progress; use ADRs and RACI.
+
+## Security, privacy, and compliance
+
+- Map stakeholder concerns to data classification and control objectives (e.g., PII handling, encryption, key management). See [Security Architecture](../../security-architecture/).
+- Express privacy/compliance requirements as policy-as-code where feasible (e.g., data residency, retention, access approval workflows) and include them in CI checks.
+- Ensure third-party integrations reflect contractual obligations (SLAs, deprecations) and regulatory duties in relevant regions.
+
+## Testing
+
+- Turn top quality attribute scenarios into executable checks (fitness functions): latency budgets, availability SLO burn-rate alerts, concurrency limits.
+- Add contract tests for external/partner APIs to guard versioning and schema evolution promises.
+- Include chaos and failure-injection tests to validate resilience concerns and rollback paths.
+
+## Edge cases
+
+- Conflicting priorities between powerful stakeholders (e.g., speed vs. safety): require explicit trade-off decision and ADR.
+- Multi-tenant contexts: isolation, noisy neighbor effects, data segmentation by region/customer class.
+- Long-lived contracts: deprecation windows, compatibility shims, and backfill strategies for data schemas.
+
+## Practical example: SLO config
+
+```yaml title="slo.yaml" showLineNumbers
+service: checkout
+slos:
+    - name: availability
+      objective: 99.9
+      window: 30d
+      sli:
+          type: events
+          good_events: http_requests{status_class="2xx"}
+          total_events: http_requests{status_class=~"[245]xx"}
+      alerts:
+          - name: burn-rate-fast
+            burn_rate: 14.4
+            window: 5m
+          - name: burn-rate-slow
+            burn_rate: 2.0
+            window: 1h
+```
 
 ## When to use
 

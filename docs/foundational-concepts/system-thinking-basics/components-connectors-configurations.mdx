@@ -3,12 +3,8 @@ title: "Components, Connectors, and Configurations"
 sidebar_label: "Components & Connectors"
 ---
 
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
 import Figure from '@site/src/components/Figure';
 import Checklist from '@site/src/components/Checklist';
-import Vs from '@site/src/components/Vs';
-import Showcase from '@site/src/components/Showcase';
 import ProsCons from '@site/src/components/ProsCons';
 
 # Components, Connectors, and Configurations
@@ -34,14 +30,14 @@ A **configuration** is the structural arrangement of components and connectors. 
 
 - **Examples**: A client-server topology, a pipeline of data-processing services, a star-shaped topology with a central message broker.
 
-<Figure caption="A simple client-server configuration showing two components (Client, Server) linked by a connector (REST API).">
+<Figure caption="A simple client–server configuration showing two components (Client, Server) linked by a connector (REST API).">
 ```mermaid
-graph TD
-    subgraph "System Configuration"
-        Client -- "REST API (Connector)" --> Server
-    end
-    classDef component fill:#f9f,stroke:#333,stroke-width:2px,color:#333;
-    class Client,Server component;
+flowchart TB
+  subgraph sys["System Configuration"]
+    Client["Client"] -->|REST| Server["Server"]
+  end
+  classDef component fill:#f9f,stroke:#333,stroke-width:2px,color:#333;
+  class Client,Server component;
 ```
 </Figure>
 
@@ -63,21 +59,73 @@ Let's consider a simple e-commerce system.
 
 <Figure caption="Configuration for an e-commerce system's order processing flow.">
 ```mermaid
-graph TD
-    A[Client] -- "HTTP POST /orders" --> B(OrderService)
-    B -- "gRPC GetProduct" --> C(ProductService)
-    B -- "SQL INSERT" --> D(PostgreSQL DB)
-    B -- "Publish Event" --> E(Kafka Topic: order-events)
+flowchart TB
+  A["Client"] -->|"HTTP POST /orders"| B["OrderService"]
+  B -->|"gRPC GetProduct"| C["ProductService"]
+  B -->|"SQL INSERT"| D["PostgreSQL DB"]
+  B -->|"Publish Event"| E["Kafka Topic: order-events"]
 
-    classDef service fill:#D6EAF8,stroke:#2E86C1,stroke-width:2px,color:#000;
-    classDef db fill:#E8DAEF,stroke:#8E44AD,stroke-width:2px,color:#000;
-    classDef topic fill:#D5F5E3,stroke:#28B463,stroke-width:2px,color:#000;
+  classDef service fill:#D6EAF8,stroke:#2E86C1,stroke-width:2px,color:#000;
+  classDef db fill:#E8DAEF,stroke:#8E44AD,stroke-width:2px,color:#000;
+  classDef topic fill:#D5F5E3,stroke:#28B463,stroke-width:2px,color:#000;
 
-    class B,C service;
-    class D db;
-    class E topic;
+  class B,C service;
+  class D db;
+  class E topic;
 ```
 </Figure>
+
+## Practical Configuration Example
+
+A minimal `docker-compose.yml` to stand up the components and connectors from the example above.
+
+```yaml title="docker-compose.yml" showLineNumbers
+version: "3.9"
+services:
+  product:
+    image: ghcr.io/example/product-service:latest
+    environment:
+      - GRPC_PORT=50051
+    ports:
+      - "50051:50051"
+
+  order:
+    image: ghcr.io/example/order-service:latest
+    depends_on:
+      - product
+      - postgres
+      - kafka
+    environment:
+      - PRODUCT_GRPC_ADDR=product:50051
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/orders?sslmode=disable
+      - KAFKA_BROKERS=kafka:9092
+    ports:
+      - "8080:8080"
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=orders
+    ports:
+      - "5432:5432"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+```
 
 ## Decision Model: Choosing the Right Connector
 
@@ -126,13 +174,19 @@ flowchart TB
   ]}
   cons={[
     'Do not let components bypass connectors and interact directly (e.g., direct DB access across services).',
-    'Avoid creating a "distributed monolith" by using synchronous, blocking calls everywhere.',
-    'Do not share databases between components (services) as it creates high coupling.',
+    'Avoid creating a "distributed monolith" by using synchronous, blocking calls everywhere (see ../../anti-patterns-and-pitfalls/distributed-monolith).',
+    'Do not share databases between components (services) as it creates high coupling (see ../../anti-patterns-and-pitfalls/shared-database-across-services).',
     'Do not build custom connector logic when a standard, off-the-shelf solution exists.'
   ]}
-  highlight="pros"
-  highlightTone="positive"
 />
+
+## Edge Cases and Failure Modes
+
+- Timeouts and retries: set per-connector deadlines; prefer exponential backoff with jitter.
+- Partial failures: design idempotent handlers and compensating actions; prefer async where feasible.
+- Duplicate deliveries: ensure consumers are idempotent; use deduplication keys.
+- Thundering herds: apply rate limits and circuit breakers at connector boundaries.
+- Multi-tenant isolation: avoid cross-tenant data leakage; segregate topics/queues and database schemas.
 
 ## Operational Considerations
 
@@ -151,6 +205,13 @@ flowchart TB
 - **Logs**: Components should produce structured logs. Connectors should add correlation IDs to trace requests as they flow through the system.
 - **Metrics**: Each component should expose key metrics (e.g., request rate, error rate, duration - RED metrics). Connectors can also provide metrics, such as queue length for a message broker.
 - **Traces**: Use distributed tracing to visualize the entire lifecycle of a request across multiple components and connectors. This is invaluable for debugging performance issues.
+
+## Testing
+
+- Contract tests: verify component interfaces and connector schemas (e.g., CDC/AsyncAPI for events).
+- Resilience tests: inject timeouts, retries, and broker outages; assert graceful degradation.
+- Performance tests: measure latency budgets across connectors; include p99s and saturation.
+- End-to-end tests: cover critical flows across components using synthetic data and correlation IDs.
 
 ## When to Use / When Not to Use
 
@@ -182,9 +243,9 @@ flowchart TB
 />
 
 ## Related Topics
-- [System Thinking Overview](../index.mdx)
-- [Interfaces & Contracts](./interfaces-and-contracts.mdx)
-- [Abstractions & Encapsulation](./abstractions-and-encapsulation.mdx)
+- [System Thinking Overview](../index)
+- [Interfaces & Contracts](./interfaces-and-contracts)
+- [Abstractions & Encapsulation](./abstractions-and-encapsulation)
 - [Architectural Styles](../../architectural-styles)
 
 ## References

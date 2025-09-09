@@ -70,6 +70,20 @@ flowchart TB
 
 The examples show a simple, conceptual windowed aggregation. Real-world stream processors like Flink or Kafka Streams provide robust, fault-tolerant implementations of these concepts.
 
+<Figure caption="Sequential call flow for windowed aggregation across all language tabs.">
+```mermaid
+flowchart TB
+  A["Read next event"] --> B["Calculate bucket timestamp"]
+  B --> C["Construct bucket key"]
+  C --> D["Update in-memory/state-backend aggregate"]
+  D --> E{"Emit now? (timer/watermark)"}
+  E -- Yes --> F["Emit updated aggregate downstream"]
+  E -- No --> G["Wait for more events or timer"]
+  F --> H["Checkpoint state periodically"]
+  G --> H
+```
+</Figure>
+
 <Tabs groupId="lang" queryString>
   <TabItem value="python" label="Python (Conceptual)">
 ```python title="conceptual_pipeline.py" showLineNumbers
@@ -182,6 +196,14 @@ export function createWindowedAggregator(windowMs) {
   highlightTone="positive"
 />
 
+## Decision matrix (choosing a windowing strategy)
+
+| Window type | Typical use | Pros | Cons |
+| --- | --- | --- | --- |
+| Tumbling | Periodic KPIs (e.g., 5‑min counts) | Simple, non‑overlapping | Boundary effects at window edges |
+| Sliding | Rolling statistics | Smoother trends, more data points | Higher compute due to overlaps |
+| Session | User activity bursts | Captures natural inactivity gaps | Requires tuning session gap; late data tricky |
+
 <Showcase
   title="Operational Considerations"
   sections={[
@@ -203,6 +225,13 @@ export function createWindowedAggregator(windowMs) {
     },
   ]}
 />
+
+## Edge cases
+
+- Late or out‑of‑order events: use watermarks and allowed lateness; route extreme lateness to side outputs.
+- Hot keys/skew: shard keys (e.g., add random salt) and re‑aggregate; consider load‑aware partitioning.
+- Large windows/state: enable incremental aggregation and compaction; set state TTLs.
+- Exactly‑once sinks: prefer idempotent upserts and transactional/atomic writes where supported; avoid dual‑write hazards.
 
 <Showcase
     title="Security Considerations"
@@ -240,6 +269,13 @@ export function createWindowedAggregator(windowMs) {
     ]}
 />
 
+## Testing
+
+- Deterministic window tests: feed synthetic, time‑stamped events (with reordering) and assert window outputs under configured watermarks.
+- State recovery: crash between checkpoints and verify exactly‑once/at‑least‑once guarantees per design.
+- Backpressure: simulate bursty sources and slow sinks; assert throughput and bounded latency within SLOs.
+- Schema evolution: validate forward/backward compatibility via a registry (Avro/Protobuf) and consumer‑driven contracts.
+
 <Checklist
   title="Design Review Checklist"
   items={[
@@ -254,9 +290,9 @@ export function createWindowedAggregator(windowMs) {
 
 ## Related topics
 
-- [Event-Driven & Reactive](/docs/foundational-concepts/programming-paradigms/event-driven-and-reactive)
-- [Data Architecture & Persistence](/docs/data-architecture-and-persistence)
-- [Distributed Systems & Microservices](/docs/distributed-systems-and-microservices)
+- [Event-Driven & Reactive](./event-driven-and-reactive)
+- [Data Architecture & Persistence](../../data-architecture-and-persistence)
+- [Distributed Systems & Microservices](../../distributed-systems-and-microservices)
 
 ## References
 

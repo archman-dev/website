@@ -6,6 +6,8 @@ import Vs from '@site/src/components/Vs';
 import Figure from '@site/src/components/Figure';
 import Checklist from '@site/src/components/Checklist';
 import DecisionMatrix from "@site/src/components/DecisionMatrix";
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 # Architectural Decision Impact & Cost of Change
 
@@ -165,6 +167,21 @@ Practical cues:
   ]}
 />
 
+## Patterns and pitfalls
+
+- Favor seams and adapters to isolate irreversible vendor/framework choices; avoid leaking vendor types across domain boundaries.
+- Prefer versioned contracts for APIs/events; avoid “flag day” migrations and shared mutable models.
+- Capture irreversible cross-team decisions with an ADR; avoid tribal knowledge in chat threads.
+- Beware entangled rollouts (DB schema + protocol + UI all at once). Stage changes and use compatibility shims.
+- Avoid over-engineering for hypothetical futures; invest in option value where signals justify it.
+
+## Edge cases
+
+- Long-lived clients pinned to old contracts: support parallel versions and measure tail adoption before removal.
+- Partial failures in async flows: ensure idempotency keys and dead-letter handling to prevent duplicate side effects.
+- Data residency/sovereignty: region moves may require re-encryption/re-keying and legal review—treat as one-way doors.
+- High-throughput hot paths: micro-optimizations can harden coupling; measure first and encapsulate optimizations behind interfaces.
+
 ### Rigor calibration matrix (choose the lane)
 
 <DecisionMatrix
@@ -188,6 +205,11 @@ Practical cues:
   ]}
 />
 
+## When to use heavy rigor (and when not to)
+
+- Use heavy rigor when impact is high, reversibility is low, or uncertainty is high (e.g., data model choices, inter-service protocols, region strategy).
+- Use lightweight notes when impact is low and reversibility is high (e.g., library swaps behind stable interfaces). Optimize for flow.
+
 ## When to formalize with ADRs
 
 Use Architecture Decision Records (ADRs) for decisions that are any of: high blast radius, cross‑team impact, long‑lived constraints, regulated or risky. Keep entries short: context, decision, consequences, status. See the ADR materials:
@@ -203,6 +225,21 @@ If a decision is low impact and reversible, prefer quick notes in issues or PRs 
 
 ### Example: Feature flag to preserve options
 
+<Figure caption="Sequential call flow for a feature-flagged payment authorization path.">
+```mermaid
+flowchart TB
+    A["HTTP request"] --> B["flags.isEnabled('psp_v2_enabled')"]
+    B --> C{"Flag on?"}
+    C -- Yes --> D["Use PSP v2 client"]
+    C -- No --> E["Use PSP v1 client"]
+    D --> F["client.authorize()"]
+    E --> F
+    F --> G{"Error?"}
+    G -- Yes --> H["Rollback/circuit breaker"]
+    G -- No --> I["Return 200 with result"]
+```
+</Figure>
+
 ```yaml title="flags/payment.yml" showLineNumbers
 flags:
     psp_v2_enabled:
@@ -210,6 +247,30 @@ flags:
         description: "Enable new PSP client for a subset of traffic"
         owners: ["payments-team"]
 ```
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+
+```python title="payment/client.py" showLineNumbers
+from typing import Protocol
+
+class PSP(Protocol):
+    def authorize(self, request: dict) -> dict: ...
+
+def client(flag_on: bool, v1: PSP, v2: PSP) -> PSP:
+    if flag_on:
+        return v2
+    return v1
+
+def post_authorize(request, flags, psp_v1: PSP, psp_v2: PSP):
+    flag_on = flags.is_enabled("psp_v2_enabled", {"user": request.user.id})
+    chosen = client(flag_on, psp_v1, psp_v2)
+    result = chosen.authorize(request.json)
+    return {"status": 200, "body": result}
+```
+
+  </TabItem>
+  <TabItem value="go" label="Go">
 
 ```go title="payment/client.go" showLineNumbers
 package payment
@@ -230,6 +291,9 @@ func Client(flagOn bool, v1 PSP, v2 PSP) PSP {
 }
 ```
 
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
 ```javascript title="payment/route.js" showLineNumbers
 export async function postAuthorize(req, res) {
     const flagOn = await flags.isEnabled('psp_v2_enabled', { user: req.user?.id });
@@ -238,6 +302,9 @@ export async function postAuthorize(req, res) {
     return res.status(200).json(result);
 }
 ```
+
+  </TabItem>
+</Tabs>
 
 ## Design review checklist
 

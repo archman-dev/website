@@ -9,30 +9,35 @@ Programming paradigms are more than just a matter of coding style; they are the 
 > "The paradigm is the lens through which you view the problem. If your lens is narrow, you will find it difficult to see the full range of solutions."
 > — Grady Booch
 
-import ProsCons from "@site/src/components/ProsCons";
 import Showcase from "@site/src/components/Showcase";
 import Checklist from "@site/src/components/Checklist";
 import Figure from '@site/src/components/Figure';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
-<Figure caption="The influence of programming paradigms on architectural design.">
+<Figure caption="Vertical decision flow: how paradigm emphasis influences architectural shape.">
 ```mermaid
-mindmap
-  root((Paradigms))
-    Object-Oriented
-      State Encapsulation
-      Service/Component Boundaries
-      Polymorphism
-    Functional
-      Immutability & Purity
-      Data Flow Pipelines (DAGs)
-      Composition
-    Event-Driven
-      Async & Non-Blocking
-      Loose Coupling
-      Temporal Decoupling
-    Dataflow
-      Stream Processing
-      Windowing & Aggregation
+flowchart TB
+  S["Start"] --> Q1{"Primary concern?"}
+  Q1 -->|"Stateful domain"| OO["Object-Oriented focus"]
+  Q1 -->|"Data transformations"| FP["Functional focus"]
+  Q1 -->|"Asynchronous events"| EDA["Event-Driven/Reactive focus"]
+
+  OO --> OO_A["Encapsulated modules (services/components)"]
+  OO --> OO_B["Polymorphic contracts (interfaces)"]
+
+  FP --> FP_A["Immutable data + pure functions"]
+  FP --> FP_B["Pipelines (compose/map/reduce)"]
+
+  EDA --> EDA_A["Loose coupling via topics/queues"]
+  EDA --> EDA_B["Backpressure & retries at edges"]
+
+  OO_A --> OUT["Architecture shape"]
+  OO_B --> OUT
+  FP_A --> OUT
+  FP_B --> OUT
+  EDA_A --> OUT
+  EDA_B --> OUT
 ```
 </Figure>
 
@@ -79,8 +84,178 @@ Choosing a primary paradigm is a trade-off analysis. The right fit depends on th
   ]}
 />
 
+## Practical example: same capability, different paradigm shapes
+
+The capability: validate an order, compute its total, persist it, and publish an event. The architectural shape differs with the chosen paradigm, even though the steps are similar.
+
+<Figure caption="Sequential call flow for the example across all language tabs.">
+```mermaid
+flowchart TB
+  A["receiveOrder"] --> B["validate(order)"]
+  B -->|"ok"| C["total = price(order)"]
+  B -->|"invalid"| E["return error"]
+  C --> D["save(order, total)"]
+  D --> F["publish('order.saved')"]
+  F --> G["return confirmation"]
+```
+</Figure>
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+
+  ```python title="order_service.py" showLineNumbers
+  from dataclasses import dataclass
+
+  @dataclass(frozen=True)
+  class Order:
+      items: list
+
+  def validate(order: Order) -> None:
+      if not order.items:
+          raise ValueError("empty order")
+
+  def price(order: Order) -> int:
+      return sum(item["qty"] * item["unit_price"] for item in order.items)
+
+  def save(order: Order, total: int) -> None:
+      # persist immutably; return nothing to keep purity at edges
+      pass
+
+  def publish(event: str) -> None:
+      pass
+
+  def receive_order(order: Order) -> dict:
+      validate(order)
+      total = price(order)
+      save(order, total)
+      publish("order.saved")
+      return {"total": total}
+  ```
+
+  </TabItem>
+  <TabItem value="go" label="Go">
+
+  ```go title="order_service.go" showLineNumbers
+  package orders
+
+  type Item struct { Qty int; UnitPrice int }
+  type Order struct { Items []Item }
+
+  func Validate(o Order) error {
+      if len(o.Items) == 0 { return fmt.Errorf("empty order") }
+      return nil
+  }
+
+  func Price(o Order) int {
+      total := 0
+      for _, it := range o.Items { total += it.Qty * it.UnitPrice }
+      return total
+  }
+
+  func Save(o Order, total int) error { return nil }
+  func Publish(event string) error { return nil }
+
+  func ReceiveOrder(o Order) (int, error) {
+      if err := Validate(o); err != nil { return 0, err }
+      total := Price(o)
+      if err := Save(o, total); err != nil { return 0, err }
+      _ = Publish("order.saved")
+      return total, nil
+  }
+  ```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+  ```javascript title="orderService.js" showLineNumbers
+  export function validate(order) {
+      if (!order.items?.length) throw new Error('empty order')
+  }
+
+  export function price(order) {
+      return order.items.reduce((t, i) => t + i.qty * i.unitPrice, 0)
+  }
+
+  export async function save(order, total) { /* persist */ }
+  export async function publish(event) { /* emit */ }
+
+  export async function receiveOrder(order) {
+      validate(order)
+      const total = price(order)
+      await save(order, total)
+      await publish('order.saved')
+      return { total }
+  }
+  ```
+
+  </TabItem>
+</Tabs>
+
+Notes:
+
+- **OO shape**: methods often live on rich domain objects; persistence behind repositories; contracts expressed via interfaces.
+- **Functional shape**: small pure functions composed into a pipeline; side effects at the edges; immutability simplifies concurrency.
+- **Event-driven shape**: the same steps are decoupled into handlers with retries, DLQs, and idempotent consumers.
+
 ## Related topics
 
-- [Core Design & Programming Principles](/docs/core-design-and-programming-principles)
-- [Quality Attributes](/docs/quality-attributes)
-- [Architecture Decision Records](/docs/documentation-and-modeling/architecture-decision-records-adr)
+- [Core Design & Programming Principles](../../core-design-and-programming-principles)
+- [Quality Attributes](../../quality-attributes)
+- [Observability & Operations](../../observability-and-operations)
+- [Architectural Styles](../../architectural-styles)
+
+## Implementation notes, patterns, and pitfalls
+
+- **Boundaries follow the paradigm**: OO favors entity/service boundaries; Functional favors data pipeline stages; Event-driven favors message semantics and topic design.
+- **Avoid the golden hammer**: do not force one paradigm in all layers. Composition across boundaries is healthy when contracts isolate concerns.
+- **Debuggability trade-offs**: event-driven systems can be harder to trace without end-to-end correlation; functional pipelines can hide context if over-composed.
+- **Coupling hazards**: implicit shared state (OO) and implicit shared clocks (EDA) both create hidden coupling; make them explicit via contracts and timeouts.
+
+## Edge cases to consider
+
+- **Idempotency**: ensure handlers and saves are idempotent under retries.
+- **Ordering**: event streams may deliver out-of-order; design with sequence keys or reconciliation.
+- **Large payloads**: prefer references (object storage) in events; fetch on demand.
+- **Partial failure**: isolate side effects; apply sagas/compensation where needed.
+
+## Operational considerations
+
+- **SLOs/SLIs**: define latency and success-rate targets per step (validate, price, save, publish).
+- **Rollouts**: use feature flags for switching paradigms or pipelines; canary new handlers.
+- **Limits**: enforce backpressure and concurrency limits at edges; use queues where appropriate.
+
+## Security, privacy, and compliance
+
+- **Data classification**: avoid PII in event payloads; use tokens/ids.
+- **Authn/Authz**: protect write paths; validate producer identity for events.
+- **Secrets**: keep credentials out of code; rotate and audit.
+
+## Observability (logs, metrics, traces)
+
+- **Logs**: structured logs with orderId, correlationId, and step name.
+- **Metrics**: per-step latency, throughput, error rates; queue depth for EDA.
+- **Traces**: propagate context across services/handlers; surface spans for retries and DLQ moves.
+
+## Testing strategy
+
+- **Unit tests**: pure functions (Functional) are trivial to test; OO methods require fixture builders.
+- **Contract tests**: verify event schemas and REST/RPC contracts to prevent drift.
+- **Integration tests**: exercise the full flow with in-memory brokers or test topics.
+
+## When to use
+
+- **OO**: rich domain invariants, complex lifecycle rules, and encapsulation.
+- **Functional**: CPU-bound transformations, concurrency, and deterministic pipelines.
+- **Event-driven**: asynchronous workflows, integration across bounded contexts, and elasticity.
+
+## When not to use
+
+- **OO**: when shared mutable state amplifies contention or hinders scaling.
+- **Functional**: when heavy copying/immutability costs dominate hot paths without offsetting benefits.
+- **Event-driven**: when strong consistency and simple request/response semantics suffice.
+
+## References
+
+1. <a href="https://www.reactivemanifesto.org/" target="_blank" rel="nofollow noopener noreferrer">The Reactive Manifesto ↗️</a>
+2. <a href="https://martinfowler.com/articles/collection-pipeline/" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler, Collection Pipeline ↗️</a>
+3. <a href="https://www.amazon.com/Object-Oriented-Analysis-Design-Applications-3rd/dp/020189551X" target="_blank" rel="nofollow noopener noreferrer">Grady Booch, OOAD with Applications ↗️</a>

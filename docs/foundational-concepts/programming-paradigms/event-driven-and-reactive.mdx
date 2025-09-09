@@ -18,13 +18,13 @@ import Figure from '@site/src/components/Figure';
 
 <Figure caption="A typical event-driven topology with producers, a broker, and consumers.">
 ```mermaid
-flowchart TD
-  P1[Producer A] -->|event| B[(Broker/Bus)]
-  P2[Producer B] -->|event| B
-  B -->|fan-out| C[Consumer C1]
-  B -->|fan-out| D[Consumer C2]
+flowchart TB
+  P1["Producer A"] -->|event| B["Broker or Bus"]
+  P2["Producer B"] -->|event| B
+  B -->|fanout| C["Consumer C1"]
+  B -->|fanout| D["Consumer C2"]
   C --> E["Side effects (DB, cache)"]
-  D --> F[Downstream topics]
+  D --> F["Downstream topics"]
 ```
 </Figure>
 
@@ -42,13 +42,13 @@ flowchart TD
 <Figure caption="Sequential control flow for handling a single event.">
 ```mermaid
 flowchart TB
-  subgraph Consumer Logic
-    A[Receive Event] --> B{"Is event ID in 'processed' set?"}
-    B -->|Yes| C[End/Ignore]
-    B -->|No| D[Perform Business Logic]
-    D --> E[Persist Result]
-    E --> F[Add event ID to 'processed' set]
-    F --> G[End]
+  subgraph Consumer_Logic["Consumer Logic"]
+    A["Receive Event"] --> B{"Is event ID in 'processed' set?"}
+    B -- Yes --> C["End / Ignore"]
+    B -- No --> D["Perform Business Logic"]
+    D --> E["Persist Result"]
+    E --> F["Add event ID to 'processed' set"]
+    F --> G["End"]
   end
 ```
 </Figure>
@@ -62,31 +62,31 @@ from typing import Any, Dict, Set
 processed: Set[str] = set()
 
 async def handle_event(evt: Dict[str, Any]) -> None:
-  # Idempotency guard
-  key = evt.get("id")
-  if key in processed:
-    return
+    # Idempotency guard
+    key = evt.get("id")
+    if key in processed:
+        return
 
-  # Business logic (pure-ish), then side effects
-  order_total = sum(i["qty"] * i["price"] for i in evt["items"])
-  await persist_result({"order_id": evt["id"], "total": order_total})
-  processed.add(key)
+    # Business logic (pure-ish), then side effects
+    order_total = sum(i["qty"] * i["price"] for i in evt["items"])
+    await persist_result({"order_id": evt["id"], "total": order_total})
+    processed.add(key)
 
 async def persist_result(doc: Dict[str, Any]) -> None:
-  await asyncio.sleep(0)  # simulate non-blocking IO
+    await asyncio.sleep(0)  # simulate non-blocking IO
 
 async def consumer(stream):
-  # stream is an async iterator yielding events
-  sem = asyncio.Semaphore(50)  # backpressure via concurrency cap
-  async for evt in stream:
-    await sem.acquire()
-    asyncio.create_task(_run(evt, sem))
+    # stream is an async iterator yielding events
+    sem = asyncio.Semaphore(50)  # backpressure via concurrency cap
+    async for evt in stream:
+        await sem.acquire()
+        asyncio.create_task(_run(evt, sem))
 
 async def _run(evt, sem):
-  try:
-    await handle_event(evt)
-  finally:
-    sem.release()
+    try:
+        await handle_event(evt)
+    finally:
+        sem.release()
 ```
   </TabItem>
   <TabItem value="go" label="Go">
@@ -219,11 +219,33 @@ async function computeTotal(evt) {
   ]}
 />
 
+## Edge cases
+
+- Duplicate or out-of-order events: enforce idempotency keys and tolerate reordering with sequence numbers or versioning.
+- Poison messages: implement retry with backoff and a Dead Letter Queue (DLQ) with alerting and quarantine procedures.
+- Large payloads: prefer reference-based events (IDs/URIs) over embedding large blobs; set broker size limits.
+- Slow consumers: use bounded buffers, consumer groups, and autoscaling; apply backpressure or drop policies where acceptable.
+- Multi-tenant isolation: partition topics by tenant or include tenant IDs and authorize at the topic/partition level.
+
+## Observability
+
+- Logs: emit structured logs with correlation/trace IDs on produce, consume, handle, and ack/nack paths.
+- Metrics: track publish latency, end-to-end event age, consumer lag, DLQ rates, retry counts, and handler success/error rates.
+- Traces: propagate context via headers/attributes (e.g., W3C Trace Context) across producer → broker → consumer spans.
+- Dashboards/alerts: alert on growing lag, DLQ spikes, and increased end-to-end latency versus SLOs.
+
+## Testing
+
+- Contract tests: validate event schemas (Avro/JSON Schema/Protobuf) and evolution rules with consumer-driven contracts.
+- Idempotency tests: replay the same event N times and assert single side-effect.
+- Failure tests: inject broker timeouts, handler exceptions, and verify retry/backoff/DLQ behavior.
+- Load tests: simulate bursty event streams to verify backpressure and autoscaling responses.
+
 ## Related topics
 
-- [Dataflow & Stream Processing](/docs/foundational-concepts/programming-paradigms/dataflow-stream-processing)
-- [Distributed Systems & Microservices](/docs/distributed-systems-and-microservices)
-- [Reliability, Resilience & Performance](/docs/reliability-resilience-and-performance-engineering)
+- [Dataflow & Stream Processing](./dataflow-stream-processing)
+- [Distributed Systems & Microservices](../../distributed-systems-and-microservices)
+- [Reliability, Resilience & Performance](../../reliability-resilience-and-performance-engineering)
 
 <Showcase
   title="Security, Privacy, and Compliance"
@@ -245,6 +267,6 @@ async function computeTotal(evt) {
 
 ## References
 
-1.  Bonér, J., et al. (2014). [*The Reactive Manifesto*](https://www.reactivemanifesto.org/) ↗️.
-2.  Richards, M., & Ford, N. (2020). [*Fundamentals of Software Architecture*](https://www.oreilly.com/library/view/fundamentals-of-software/9781492043447/) ↗️. O'Reilly Media.
-3.  Kafka Documentation. (n.d.). [Security](https://kafka.apache.org/documentation/#security) ↗️.
+1.  Bonér, J., et al. (2014). <a href="https://www.reactivemanifesto.org/" target="_blank" rel="nofollow noopener noreferrer">The Reactive Manifesto ↗️</a>.
+2.  Richards, M., & Ford, N. (2020). <a href="https://www.oreilly.com/library/view/fundamentals-of-software/9781492043447/" target="_blank" rel="nofollow noopener noreferrer">Fundamentals of Software Architecture ↗️</a>. O'Reilly Media.
+3.  Kafka Documentation. (n.d.). <a href="https://kafka.apache.org/documentation/#security" target="_blank" rel="nofollow noopener noreferrer">Security ↗️</a>.

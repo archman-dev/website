@@ -5,22 +5,32 @@ import styles from './styles.module.css';
 
 type HighlightSide = 'pros' | 'cons';
 type Tone = 'neutral' | 'positive' | 'warning' | 'info';
+type HighlightToneConfig = Tone | { pros?: Tone; cons?: Tone };
 
 type Props = {
   title?: React.ReactNode;
-  /** Title/label for the pros column (e.g., "Do"). No default is provided. */
   prosTitle: React.ReactNode;
   pros: React.ReactNode[];
-  /** Title/label for the cons column (e.g., "Avoid"). No default is provided. */
   consTitle: React.ReactNode;
   cons: React.ReactNode[];
-  /** Which side(s) to emphasize. By default, none are highlighted. */
   highlight?: HighlightSide | HighlightSide[];
-  /** Emphasis tone for highlighted side(s); follows Showcase tones. Default: neutral */
-  highlightTone?: Tone;
+  /**
+   * Tone applied to highlighted sides. Backward compatible:
+   * - Pass a single Tone string to apply to all highlighted sides.
+   * - Pass an object { pros: 'positive', cons: 'warning' } for per-side tones.
+   */
+  highlightTone?: HighlightToneConfig;
 };
 
-export default function ProsCons({ title, prosTitle, pros, consTitle, cons, highlight, highlightTone = 'neutral' }: Props) {
+export default function ProsCons({
+  title,
+  prosTitle,
+  pros,
+  consTitle,
+  cons,
+  highlight = ['pros', 'cons'],
+  highlightTone = { pros: 'positive', cons: 'warning' },
+}: Props) {
   const highlightSet = React.useMemo(() => {
     const set = new Set<HighlightSide>();
     if (Array.isArray(highlight)) {
@@ -31,6 +41,19 @@ export default function ProsCons({ title, prosTitle, pros, consTitle, cons, high
     return set;
   }, [highlight]);
 
+  // Derive effective tones per side (supports string or object form)
+  const resolveTone = (side: HighlightSide): Tone | undefined => {
+    if (!highlightSet.has(side)) {
+      return undefined;
+    }
+    if (typeof highlightTone === 'string') {
+      return highlightTone;
+    }
+    return highlightTone[side] || 'neutral';
+  };
+  const prosTone = resolveTone('pros');
+  const consTone = resolveTone('cons');
+
   return (
     <section className={styles.container}>
       {title ? <h3 className={styles.heading}>{title}</h3> : null}
@@ -38,10 +61,10 @@ export default function ProsCons({ title, prosTitle, pros, consTitle, cons, high
         <div
           className={clsx(
             styles.card,
-            highlightSet.has('pros') && highlightTone === 'neutral' && styles.emNeutral,
-            highlightSet.has('pros') && highlightTone === 'positive' && styles.emPositive,
-            highlightSet.has('pros') && highlightTone === 'warning' && styles.emWarning,
-            highlightSet.has('pros') && highlightTone === 'info' && styles.emInfo,
+            prosTone === 'neutral' && styles.emNeutral,
+            prosTone === 'positive' && styles.emPositive,
+            prosTone === 'warning' && styles.emWarning,
+            prosTone === 'info' && styles.emInfo,
           )}
         >
           <strong>{prosTitle}</strong>
@@ -54,10 +77,10 @@ export default function ProsCons({ title, prosTitle, pros, consTitle, cons, high
         <div
           className={clsx(
             styles.card,
-            highlightSet.has('cons') && highlightTone === 'neutral' && styles.emNeutral,
-            highlightSet.has('cons') && highlightTone === 'positive' && styles.emPositive,
-            highlightSet.has('cons') && highlightTone === 'warning' && styles.emWarning,
-            highlightSet.has('cons') && highlightTone === 'info' && styles.emInfo,
+            consTone === 'neutral' && styles.emNeutral,
+            consTone === 'positive' && styles.emPositive,
+            consTone === 'warning' && styles.emWarning,
+            consTone === 'info' && styles.emInfo,
           )}
         >
           <strong>{consTitle}</strong>
