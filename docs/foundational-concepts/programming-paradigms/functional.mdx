@@ -1,6 +1,62 @@
 ---
-sidebar_position: 3
+title: Functional Programming
+description: "Pure functions, immutability, and composition for correctness, concurrency, and testability."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: 2025-09-10
+personas: ["engineer","architect","lead"]
+keywords: ["functional programming","pure functions","immutability","composition","concurrency","parallelism","data pipelines","testing","observability"]
+image: /img/archman-social-card.webp
+tags: ["programming-paradigms","functional","immutability","pure-functions","composition","concurrency","parallelism","testing","observability","quality-attributes"]
 ---
+
+import Head from '@docusaurus/Head';
+
+<Head>
+  <meta name="description" content="Pure functions, immutability, and composition for correctness, concurrency, and testability—how and when to apply functional programming in systems." />
+  <meta property="og:title" content="Functional Programming" />
+  <meta property="og:description" content="Pure functions, immutability, and composition for correctness, concurrency, and testability—how and when to apply functional programming in systems." />
+  <meta property="og:image" content="https://archman.dev/img/archman-social-card.webp" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="canonical" href="https://archman.dev/docs/foundational-concepts/programming-paradigms/functional" />
+  <script type="application/ld+json">{JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Functional Programming",
+    "description": "Pure functions, immutability, and composition for correctness, concurrency, and testability—how and when to apply functional programming in systems.",
+    "image": "https://archman.dev/img/archman-social-card.webp",
+    "keywords": [
+      "functional programming","pure functions","immutability","composition","concurrency","parallelism","data pipelines","testing","observability"
+    ],
+    "author": {"@type":"Person","name":"Archman"},
+    "dateModified": "2025-09-10"
+  })}</script>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"BreadcrumbList",
+    "itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Foundational Concepts","item":"https://archman.dev/docs/foundational-concepts"},
+      {"@type":"ListItem","position":2,"name":"Programming Paradigms","item":"https://archman.dev/docs/foundational-concepts/programming-paradigms"},
+      {"@type":"ListItem","position":3,"name":"Functional","item":"https://archman.dev/docs/foundational-concepts/programming-paradigms/functional"}
+    ]
+  })}</script>
+</Head>
+
+## TL;DR
+
+Functional programming emphasizes pure functions and immutable data to make systems predictable, parallelizable, and testable. Use FP for deterministic data transforms and concurrency safety; isolate IO at the edges and watch memory when copying large structures.
+
+## Learning objectives
+
+- You will be able to identify pure functions and isolate side effects at boundaries.
+- You will be able to compose pipelines that are deterministic and testable.
+- You will be able to reason about concurrency using immutability rather than locks.
+- You will be able to measure and manage allocation overhead in FP pipelines.
+
+## Motivating scenario
+
+You are building an analytics enrichment service that ingests purchase events at high throughput. The service must validate, normalize, compute tax and totals, and emit enriched records to downstream systems. A functional pipeline of pure steps enables horizontal parallelism without lock contention, clear unit tests, and safe rollbacks by swapping implementations step‑by‑step.
 
 # Functional
 
@@ -15,6 +71,7 @@ import Vs from "@site/src/components/Vs";
 import Showcase from "@site/src/components/Showcase";
 import Checklist from "@site/src/components/Checklist";
 import Figure from '@site/src/components/Figure';
+import ProsCons from "@site/src/components/ProsCons";
 
 <Figure caption="A functional pipeline transforms data through a series of pure functions.">
 ```mermaid
@@ -321,16 +378,200 @@ export const process = compose(validate, normalize, tax, summarize)
 />
 
 
+### Hands-on exercise
+
+Try the pipeline locally.
+
+<Figure caption="Hands-on flow: compose validate → normalize → tax → summarize.">
+```mermaid
+flowchart TB
+    In["Input"] --> V["validate"]
+    V --> N["normalize"]
+    N --> T["tax"]
+    T --> S["summarize"]
+    S --> Out["Output"]
+```
+</Figure>
+
+<Tabs groupId="lang" queryString>
+  <TabItem value="python" label="Python">
+
+  ```python title="pipeline.py" showLineNumbers
+  def compose(*funcs):
+      def run(x):
+          for f in funcs:
+              x = f(x)
+          return x
+      return run
+
+  def validate(r):
+      if not r.get("user_id") or not isinstance(r.get("amount"), (int, float)):
+          raise ValueError("invalid input")
+      return r
+
+  def normalize(r):
+      return {**r, "amount_cents": int(r["amount"] * 100)}
+
+  def tax(r):
+      return {**r, "tax_cents": int(r["amount_cents"] * 0.1)}
+
+  def summarize(r):
+      return {**r, "total_cents": r["amount_cents"] + r["tax_cents"]}
+
+  process = compose(validate, normalize, tax, summarize)
+
+  if __name__ == "__main__":
+      print(process({"user_id": "u1", "amount": 12.34}))
+  ```
+
+  </TabItem>
+  <TabItem value="go" label="Go">
+
+  ```go title="main.go" showLineNumbers
+  package main
+
+  import (
+      "fmt"
+  )
+
+  type Record map[string]interface{}
+  type Transform func(Record) (Record, error)
+
+  func Compose(funcs ...Transform) Transform {
+      return func(r Record) (Record, error) {
+          var err error
+          for _, f := range funcs {
+              r, err = f(r)
+              if err != nil {
+                  return nil, err
+              }
+          }
+          return r, nil
+      }
+  }
+
+  func Validate(r Record) (Record, error) {
+      if _, ok := r["user_id"].(string); !ok {
+          return nil, fmt.Errorf("invalid input")
+      }
+      if _, ok := r["amount"].(float64); !ok {
+          return nil, fmt.Errorf("invalid input")
+      }
+      return r, nil
+  }
+
+  func Normalize(r Record) (Record, error) {
+      r["amount_cents"] = int(r["amount"].(float64) * 100)
+      return r, nil
+  }
+
+  func Tax(r Record) (Record, error) {
+      r["tax_cents"] = int(float64(r["amount_cents"].(int)) * 0.1)
+      return r, nil
+  }
+
+  func Summarize(r Record) (Record, error) {
+      r["total_cents"] = r["amount_cents"].(int) + r["tax_cents"].(int)
+      return r, nil
+  }
+
+  func main() {
+      pipeline := Compose(Validate, Normalize, Tax, Summarize)
+      out, _ := pipeline(Record{"user_id": "u1", "amount": 12.34})
+      fmt.Println(out)
+  }
+  ```
+
+  </TabItem>
+  <TabItem value="node" label="Node.js">
+
+  ```javascript title="pipeline.mjs" showLineNumbers
+  const compose = (...fns) => (x) => fns.reduce((v, f) => f(v), x)
+  const validate = (r) => {
+      if (!r.user_id || typeof r.amount !== 'number') throw new Error('invalid input')
+      return r
+  }
+  const normalize = (r) => ({ ...r, amount_cents: Math.trunc(r.amount * 100) })
+  const tax = (r) => ({ ...r, tax_cents: Math.trunc(r.amount_cents * 0.1) })
+  const summarize = (r) => ({ ...r, total_cents: r.amount_cents + r.tax_cents })
+  const process = compose(validate, normalize, tax, summarize)
+  console.log(process({ user_id: 'u1', amount: 12.34 }))
+  ```
+
+  </TabItem>
+</Tabs>
+
+Steps
+
+1) Save one of the snippets to a file.
+2) Run it with your language toolchain.
+3) Change the tax logic and re-run to observe deterministic behavior.
+4) Add a logging side effect at the boundary to see data flow; keep core pure.
+
+## Self‑check
+
+1. What makes a function pure, and why does that improve testability?
+2. How does immutability enable safe concurrency without locks?
+3. Where should side effects live in an FP‑oriented system, and why?
+
+<Showcase
+  title="Signals & Anti‑signals"
+  sections={[
+    { label: 'Signals (apply FP)', body: 'Deterministic transforms, heavy parallelism, clear step pipelines, property‑based testability', tone: 'positive' },
+    { label: 'Anti‑signals (reconsider)', body: 'Hot mutation of huge data structures, IO‑heavy imperative orchestration, entity‑identity centric modeling', tone: 'warning' }
+  ]}
+/>
+
+<Showcase
+  title="Next Steps"
+  tone="info"
+  sections={[
+    { label: 'Internal', body: (<>
+      Read <a href="./procedural-structured">Procedural / Structured</a>, <a href="./object-oriented">Object‑Oriented</a>, and <a href="./event-driven-and-reactive">Event‑Driven & Reactive</a> for comparisons. For data‑heavy work, see <a href="../../data-architecture-and-persistence">Data Architecture & Persistence</a> and <a href="./influence-on-architecture">Influence on Architecture</a>.
+    </>) },
+    { label: 'External', body: (<>
+      <a href="https://www.cs.kent.ac.uk/people/staff/dat/miranda/whyfp90.pdf" target="_blank" rel="nofollow noopener noreferrer">Why Functional Programming Matters ↗️</a>
+    </>) }
+  ]}
+/>
+
+<ProsCons
+  pros={[
+    'Determinism and referential transparency',
+    'Natural parallelism via immutability',
+    'Excellent unit/property testing ergonomics'
+  ]}
+  cons={[
+    'Allocation overhead for large data',
+    'Steeper learning curve for effect management',
+    'Potential verbosity without persistent data structures'
+  ]}
+/>
+
+<Showcase
+  title="One thing to remember"
+  sections={[
+    { label: 'Takeaway', body: 'Model your core as a pure, deterministic pipeline; push effects to the edges.', tone: 'info' }
+  ]}
+/>
+
+<Checklist
+  title="Design review checklist (quick)"
+  items={[
+    'Pure functions dominate; effects isolated at edges',
+    'Immutability enforced; persistent structures considered',
+    'Throughput and allocations measured on hot paths',
+    'Observability at each pipeline stage (logs/metrics/traces)'
+  ]}
+/>
+
 ## Related topics
 
 - [Object-Oriented Programming](./object-oriented)
 - [Procedural / Structured Programming](./procedural-structured)
-- [Dataflow & Stream Processing](./dataflow-stream-processing)
 - [Event-Driven & Reactive](./event-driven-and-reactive)
-- [Data Architecture & Persistence](../../data-architecture-and-persistence)
+- [Dataflow & Stream Processing](./dataflow-stream-processing)
 - [Influence on Architecture](./influence-on-architecture)
-
-
 
 ## References
 
