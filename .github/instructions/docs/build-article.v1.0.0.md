@@ -516,8 +516,8 @@ import TabItem from '@theme/TabItem'
   - Use consistent headings, explicit definitions, and a short FAQ (3–5 Q/A) to aid retrieval.
   - Prefer descriptive alt text in `Figure`; keep code filenames and language labels explicit.
   - Add a "Questions this article answers" list (3–6 bullets) near the end when relevant.
-- Tags section (visible)
-  - Add a `## Tags` section before References listing 10–20 relevant tags (single line each). Tags must map to frontmatter `tags`.
+- Tags handling
+  - Do NOT add a visible `## Tags` section. Rely on frontmatter `tags` only; Docusaurus renders tags automatically.
 
 Example (JSON-LD Article + Breadcrumbs):
 

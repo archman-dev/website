@@ -203,7 +203,7 @@ SEO & Discoverability (required subsection):
 - Meta: title/description/keywords/image/slug present and high‑quality
 - JSON‑LD: Article + BreadcrumbList valid; FAQPage (if FAQ present)
 - Breadcrumbs: visible + JSON‑LD consistent
-- Tags: 10–20 relevant, match frontmatter
+- Tags: 10–20 relevant in frontmatter only (no visible `## Tags` section)
 - GPT visibility: TL;DR crisp; FAQ present if applicable; “Questions answered” present
 
 No additional commentary outside these sections.
