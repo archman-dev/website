@@ -212,6 +212,14 @@ const config: Config = {
     },
   } satisfies Preset.ThemeConfig,
   themes: ["@docusaurus/theme-mermaid"],
+  scripts: [
+    {
+      src: 'https://app.rybbit.io/api/script.js',
+      async: true,
+      defer: true,
+      'data-site-id': '2401',
+    },
+  ],
 };
 
 export default config;
