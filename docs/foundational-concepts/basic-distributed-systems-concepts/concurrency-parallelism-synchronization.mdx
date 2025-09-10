@@ -1,5 +1,29 @@
 ---
 sidebar_position: 2
+title: Concurrency, Parallelism, Synchronization
+description: Practical distinctions, decision flows, and patterns to combine concurrency, parallelism, and synchronization safely.
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 20
+lastReviewed: 2025-09-10
+personas: ["engineer","architect","lead"]
+keywords:
+  [
+    "concurrency",
+    "parallelism",
+    "synchronization",
+    "locks",
+    "async",
+    "threads",
+    "actors",
+    "backpressure",
+    "latency",
+    "throughput",
+    "Amdahl",
+    "Gustafson"
+  ]
+image: /img/archman-social-card.webp
+tags: ["foundations","distributed-systems","concurrency","parallelism","synchronization","performance","reliability","latency","throughput","patterns"]
 ---
 
 # Concurrency, Parallelism, Synchronization
@@ -7,12 +31,56 @@ sidebar_position: 2
 import Figure from "@site/src/components/Figure";
 import Checklist from "@site/src/components/Checklist";
 import Vs from "@site/src/components/Vs";
+import Showcase from "@site/src/components/Showcase";
+import Head from '@docusaurus/Head'
 import Tabs from '@theme/Tabs'
 import TabItem from '@theme/TabItem'
 
 Concurrency, parallelism, and synchronization are foundational to building responsive, scalable, and correct systems. Concurrency is about dealing with many things at once (conceptual overlap in time); parallelism is about doing many things at once (simultaneous execution on multiple cores/nodes). Synchronization coordinates access to shared resources so concurrent work remains correct.
 
 This article clarifies the terms, shows how they interact with latency/throughput, and gives practical guidance for choosing models, primitives, and patterns.
+
+<Head>
+  <meta name="description" content="Practical distinctions, decision flows, and patterns to combine concurrency, parallelism, and synchronization safely." />
+  <meta property="og:title" content="Concurrency, Parallelism, Synchronization" />
+  <meta property="og:description" content="Practical distinctions, decision flows, and patterns to combine concurrency, parallelism, and synchronization safely." />
+  <meta property="og:image" content="https://archman.dev/img/docusaurus-social-card.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"Article",
+    "headline":"Concurrency, Parallelism, Synchronization",
+    "description":"Practical distinctions, decision flows, and patterns to combine concurrency, parallelism, and synchronization safely.",
+    "image":"https://archman.dev/img/docusaurus-social-card.jpg",
+    "keywords":["concurrency","parallelism","synchronization","locks","async","threads","actors","backpressure","latency","throughput","Amdahl","Gustafson"],
+    "author":{"@type":"Person","name":"Archman"},
+    "dateModified":"2025-09-10"
+  })}</script>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"BreadcrumbList",
+    "itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Foundational Concepts","item":"https://archman.dev/docs/foundational-concepts"},
+      {"@type":"ListItem","position":2,"name":"Basic Distributed Systems Concepts","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts"},
+      {"@type":"ListItem","position":3,"name":"Concurrency, Parallelism, Synchronization","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts/concurrency-parallelism-synchronization"}
+    ]
+  })}</script>
+</Head>
+
+### TL;DR
+
+Concurrency structures many in‑flight tasks (often I/O‑bound) to improve responsiveness; parallelism uses multiple execution units to reduce wall‑clock time for CPU‑bound work; synchronization preserves correctness when state is shared. Most systems need all three—bound concurrency, partition data for parallelism, and minimize shared mutable state.
+
+### Learning objectives
+
+- You will be able to distinguish concurrency from parallelism and explain when each applies.
+- You will be able to choose synchronization primitives based on workload characteristics.
+- You will be able to design bounded‑concurrency pipelines that protect tail latency.
+- You will be able to instrument and validate concurrency/parallelism with the right metrics.
+
+### Motivating scenario
+
+Your API suddenly needs to handle a bursty workload while a new feature performs CPU‑heavy image transforms. Teams attempt “just add threads,” but latency worsens due to lock contention and queue growth. Applying the right mix—async I/O at the edges, data‑parallel workers for transforms, and explicit backpressure—restores P95/P99 while maintaining throughput.
 
 ## Mental model (decision flow)
 
@@ -795,12 +863,55 @@ objectives:
 - Inject faults: timeouts, transient errors, slow consumers; verify backpressure and idempotency.
 - Measure determinism: ensure no data races; use race detectors/sanitizers where available.
 
-## FAQ
+## Self-check
 
-- **Is async always better than threads?** No. Async excels at I/O-bound work with high concurrency. CPU-bound workloads need parallelism (threads/processes) for speedup.
-- **When are RW locks preferable to mutexes?** When reads vastly outnumber writes and read critical sections are small. Beware writer starvation.
-- **How do I pick pool size?** Start with number of cores for CPU-bound tasks; for I/O-bound, tune by observing tail latency and queue depth under load.
-- **What if I must share state?** Minimize scope, shard by key, and keep critical sections short; prefer atomics for simple counters and use message passing when possible.
+1. When would concurrency (without parallelism) improve responsiveness, and why doesn’t it speed up CPU-heavy work?
+2. Which synchronization primitive would you choose for read‑heavy access patterns, and what risk should you watch for?
+3. How do you decide an initial pool size for CPU‑bound work versus I/O‑bound work?
+
+## Signals & Anti‑signals
+
+<Showcase
+  title="Applying concurrency, parallelism, and synchronization"
+  sections={[
+    {
+      label: 'Signals',
+      body: (
+        <>
+          <ul>
+            <li>Workload characterized as I/O‑bound vs CPU‑bound; model chosen accordingly</li>
+            <li>Concurrency bounded; queues have backpressure and limits</li>
+            <li>Shared state avoided or sharded; short, observable critical sections</li>
+            <li>Metrics include P95/P99 latency, queue depth, and contention</li>
+          </ul>
+        </>
+      ),
+      tone: 'positive',
+    },
+    {
+      label: 'Anti‑signals',
+      body: (
+        <>
+          <ul>
+            <li>Unbounded goroutines/threads; growing queues and retry storms</li>
+            <li>Global locks or hot MPMC queues without sharding</li>
+            <li>Mixing async I/O with long CPU work on the same event loop</li>
+            <li>No idempotency with retries; missing deadlines/budgets</li>
+          </ul>
+        </>
+      ),
+      tone: 'warning',
+    },
+  ]}
+/>
+
+## Next steps
+
+- Read [Latency, Throughput, Bandwidth](./latency-throughput-bandwidth)
+- Explore [Producer–Consumer](../../design-patterns/concurrency-patterns/producer-consumer)
+- Review [Thread Pool](../../design-patterns/concurrency-patterns/thread-pool)
+- Study [Timeouts, Retries, Backoff, Jitter](../../distributed-systems-and-microservices/resilience-and-reliability-patterns/timeouts-retries-exponential-backoff-jitter)
+- Understand [Idempotency](../../distributed-systems-and-microservices/fundamentals/idempotency)
 
 ## When to use
 
@@ -827,6 +938,17 @@ objectives:
   ]}
 />
 
+:::info One takeaway
+Minimize shared mutable state. Prefer message passing or sharded ownership; when sharing is unavoidable, keep critical sections short and observable.
+:::
+
+### Hands‑on exercise
+
+1. Run the "concurrent workers" example below with a pool size equal to core count; record total time and CPU utilization.
+2. Double the pool size; observe contention and tail latency. Reduce back to core count and shard the shared counter to compare.
+3. Switch to the async I/O example; limit concurrency (e.g., 50) and chart P95 as you vary the limit.
+4. Combine into the pipeline example; verify end‑to‑end P95 and throughput targets. Track queue depth and lock contention.
+
 ## Related topics
 
 - [Latency, Throughput, Bandwidth](./latency-throughput-bandwidth)
@@ -838,5 +960,3 @@ objectives:
 1. <a href="https://www.youtube.com/watch?v=oV9rvDllKEg" target="_blank" rel="nofollow noopener noreferrer">Rob Pike, Concurrency Is Not Parallelism (Go Concurrency Patterns) ↗️</a>
 2. <a href="https://dl.acm.org/doi/10.1145/1465482.1465560" target="_blank" rel="nofollow noopener noreferrer">Gustafson, Reevaluating Amdahl's Law (CACM) ↗️</a>
 3. <a href="https://queue.acm.org/detail.cfm?id=1814327" target="_blank" rel="nofollow noopener noreferrer">Dean & Barroso, The Tail at Scale (ACM Queue) ↗️</a>
-
-
