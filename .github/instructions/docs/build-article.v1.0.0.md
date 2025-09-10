@@ -83,6 +83,21 @@ graph TD;
 5. If generating or using images, store them under `./static/img/**` mirroring the article’s subtree path (do not put new images inside `./docs`).
 6. All diagrams and visualizations must be wrapped in a `<Figure>` component with a descriptive `caption`.
 
+## 7.1 Frontmatter (Extended)
+
+- In addition to preserving existing frontmatter, add the following keys when missing and appropriate:
+  - `docType`: one of `overview | deep-dive | how-to | reference | case-study`.
+  - `difficulty`: one of `intro | intermediate | advanced`.
+  - `estimatedTime`: integer minutes readers typically spend.
+  - `lastReviewed`: `YYYY-MM-DD` date the article was last verified.
+  - `personas`: array of intended audiences (e.g., `['engineer','architect','lead','manager']`).
+  - `description`: ≤160 characters, crisp summary for SEO/snippets.
+  - `keywords`: 8–20 comma-separated or array form, aligned to content and canonical terms.
+  - `image`: social preview image path under `/img/**` (1200×630 recommended).
+  - `slug`: stable, kebab-case URL segment; avoid dates; ≤60 chars.
+  - `tags`: array of 10–20 tags (see §26.1) for indexing and visible Tags section.
+  - Keep values aligned with article depth and tone; do not fabricate authors or dates.
+
 ## 8. Depth Expectations and Minimum Deliverables
 
 - `index.mdx` or `index.md` (overview):
@@ -95,6 +110,17 @@ graph TD;
     - One practical example with copyable code/config (with filename + line numbers).
     - Explicit sections for: Patterns/Pitfalls, Edge cases, Operational considerations (SLO/SLI, rollouts), Security/Privacy/Compliance (if applicable), Observability (logs/metrics/traces), and Testing.
     - “When to use” and “When not to use” if applicable.
+
+## 8.1 Engagement Layer (Mandatory, lightweight)
+
+1. TL;DR: ≤80 words placed near the top of non-index articles.
+2. Learning objectives: 3–6 bullets starting with “You will be able to…”.
+3. Motivating scenario: 1–2 paragraphs grounding the topic in a real‑world context.
+4. Hands‑on exercise: a small practical task using the `Steps` widget with copy‑ready code/config.
+5. Self‑check: exactly 3 short questions; can use an ordered list or `FAQ` widget.
+6. Signals & Anti‑signals: use `Showcase` or `ProsCons` to indicate when to apply vs avoid.
+7. Next steps: 3–5 internal extensionless links to related docs plus at least one external reference following §23 rules (↗️ and rel attributes).
+8. One takeaway: a single highlighted idea using `Callout` with tone `info`.
 
 ## 9. Pre-flight (Must Do Before Writing)
 
@@ -132,14 +158,13 @@ graph TD;
 - Decision model / mental model (visualized) if this topic guides choices.
 - Decision matrix/table (when comparing options).
 - Implementation notes / patterns / pitfalls.
-  - For A/B/N comparisons or curated highlights, use `Vs` (A/B/N) and `Showcase` (and related components) as documented in Editing Widgets (/editing/category/widgets).
+  - For A/B/N comparisons or curated highlights, use `Vs` (A/B/N) and `Showcase` (and related components) as documented in Editing Widgets (/editing/widgets).
 - Operational considerations (SLO/SLI targets, rollout/rollback, quotas/limits).
 - Security, privacy, and compliance implications (data classification, authn/authz, secrets).
 - Observability (logs/metrics/traces, correlation IDs, dashboards and alerts).
 - When to use / When not to use (if applicable).
 - Alternatives and related topics (link internally).
 - References (with nofollow, external-link emoji, open in new tab).
-
 
 ## 12. Diagrams and Visualizations
 
@@ -183,21 +208,21 @@ graph TD;
 | Exploration/overview                          | Mind map (Mermaid mindmap or mindmap plugin)                           | Great for .mdx overview pages.                                       |
 | Trade-off matrix                              | Table                                                                  | When a grid communicates better than a figure.                       |
 
-## 16. Reusable Visual Widgets (Showcase, Vs, and Category Widgets)
+## 16. Reusable Components & Widgets (Use When They Fit Best)
 
-- Prefer these when you want scannable, repeatable patterns for examples, trade-offs, and comparisons.
-- Locations for docs and live examples: /editing/category/widgets.
+- Prefer these when you want scannable, repeatable patterns for examples, trade-offs, comparisons, and interactive reading.
+- Locations for docs and live examples: /editing/widgets.
 - Showcase
   - Use for a single concept with 1..N named sections (Impact, Trade‑offs, Signals, SLOs, etc.).
   - Sections can be authored as rich MDX (text, code, inline components).
   - Choose a card-level tone when you want a subtle border accent: neutral (default), positive, warning, info.
   - You can also set per-section tone accents to draw attention to specific sections.
-  - Authoring examples are maintained under Editing Widgets (routes: /editing/category/widgets).
+  - Authoring examples are maintained under Editing Widgets (routes: /editing/widgets).
 - Vs (A/B/N comparison)
   - Use for 2 or more side-by-side options. Each card has a label and bullet points (both can be rich MDX).
   - To emphasize one option, set highlight to the 0-based index (or 'a'/'b' for legacy two-way) and choose highlightTone: neutral | positive | warning | info.
   - The highlight uses a tinted background rather than thick borders to keep the UI calm.
-  - Authoring examples are maintained under Editing Widgets (routes: /editing/category/widgets).
+  - Authoring examples are maintained under Editing Widgets (routes: /editing/widgets).
 - Category widgets (use when they match your content shape)
   - Checklist: Ideal for “Design review checklist” sections; compact, selectable items.
   - ProsCons: Show pros and cons side-by-side.
@@ -206,7 +231,7 @@ graph TD;
   - Callout / Alert: Emphasize warnings, info notes, or positive guidance.
   - Metric / KPI: Present SLO/SLI targets or key numbers.
   - Cards / CardGrid: Curate multi-item showcases (tools, patterns, examples).
-  - Use component-specific props as documented in /editing/category/widgets.
+  - Use component-specific props as documented in /editing/widgets.
 
 ## 17. Tone Semantics When Using Showcase/Vs and Category Widgets
 
@@ -273,7 +298,18 @@ graph TD;
 />
 ```
 
-See [Editing Widgets](/editing/widgets) and [Category Widgets](/editing/category/widgets) for complete examples and evolving guidance.
+### 16.1 Widget Selection Guide (When to Use What)
+
+- Figure: Wrap every image or diagram (Mermaid, etc.). Always required. See `/editing/widgets/figure.mdx`.
+- Code Tabs: For programming examples across Python, Go, Node.js using `<Tabs>`/`<TabItem>`; follow `/editing/widgets/code.mdx`.
+- Config Tabs: For config snippets across formats (YAML/JSON/TOML). Prefer `ConfigTabs`; see `/editing/widgets/config-tabs.mdx`.
+- DecisionMatrix: For multi-criteria option comparison. Prefer over ad-hoc tables; see `/editing/widgets/decision-matrix.mdx`.
+- Vs: For A/B/N side-by-side comparisons at-a-glance (few bullets per option). See `/editing/widgets/vs.mdx`.
+- ProsCons: For quick pros/cons lists or to complement a DecisionMatrix with narrative. See `/editing/widgets/pros-cons.mdx`.
+- Showcase: For a single concept with labeled sections (Impact, Risks, Signals). Great for Signals/Anti-signals.
+- Checklist: For acceptance criteria or design review checklists (6–12 concise items). See `/editing/widgets/checklist.mdx`.
+
+See [Editing Widgets](/editing/widgets) for complete examples and evolving guidance.
 
 ## 20. Optional Diagram Integrations (Use When They Add Clear Value)
 
@@ -395,6 +431,11 @@ flowchart TB
 - For config/infra (YAML, Terraform, Helm, etc.), use proper language highlighting and `showLineNumbers`.
 - If the topic is programming-oriented, provide the language triad (Python, Go, Node.js). If not code-centric, include at least one realistic config/example block (YAML/JSON/Terraform/etc.).
 
+### Code Example Narrative (Required before language tabs)
+
+- For every flow-like or multi-step example, precede tabs with a vertical Mermaid flowchart (`flowchart TB`) wrapped in `<Figure>` that summarizes the call sequence, decisions, and error paths.
+- Keep 3–5 nodes per view; quote multi-word labels; no tabs inside fences; ensure the Figure applies to all language tabs that follow.
+
 ### Tabbed Code Widget (Example)
 
 ````mdx
@@ -430,13 +471,14 @@ import TabItem from '@theme/TabItem'
 </Tabs>
 ````
 
-## 22. Tables
+## 22. Tables and Widget Preference
 
-- For comparisons and showcases, prefer reusable components from the Editing Widgets sections (/editing/category/widgets) first:
-  - Use `Vs` for A/B/N comparisons.
+- For comparisons and showcases, prefer reusable components from `/editing/widgets` first:
+  - Use `DecisionMatrix` for multi-criteria option comparisons (preferred over ad-hoc markdown tables).
+  - Use `Vs` for A/B/N comparisons at-a-glance with short bullet points.
   - Use `Showcase` for curated highlights with labeled sections (Impact, Trade-offs, Signals, etc.).
   - Use category widgets where appropriate (`Checklist`, `ProsCons`, `Steps`/`Timeline`, `FAQ`, `Callout`/`Alert`, `Metric`/`KPI`, `Cards`/`CardGrid`).
-- Use tables when a grid communicates better than cards/components (e.g., many options with many attributes) and keep it scannable.
+- Use plain markdown tables only when a grid communicates better than cards/components (e.g., many options with many attributes) and keep it scannable.
 
 ## 23. Links and References (Strict)
 
@@ -457,6 +499,53 @@ import TabItem from '@theme/TabItem'
   1. <a href="https://example.com/guide" target="_blank" rel="nofollow noopener noreferrer">Author, Title ↗️</a>
   2. <a href="https://example.com/another" target="_blank" rel="nofollow noopener noreferrer">Another Source ↗️</a>
   ```
+
+## 26.1 SEO & Discoverability (Required)
+
+- Meta & frontmatter
+  - Provide `title`, `description` (≤160 chars), `keywords` (8–20), `image` (1200×630), `slug`, `tags` (10–20) in frontmatter.
+  - Include `<Head>` with `meta` tags for `description`, `og:title`, `og:description`, `og:image`, `twitter:card`, and canonical `<link rel="canonical">` when needed.
+- Structured data (JSON-LD)
+  - Embed `Article` JSON-LD with `headline`, `description`, `author`, `dateModified`, `image`, `keywords`.
+  - Embed `BreadcrumbList` JSON-LD reflecting the doc lineage.
+  - Optionally embed `FAQPage` JSON-LD if a FAQ section exists.
+- Breadcrumbs
+  - Ensure visible breadcrumbs via site theme (if enabled) and always include `BreadcrumbList` JSON-LD for crawlers.
+- GPT/chat visibility best practices
+  - Start with TL;DR and Learning Objectives; include a concise, extractive intro.
+  - Use consistent headings, explicit definitions, and a short FAQ (3–5 Q/A) to aid retrieval.
+  - Prefer descriptive alt text in `Figure`; keep code filenames and language labels explicit.
+  - Add a "Questions this article answers" list (3–6 bullets) near the end when relevant.
+- Tags section (visible)
+  - Add a `## Tags` section before References listing 10–20 relevant tags (single line each). Tags must map to frontmatter `tags`.
+
+Example (JSON-LD Article + Breadcrumbs):
+
+```mdx title="Structured data" showLineNumbers
+import Head from '@docusaurus/Head'
+
+<Head>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Consistency Models in Distributed Systems",
+    "description": "Practical trade-offs among strong, eventual, and causal consistency.",
+    "image": "https://archman.dev/img/consistency/social-card.png",
+    "keywords": ["consistency","strong consistency","eventual consistency","causal"],
+    "author": {"@type":"Person","name":"Archman"},
+    "dateModified": "2025-09-10"
+  })}</script>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"BreadcrumbList",
+    "itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Foundational Concepts","item":"https://archman.dev/docs/foundational-concepts"},
+      {"@type":"ListItem","position":2,"name":"Basic Distributed Systems Concepts","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts"},
+      {"@type":"ListItem","position":3,"name":"Consistency Models","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts/consistency-models"}
+    ]
+  })}</script>
+</Head>
+```
 
 ## 24. Internal Cross-Linking (Canonical-Driven)
 

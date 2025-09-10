@@ -109,6 +109,13 @@ OVERVIEW_PARAGRAPHS
 
 - Do not inline child content in parent `index.mdx`. Keep overview under ~180 words followed by the DocCardList.
 
+- Add a vertical “Learning map” figure (Mermaid `flowchart TB` or `mindmap`) wrapped in `<Figure>` to show recommended navigation through subtopics.
+- Add a short "Prerequisites" list (bullets) with relative links to required prior topics within the docs tree (when applicable).
+- When including any diagram or image, always wrap in the `Figure` component per widget guidance.
+- Add SEO meta and structured data at the category level:
+  - Frontmatter: `title`, `description` (≤160), `keywords` (8–20), `image` (1200×630).
+  - Insert `<Head>` with `Article` JSON‑LD (category overview) and a `BreadcrumbList` JSON‑LD reflecting the category path.
+
 ## Step 3.1. Scaffold missing canonical items
 
 - For each entry in `toCreate`:
@@ -149,6 +156,8 @@ Validation steps (no writes)
 - Check existence and content:
   - `folderPath/_category_.json` exists with label equal to the canonical parent label.
   - `folderPath/index.mdx` contains the DocCardList import and usage and an overview under ~180 words.
+  - `folderPath/index.mdx` includes a vertical “Learning map” figure and a "Prerequisites" list with at least one internal link (when applicable).
+  - `folderPath/index.mdx` includes SEO meta (frontmatter `description`, `keywords`, `image`) and JSON‑LD scripts (`Article`, `BreadcrumbList`).
   - For each canonical node under the target subtree, in order:
     - If parent: `.../PARENT_SLUG/index.mdx` exists with DocCardList and an overview; `_category_.json` label matches canonical.
     - If leaf: `.../LEAF_SLUG.md` exists with a single H1 matching the canonical label (additional content allowed).

@@ -157,6 +157,15 @@ Categories (expand based on build prompt):
 13. No unverifiable claims
 14. Internal link integrity
 15. Output format adherence
+16. Engagement presence & quality (TL;DR, objectives, scenario, hands‑on, self‑check, one‑thing, next‑steps)
+17. Persona fit (declared personas + tone/assumptions)
+18. Difficulty & estimatedTime fit (frontmatter aligns with depth/length)
+19. SEO meta present & valid (title, description ≤160 chars, keywords 8–20, image 1200×630, slug)
+20. Structured data present (Article JSON‑LD + BreadcrumbList; FAQPage when a FAQ exists)
+21. Visible breadcrumbs (theme) and JSON‑LD breadcrumbs correct
+22. Tags present (10–20), relevant, and consistent with frontmatter `tags`
+23. GPT/chat visibility helpers (FAQ 3–5 items when relevant; “Questions this article answers”) 
+19. Proper widget usage (Figure for all diagrams/images; Code Tabs & ConfigTabs consistent; Decisions use DecisionMatrix or Vs; Checklists for design review; ProsCons/Showcase used where appropriate)
 
 All must be PASS or justified with explicit rationale plus remediation suggestion.
 
@@ -180,6 +189,22 @@ Body content
 4. Added Sections (with justification)
 5. Unresolved / Non-Applicable Items (with reason)
 6. Suggested Future Enhancements (optional)
+
+Widget Usage Review (required subsection):
+- Correct: Figure wraps all visuals; Tabs/ConfigTabs where needed; DecisionMatrix/Vs where comparing; Checklist where reviewing; ProsCons/Showcase used appropriately
+- Issues: …
+
+Engagement Findings (required subsection):
+- Strengths: …
+- Gaps: …
+- Persona alignment: …
+
+SEO & Discoverability (required subsection):
+- Meta: title/description/keywords/image/slug present and high‑quality
+- JSON‑LD: Article + BreadcrumbList valid; FAQPage (if FAQ present)
+- Breadcrumbs: visible + JSON‑LD consistent
+- Tags: 10–20 relevant, match frontmatter
+- GPT visibility: TL;DR crisp; FAQ present if applicable; “Questions answered” present
 
 No additional commentary outside these sections.
 
