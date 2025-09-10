@@ -1,5 +1,15 @@
 ---
 sidebar_position: 1
+title: Latency, Throughput, Bandwidth
+description: "Clear definitions, interactions, and practical tuning to hit latency SLOs without sacrificing throughput."
+docType: deep-dive
+difficulty: intro
+estimatedTime: 14
+lastReviewed: 2025-09-10
+personas: ["engineer","architect","lead"]
+keywords: ["latency","throughput","bandwidth","p95","p99","queueing","bdp","timeouts","retries","idempotency","slo","error budgets","backpressure","rate limiting","load shedding","prometheus","histograms"]
+image: /img/archman-social-card.webp
+tags: ["distributed-systems","latency","throughput","bandwidth","queueing-theory","slo","observability","performance","reliability","backpressure","rate-limiting","timeouts","retries","idempotency"]
 ---
 
 # Latency, Throughput, Bandwidth
@@ -9,8 +19,56 @@ import Checklist from "@site/src/components/Checklist";
 import ProsCons from "@site/src/components/ProsCons";
 import Tabs from '@theme/Tabs'
 import TabItem from '@theme/TabItem'
+import Head from '@docusaurus/Head'
+
+<Head>
+  <meta name="description" content="Clear definitions, interactions, and practical tuning to hit latency SLOs without sacrificing throughput." />
+  <meta property="og:title" content="Latency, Throughput, Bandwidth" />
+  <meta property="og:description" content="Clear definitions, interactions, and practical tuning to hit latency SLOs without sacrificing throughput." />
+  <meta property="og:image" content="https://archman.dev/img/archman-social-card.webp" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="canonical" href="https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts/latency-throughput-bandwidth" />
+  <script type="application/ld+json">{JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Latency, Throughput, Bandwidth",
+    "description": "Clear definitions, interactions, and practical tuning to hit latency SLOs without sacrificing throughput.",
+    "image": "https://archman.dev/img/archman-social-card.webp",
+    "keywords": [
+      "latency","throughput","bandwidth","p95","p99","queueing","bdp","timeouts","retries","idempotency","slo","error budgets","backpressure","rate limiting","load shedding","prometheus","histograms"
+    ],
+    "author": {"@type":"Person","name":"Archman"},
+    "dateModified": "2025-09-10"
+  })}</script>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"BreadcrumbList",
+    "itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Foundational Concepts","item":"https://archman.dev/docs/foundational-concepts"},
+      {"@type":"ListItem","position":2,"name":"Basic Distributed Systems Concepts","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts"},
+      {"@type":"ListItem","position":3,"name":"Latency, Throughput, Bandwidth","item":"https://archman.dev/docs/foundational-concepts/basic-distributed-systems-concepts/latency-throughput-bandwidth"}
+    ]
+  })}</script>
+</Head>
 
 Latency, throughput, and bandwidth are foundational performance concepts in distributed systems. This article clarifies definitions, shows how they interact, and provides practical guidance for designing, measuring, and operating systems with explicit performance targets. We go deeper into queueing effects, tail behavior, payload sizing, and practical measurement so you can set realistic SLOs and tune systems without trading one problem for another.
+
+## TL;DR
+
+Optimize for explicit P95/P99 latency and success SLOs. Batching and higher concurrency raise throughput but often worsen tail latency near saturation. Keep headroom, propagate deadlines, use bounded queues and backpressure, and validate with histogram-based metrics and load tests across realistic payload sizes.
+
+## Learning objectives
+
+- You will be able to define latency, throughput, and bandwidth with correct units and percentiles.
+- You will be able to reason about queueing effects and tune concurrency/batching safely.
+- You will be able to set and decompose latency budgets and propagate timeouts/retries.
+- You will be able to measure tail latency correctly with histograms and traces.
+
+## Motivating scenario
+
+Your checkout API intermittently misses its P95=300 ms target during traffic bursts. A recent change batched writes to increase throughput, but tail latency spiked and error-budget burn alerts fired. You need a structured way to balance throughput gains against strict user-facing latency, with concrete signals, tactics, and safe rollback options.
+
+A holistic approach links latency budgets to per-hop sub-budgets, limits concurrency, applies backpressure during peaks, and validates with load tests that sweep payload sizes. The goal is stable P95/P99 under realistic variability—not just a fast median.
 
 ## Executive summary
 
@@ -18,6 +76,20 @@ Latency, throughput, and bandwidth are foundational performance concepts in dist
 - **Throughput**: Number of operations processed per unit time.
 - **Bandwidth**: Maximum data transfer capacity of a link or component.
 - **Key insight**: Improving one can degrade another (e.g., batching raises throughput but may increase latency). Always optimize against explicit [SLOs](../../quality-attributes/performance-and-scalability/latency-budgets-slas-slos).
+
+## Hands-on exercise
+
+Follow these steps to quantify the latency–throughput trade-off for your service:
+
+1. Save the k6 script from the "Load testing example (k6)" section as `k6-script.js`.
+2. Run a steady test at different payload sizes (1 KB, 64 KB) and constant arrival rates (e.g., 200–800 rps):
+
+```bash title="run-k6.sh" showLineNumbers
+k6 run k6-script.js
+```
+
+3. Record P50/P95/P99 latency and error rate; note queue depth and saturation on the service.
+4. Tune batch size and concurrency limits; re-run until P95 meets the SLO with 10–20% headroom.
 
 <Figure caption="Mental model: relating latency, throughput, and bandwidth (vertical)">
 
@@ -395,6 +467,25 @@ export default function () {
 - [Concurrency, Parallelism, Synchronization](./concurrency-parallelism-synchronization)
 - [Event-driven and Reactive](../../foundational-concepts/programming-paradigms/event-driven-and-reactive)
 - [Dataflow / Stream Processing](../../foundational-concepts/programming-paradigms/dataflow-stream-processing)
+
+## Self-check
+
+1. When does batching help throughput but harm tail latency, and how would you detect it?
+2. How do you set per-hop timeouts so that end-to-end P95 meets a 300 ms budget?
+3. Which histogram-based metrics and traces would you add to debug tail spikes?
+
+## One takeaway
+
+:::info
+Protect tail latency with bounded concurrency and backpressure; raise throughput only within the error-budget guardrails of your SLOs.
+:::
+
+## Next steps
+
+- Read: [Latency budgets, SLAs, SLOs](../../quality-attributes/performance-and-scalability/latency-budgets-slas-slos)
+- Learn: [Timeouts & Retries](../../distributed-systems-and-microservices/resilience-and-reliability-patterns/timeouts-retries-exponential-backoff-jitter)
+- Observe: [Golden signals](../../observability-and-operations/metrics/golden-signals-latency-traffic-errors-saturation)
+- Deep dive (external): <a href="https://queue.acm.org/detail.cfm?id=1814327" target="_blank" rel="nofollow noopener noreferrer">Dean & Barroso, The Tail at Scale ↗️</a>
 
 ## References
 
