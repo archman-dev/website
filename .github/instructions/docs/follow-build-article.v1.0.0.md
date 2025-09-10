@@ -109,6 +109,10 @@ Follow instruction spec exactly. If absent, default to: precise, neutral-explana
 2. Ensure `title` matches final article title.
 3. Do not fabricate authors; retain existing.
 4. Avoid date changes unless explicitly required.
+5. Slug hygiene and route integrity:
+   - Do NOT set `slug` on category index pages (`index.mdx` / `index.md`); rely on the folder path.
+   - For leaf docs (non-index), prefer omitting `slug` unless intentionally overriding canonical.
+   - Eliminate duplicate trailing segments (e.g., `.../what-is-software-architecture/what-is-software-architecture`). If a slug equals its parent folder, remove the slug.
 
 ---
 
@@ -126,6 +130,7 @@ Follow instruction spec exactly. If absent, default to: precise, neutral-explana
 1. Use relative links for internal docs.
 2. Ensure all links resolve logically (report unresolved references in Audit Report).
 3. Avoid bare URLs—use descriptive link text.
+4. Breadcrumbs and JSON-LD must reflect the actual folder-based route when dealing with index pages (no slug overrides).
 
 ---
 
@@ -164,8 +169,9 @@ Categories (expand based on build prompt):
 20. Structured data present (Article JSON‑LD + BreadcrumbList; FAQPage when a FAQ exists)
 21. Visible breadcrumbs (theme) and JSON‑LD breadcrumbs correct
 22. Tags present (10–20), relevant, and consistent with frontmatter `tags`
-23. GPT/chat visibility helpers (FAQ 3–5 items when relevant; “Questions this article answers”) 
+23. GPT/chat visibility helpers (FAQ 3–5 items when relevant; “Questions this article answers”)
 19. Proper widget usage (Figure for all diagrams/images; Code Tabs & ConfigTabs consistent; Decisions use DecisionMatrix or Vs; Checklists for design review; ProsCons/Showcase used where appropriate)
+24. Slug hygiene & route integrity: index pages have no `slug`; no duplicate trailing segment; leaves only override slug when intentional and consistent with canonical; BreadcrumbList matches final route
 
 All must be PASS or justified with explicit rationale plus remediation suggestion.
 
@@ -191,15 +197,18 @@ Body content
 6. Suggested Future Enhancements (optional)
 
 Widget Usage Review (required subsection):
+
 - Correct: Figure wraps all visuals; Tabs/ConfigTabs where needed; DecisionMatrix/Vs where comparing; Checklist where reviewing; ProsCons/Showcase used appropriately
 - Issues: …
 
 Engagement Findings (required subsection):
+
 - Strengths: …
 - Gaps: …
 - Persona alignment: …
 
 SEO & Discoverability (required subsection):
+
 - Meta: title/description/keywords/image/slug present and high‑quality
 - JSON‑LD: Article + BreadcrumbList valid; FAQPage (if FAQ present)
 - Breadcrumbs: visible + JSON‑LD consistent

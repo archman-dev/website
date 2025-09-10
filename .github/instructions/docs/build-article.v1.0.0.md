@@ -95,6 +95,9 @@ graph TD;
   - `keywords`: 8–20 comma-separated or array form, aligned to content and canonical terms.
   - `image`: social preview image path under `/img/**` (1200×630 recommended).
   - `slug`: stable, kebab-case URL segment; avoid dates; ≤60 chars.
+    - Do NOT set `slug` on category index files (`index.mdx`/`index.md`). Rely on the folder path.
+    - For leaf docs (non-index), prefer omitting `slug` unless intentionally overriding canonical path.
+    - Never create a duplicate trailing segment (e.g., `.../what-is-software-architecture/what-is-software-architecture`). If a slug equals the parent folder name, remove the slug.
   - `tags`: array of 10–20 tags (see §26.1) for indexing and visible Tags section.
   - Keep values aligned with article depth and tone; do not fabricate authors or dates.
 
