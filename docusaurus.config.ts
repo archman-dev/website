@@ -122,7 +122,7 @@ const config: Config = {
   },
   themeConfig: {
     // Replace with your project's social card
-    image: "img/archman.webp",
+    image: "img/archman-social-card.webp",
     navbar: {
       title: "Architecture Manual",
       logo: {
