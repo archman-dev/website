@@ -1,17 +1,105 @@
 ---
 title: "Components, Connectors, and Configurations"
+description: "The core building blocks of systems: components, the connectors between them, and the configurations that shape runtime behavior."
+docType: deep-dive
+difficulty: intro
+estimatedTime: 16
+lastReviewed: 2025-09-10
+personas: ["engineer","architect","lead","manager"]
+keywords:
+  - systems thinking
+  - components
+  - connectors
+  - configurations
+  - topology
+  - api design
+  - grpc
+  - rest
+  - message queue
+  - event stream
+  - kafka
+  - rabbitmq
+  - reliability
+  - observability
+  - quality attributes
+image: /img/archman-social-card.webp
+tags:
+  - systems-thinking
+  - components
+  - connectors
+  - configurations
+  - api-design
+  - distributed-systems
+  - reliability
+  - observability
+  - operations
+  - security-architecture
 sidebar_label: "Components & Connectors"
 ---
 
+import Head from '@docusaurus/Head';
 import Figure from '@site/src/components/Figure';
 import Checklist from '@site/src/components/Checklist';
 import ProsCons from '@site/src/components/ProsCons';
+import DecisionMatrix from '@site/src/components/DecisionMatrix';
+import Showcase from '@site/src/components/Showcase';
+
+<Head>
+  <meta
+    name="description"
+    content="The core building blocks of systems: components, the connectors between them, and the configurations that shape runtime behavior."
+  />
+  <meta property="og:title" content="Components, Connectors, and Configurations" />
+  <meta
+    property="og:description"
+    content="The core building blocks of systems: components, the connectors between them, and the configurations that shape runtime behavior."
+  />
+  <meta property="og:image" content="https://archman.dev/img/archman-social-card.webp" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="canonical" href="https://archman.dev/docs/foundational-concepts/system-thinking-basics/components-connectors-configurations" />
+  <script type="application/ld+json">{JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Components, Connectors, and Configurations",
+    "description": "The core building blocks of systems: components, the connectors between them, and the configurations that shape runtime behavior.",
+    "image": "https://archman.dev/img/archman-social-card.webp",
+    "keywords": [
+      "systems thinking","components","connectors","configurations","topology","api design","grpc","rest","message queue","event stream","kafka","rabbitmq","reliability","observability","quality attributes"
+    ],
+    "author": {"@type":"Person","name":"Archman"},
+    "dateModified": "2025-09-10"
+  })}</script>
+  <script type="application/ld+json">{JSON.stringify({
+    "@context":"https://schema.org",
+    "@type":"BreadcrumbList",
+    "itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Foundational Concepts","item":"https://archman.dev/docs/foundational-concepts"},
+      {"@type":"ListItem","position":2,"name":"System Thinking Basics","item":"https://archman.dev/docs/foundational-concepts/system-thinking-basics"},
+      {"@type":"ListItem","position":3,"name":"Components, Connectors, and Configurations","item":"https://archman.dev/docs/foundational-concepts/system-thinking-basics/components-connectors-configurations"}
+    ]
+  })}</script>
+</Head>
 
 # Components, Connectors, and Configurations
 
 In software architecture, **system thinking** is the practice of viewing a system as a holistic collection of interacting parts. The most fundamental of these parts are **components**, the **connectors** that link them, and the **configurations** that arrange them. Understanding these three elements is the first step toward designing robust, scalable, and maintainable systems.
 
 A system's architecture is defined by its components, how they are connected, and the rules that govern their interaction. This structure dictates the system's capabilities, its quality attributes (like performance and reliability), and how it can evolve over time.
+
+## TL;DR
+
+Components encapsulate responsibilities; connectors carry interactions (sync or async); configurations arrange both into a runnable topology. Pick one primary connector per interaction, design for timeouts, retries, and idempotency, and avoid shared databases as an integration mechanism.
+
+## Learning objectives
+
+- You will be able to distinguish components, connectors, and configurations and explain how they interact.
+- You will be able to choose an appropriate connector (REST, gRPC, queue, stream) for a given scenario.
+- You will be able to sketch a configuration that supports independent deployability and observability.
+- You will be able to identify anti-patterns such as shared databases and chatty synchronous calls.
+
+## Motivating scenario
+
+Your team is decomposing a growing monolith into a few services: `ProductService`, `OrderService`, and a checkout web app. Performance is degraded by chatty HTTP calls and cross-service DB access. By clarifying component boundaries, choosing a single primary connector per interaction, and drawing a clear configuration, you reduce coupling, improve resilience, and make independent deployments safe.
 
 ## Core Concepts
 
@@ -31,7 +119,7 @@ A **configuration** is the structural arrangement of components and connectors. 
 - **Examples**: A client-server topology, a pipeline of data-processing services, a star-shaped topology with a central message broker.
 
 <Figure caption="A simple client–server configuration showing two components (Client, Server) linked by a connector (REST API).">
-```mermaid
+```mermaid title="client-server.mmd" showLineNumbers
 flowchart TB
   subgraph sys["System Configuration"]
     Client["Client"] -->|REST| Server["Server"]
@@ -58,7 +146,7 @@ Let's consider a simple e-commerce system.
     The `OrderService` receives a request, calls the `ProductService` via gRPC to validate product details, persists the order to its `PostgreSQL DB`, and publishes an `OrderCreated` event to a `Kafka Topic`.
 
 <Figure caption="Configuration for an e-commerce system's order processing flow.">
-```mermaid
+```mermaid title="order-processing-topology.mmd" showLineNumbers
 flowchart TB
   A["Client"] -->|"HTTP POST /orders"| B["OrderService"]
   B -->|"gRPC GetProduct"| C["ProductService"]
@@ -132,7 +220,7 @@ services:
 The choice of connector is a critical architectural decision that impacts performance, reliability, and coupling. Use this mental model to guide your selection.
 
 <Figure caption="A decision flow for selecting a connector based on communication style and guarantees.">
-```mermaid
+```mermaid title="connector-selection.mmd" showLineNumbers
 flowchart TB
     A[Start] --> B{Sync or Async Communication?};
     B -- Sync --> C{Internal or External?};
@@ -153,13 +241,17 @@ flowchart TB
 
 ## Decision Matrix: Connector Trade-offs
 
-| Connector Type      | Coupling | Performance | Complexity | Use Case                               |
-| ------------------- | -------- | ----------- | ---------- | -------------------------------------- |
-| **REST API**        | Low      | Medium      | Low        | External-facing APIs, simple services. |
-| **gRPC**            | Medium   | High        | Medium     | Internal service-to-service comms.     |
-| **Message Queue**   | Very Low | High        | Medium     | Decoupled tasks, load leveling.        |
-| **Event Stream**    | Very Low | Very High   | High       | Event sourcing, stream processing.     |
-| **Shared Database** | High     | High        | Low        | (Anti-pattern) Monoliths, simple apps. |
+<DecisionMatrix
+  caption="Choose connectors by coupling, performance, and complexity"
+  columns={["Coupling", "Performance", "Complexity", "Typical use"]}
+  rows={[
+    { name: "REST API", cells: ["Low", "Medium", "Low", "External-facing APIs; simple integrations"], highlightTone: "info" },
+    { name: "gRPC", cells: ["Medium", "High", "Medium", "Internal service-to-service; low latency"], highlightTone: "info" },
+    { name: "Message Queue", cells: ["Very Low", "High", "Medium", "Asynchronous tasks; load leveling"], highlightTone: "positive" },
+    { name: "Event Stream", cells: ["Very Low", "Very High", "High", "Event sourcing; stream processing"], highlightTone: "positive" },
+    { name: "Shared Database (anti-pattern)", cells: ["High", "High", "Low", "Legacy monoliths; avoid for integration"], highlightTone: "warning" }
+  ]}
+/>
 
 ## Implementation Notes / Patterns / Pitfalls
 
@@ -179,6 +271,13 @@ flowchart TB
     'Do not build custom connector logic when a standard, off-the-shelf solution exists.'
   ]}
 />
+
+## Hands‑on exercise: Map and improve a real flow
+
+1. Pick one user flow (e.g., create order). Draw its current configuration using a simple Mermaid diagram with components and connectors.
+2. Identify the primary connector per interaction and remove unnecessary chatty calls; consider replacing sync hops with an event or queue where appropriate.
+3. Define timeouts, retries with jitter, and idempotency keys at each connector.
+4. Add basic SLOs (success rate, p95 latency) and instrument logs/metrics/traces at boundaries.
 
 ## Edge Cases and Failure Modes
 
@@ -247,6 +346,44 @@ flowchart TB
 - [Interfaces & Contracts](./interfaces-and-contracts)
 - [Abstractions & Encapsulation](./abstractions-and-encapsulation)
 - [Architectural Styles](../../architectural-styles)
+
+## Signals & anti‑signals
+
+<Showcase
+  title="When formal components/connectors help vs. add overhead"
+  sections={[
+    {
+      label: 'Signals',
+      body: (
+        <>Multi-team system; independent deployability required; cross‑process boundaries; need for async resilience; regulatory or performance SLOs.</>
+      ),
+      tone: 'positive'
+    },
+    {
+      label: 'Anti‑signals',
+      body: (
+        <>Tiny app; single team; in‑process calls only; throwaway prototype where speed outweighs structure.</>
+      ),
+      tone: 'info'
+    }
+  ]}
+/>
+
+## Next steps
+
+- Calibrate connector choices with [API & Interface Design](../../api-and-interface-design)
+- Review reliability levers: [Timeouts, Retries, Backoff, Jitter](../../reliability-resilience-and-performance-engineering/reliability-patterns/hedging-requests-timeouts-retries)
+- Plan observability with [Observability & Operations](../../observability-and-operations)
+
+## Self‑check
+
+1. What distinguishes a component from its connectors?
+2. When would you choose an event stream over a message queue?
+3. Which connector policies most affect your SLOs (and how)?
+
+::::info
+One takeaway: Favor one primary connector per interaction and design it with explicit timeouts, retries, and idempotency.
+::::
 
 ## References
 1. <a href="https://www.pearson.com/en-us/subject-catalog/p/software-architecture-in-practice/P200000007481/9780321815736" target="_blank" rel="nofollow noopener noreferrer">Software Architecture in Practice, 3rd Edition ↗️</a>

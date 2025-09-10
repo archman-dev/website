@@ -13,6 +13,8 @@ tags: [
 
 Recently, I encountered a frustrating issue while working on a high-throughput data publishing system using Celery and MQTT. Our system was processing thousands of BLE (Bluetooth Low Energy) messages and publishing them to an MQTT broker. Everything worked fine initially, but after refactoring to improve code organization, messages stopped being delivered.
 
+<!-- truncate -->
+
 ### What Changed?
 
 Originally, our MQTT client was created inside the Celery task:
