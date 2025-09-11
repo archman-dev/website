@@ -121,8 +121,12 @@ const config: Config = {
     mermaid: true,
   },
   themeConfig: {
-    // Replace with your project's social card
-    image: "img/archman-social-card.webp",
+    image: "/img/archman-social-card.webp",
+    colorMode: {
+      defaultMode: 'dark',
+      disableSwitch: false,
+      respectPrefersColorScheme: true,
+    },
     navbar: {
       title: "Architecture Manual",
       logo: {

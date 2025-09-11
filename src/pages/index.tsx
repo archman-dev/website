@@ -1,208 +1,59 @@
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
+// import TechVisualization from '@site/src/components/TechVisualization';
 import Heading from '@theme/Heading';
 import Layout from '@theme/Layout';
 import clsx from 'clsx';
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
 
 import styles from './index.module.css';
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
-  const techBadges = [
-    {label: 'Python', className: styles.badgePython},
-    {label: 'Go', className: styles.badgeGo},
-    {label: 'Node.js', className: styles.badgeNode},
-  ];
-  const topicBadges = [
-    'Architecture',
-    'System Design',
-    'Design Patterns',
-    'Microservices',
-    'Event-Driven',
-    'Monolith',
-    'DDD',
-    'CQRS',
-    'Saga',
-    'REST',
-    'gRPC',
-    'Messaging',
-    'Caching',
-    'Consistency',
-    'CAP Theorem',
-    'Scalability',
-    'Reliability',
-    'Performance',
-    'Resilience',
-    'Observability',
-    'SLOs',
-    'SLIs',
-    'Tracing',
-    'Metrics',
-    'Logging',
-    'Security',
-    'OAuth2',
-    'JWT',
-    'Threat Modeling',
-    'Cloud',
-    'Kubernetes',
-    'Docker',
-    'IaC',
-    'Terraform',
-    'API Gateway',
-    'Service Mesh',
-    'Data Modeling',
-    'ACID',
-    'BASE',
-    'Sharding',
-    'Replication',
-    'Streaming',
-  ];
-  const getBadgeClass = (label: string): string | undefined => {
-    switch (label) {
-      case 'Architecture':
-      case 'System Design':
-      case 'Design Patterns':
-      case 'Monolith':
-        return styles.badgeArch;
-      case 'Microservices':
-      case 'Event-Driven':
-      case 'API Gateway':
-      case 'Service Mesh':
-      case 'Messaging':
-      case 'REST':
-      case 'gRPC':
-      case 'Saga':
-      case 'CQRS':
-        return styles.badgeIntegration;
-      case 'Data Modeling':
-      case 'ACID':
-      case 'BASE':
-      case 'Sharding':
-      case 'Replication':
-      case 'Consistency':
-      case 'CAP Theorem':
-      case 'Streaming':
-        return styles.badgeData;
-      case 'Scalability':
-      case 'Performance':
-      case 'Caching':
-        return styles.badgePerformance;
-      case 'Reliability':
-      case 'Resilience':
-      case 'Observability':
-      case 'SLOs':
-      case 'SLIs':
-      case 'Tracing':
-      case 'Metrics':
-      case 'Logging':
-        return styles.badgeReliability;
-      case 'Security':
-      case 'OAuth2':
-      case 'JWT':
-      case 'Threat Modeling':
-        return styles.badgeSecurity;
-      case 'Cloud':
-      case 'Kubernetes':
-      case 'Docker':
-      case 'IaC':
-      case 'Terraform':
-        return styles.badgeCloud;
-      default:
-        return undefined;
-    }
-  };
-  const badges = [
-    ...techBadges.map(({label, className}) => ({label, className})),
-    ...topicBadges.map((label) => ({label, className: getBadgeClass(label)})),
-  ];
-
-  // Shuffle badges client-side to avoid SSR hydration mismatches
-  function shuffleArray<T>(arr: T[]): T[] {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
-
-  const [row1, setRow1] = useState(badges);
-  const [row2, setRow2] = useState(badges);
-  function rotateArray<T>(arr: T[], offset: number): T[] {
-    const n = arr.length;
-    if (n === 0) return arr.slice();
-    const k = ((offset % n) + n) % n;
-    return arr.slice(k).concat(arr.slice(0, k));
-  }
-  useEffect(() => {
-    const s = shuffleArray(badges);
-    setRow1(s);
-    // Create a varied second row but still seamless by duplicating same order per-row
-    const offset = Math.floor(Math.random() * Math.max(1, s.length - 1));
-    setRow2(rotateArray(s, offset));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  
   return (
     <header className={clsx('hero', styles.heroBanner)}>
       <div className="container">
         <Heading as="h1" className={clsx('hero__title', styles.heroTitle)}>
-          Build Better Systems
+          <span className={clsx(styles.textGradient, styles.heroMainTitle)}>Software Architecture</span>
+          Online Manual & Learning Hub
           <br />
-          <span className={styles.textGradient}>Architecture that scales</span>
+          <span className={styles.heroSubtitle}>at Any Scale</span>
         </Heading>
-        <p className={clsx('hero__subtitle', styles.heroSubtitle)}>
-          {siteConfig.tagline}
+        <p className={clsx('hero__subtitle', styles.heroDescription)}>
+          ArchMan is a comprehensive platform for learning software architecture from first principles to real-world systems, designed for modern engineering teams.
         </p>
-        <div className={styles.badgeScroller} aria-label="Topics and technologies">
-          <div className={styles.scrollerInner} aria-hidden="false">
-            <div className={clsx(styles.scrollerRow, styles.rowLeft)} aria-hidden="false">
-              <div className={styles.rowTrackInner}>
-                <div className={styles.scrollerTrack}>
-                  {row1.map(({label, className}) => (
-                    <span key={`r1a-${label}`} className={clsx(styles.badge, className)} aria-label={label}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-                <div className={styles.scrollerTrack} aria-hidden="true">
-                  {row1.map(({label, className}) => (
-                    <span key={`r1b-${label}`} className={clsx(styles.badge, className)} aria-label={label}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className={clsx(styles.scrollerRow, styles.rowRight)} aria-hidden="true">
-              <div className={styles.rowTrackInner}>
-                <div className={styles.scrollerTrack}>
-                  {row2.map(({label, className}) => (
-                    <span key={`r2a-${label}`} className={clsx(styles.badge, className)} aria-label={label}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-                <div className={styles.scrollerTrack} aria-hidden="true">
-                  {row2.map(({label, className}) => (
-                    <span key={`r2b-${label}`} className={clsx(styles.badge, className)} aria-label={label}>
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
+        
+        {/* Performance Stats */}
+        <div className={styles.performanceStats}>
+          <div className={styles.statItem}>
+            <div className={styles.statNumber}>700+</div>
+            <div className={styles.statLabel}>Articles</div>
+          </div>
+          <div className={styles.statItem}>
+            <div className={styles.statNumber}>23</div>
+            <div className={styles.statLabel}>Categories</div>
+          </div>
+          <div className={styles.statItem}>
+            <div className={styles.statNumber}>3</div>
+            <div className={styles.statLabel}>Tech Stacks</div>
+          </div>
+          <div className={styles.statItem}>
+            <div className={styles.statNumber}>100%</div>
+            <div className={styles.statLabel}>Free & Open Source</div>
           </div>
         </div>
+
         <div className={styles.buttons}>
-          <Link className="button button--secondary button--lg" to="/docs/welcome/">
-            Start Learning →
+          <Link className="button button--primary button--lg" to="/docs/welcome/">
+            Start Learning for Free
           </Link>
-          <Link className="button button--outline button--lg" to="/blog">
-            Explore Blog
+          <Link className="button button--outline button--lg" to="https://github.com/archman-dev">
+            <svg className={styles.githubIcon} viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            View on GitHub
           </Link>
         </div>
       </div>
@@ -216,6 +67,7 @@ export default function Home(): ReactNode {
     <Layout
       title={siteConfig.title}
       description={siteConfig.tagline}>
+      {/* <TechVisualization /> */}
       <HomepageHeader />
       <main>
         <HomepageFeatures />
