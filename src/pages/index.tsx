@@ -18,8 +18,6 @@ function HomepageHeader() {
         <Heading as="h1" className={clsx('hero__title', styles.heroTitle)}>
           <span className={clsx(styles.textGradient, styles.heroMainTitle)}>Software Architecture</span>
           Online Manual & Learning Hub
-          <br />
-          <span className={styles.heroSubtitle}>at Any Scale</span>
         </Heading>
         <p className={clsx('hero__subtitle', styles.heroDescription)}>
           ArchMan is a comprehensive platform for learning software architecture from first principles to real-world systems, designed for modern engineering teams.
