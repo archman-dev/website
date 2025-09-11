@@ -106,6 +106,7 @@ graph TD;
 - `index.mdx` or `index.md` (overview):
   - 300–600 words. Include one visual (Mermaid preferred, wrapped in `<Figure>`) and a concise decision aid or mental model if appliable. Optionally include a short, relevant quote.
 - All other files (full topic):
+  - **MANDATORY: Hero component as the very first element** after frontmatter and imports
   - Target 900–1600 words (minimum 800). Include at least:
   - One decision model or sequence/state diagram (Mermaid, wrapped in `<Figure>`) where applicable.
   - For every flow-like or multi-step code example (especially those shown in multiple languages), include a sequential call flow Figure (vertical Mermaid flowchart, `flowchart TB`) before the code tabs. The diagram must clearly show the order of function/procedure calls, decision points, and error/return paths, using quoted node labels for any punctuation or multi-word text. This Figure should be shared across all language tabs for the same example.
@@ -114,10 +115,93 @@ graph TD;
     - Explicit sections for: Patterns/Pitfalls, Edge cases, Operational considerations (SLO/SLI, rollouts), Security/Privacy/Compliance (if applicable), Observability (logs/metrics/traces), and Testing.
     - “When to use” and “When not to use” if applicable.
 
-## 8.1 Engagement Layer (Mandatory, lightweight)
+## 8.1 Hero Component (MANDATORY - NO EXCEPTIONS)
+
+### 🚨 CRITICAL REQUIREMENT - DO NOT SKIP: 🚨
+
+Every single non-index article (any file that is NOT named `index.mdx` or `index.md`) MUST include a Hero component as the very first element after frontmatter and imports. This is non-negotiable and applies to ALL full topic articles without exception.
+
+**⚠️ COMMON AI MISTAKE: ⚠️**
+Many AI assistants forget to include the Hero component. This is the #1 most frequently missed requirement. Always check that you have included the Hero component before considering the article complete.
+
+### Hero Component Requirements (Step-by-Step Checklist)
+
+**BEFORE WRITING ANY CONTENT, VERIFY ALL OF THESE:**
+
+1. **Frontmatter**: Add `hide_title: true` to prevent Docusaurus from auto-generating H1 from title
+2. **Import**: `import Hero from "@site/src/components/Hero";`
+3. **Placement**: Immediately after imports, before any other content
+4. **Props** (REQUIRED vs OPTIONAL):
+   - `title`: Use the article title (same as frontmatter title) - this becomes the H1 (REQUIRED)
+   - `subtitle`: Use the frontmatter description (≤160 characters) (REQUIRED)
+   - `image`: Use topic-specific image path only if a per-topic image exists in the file structure (OPTIONAL - Hero component will fallback to `/img/archman-social-card.webp` automatically)
+   - `imageAlt`: Descriptive alt text for accessibility (REQUIRED)
+   - `size`: Use `"large"` for most articles, `"medium"` for shorter topics (REQUIRED)
+5. **CRITICAL**: Do NOT create a separate H1 heading in the article since the Hero component already provides it
+6. **Content Structure**: Start your article content with H2 headings (e.g., "## What Is...", "## Core Concepts")
+
+### Image Path Logic
+
+- **Primary**: Use `/img/{topic-category}/{topic-name}.png` (e.g., `/img/data-modeling/physical.png` - this is just an example)
+- **Fallback**: Hero component automatically falls back to `/img/archman-social-card.webp` if no image is provided
+- **Store images**: Place in `/static/img/` directory mirroring the article's path structure
+- **Usage**: Only specify the `image` prop if a per-topic image actually exists in the file structure. If no topic-specific image exists, omit the `image` prop entirely.
+
+**⚠️ IMPORTANT**: The `/img/data-modeling/physical.png` path shown above is ONLY an example to demonstrate the naming pattern. Do NOT use this specific path unless you're actually writing about physical data modeling. Only use the `image` prop when a topic-specific image actually exists in the file structure.
+
+### Example Hero Usage
+
+**With topic-specific image (when image exists in file structure):**
+
+```mdx
+---
+title: Physical Data Modeling
+description: "Optimize database implementations with indexes, partitions, storage engines, and performance tuning for specific database systems"
+hide_title: true
+---
+
+import Hero from "@site/src/components/Hero";
+
+<Hero
+  title="Physical Data Modeling"
+  subtitle="Optimize database implementations with indexes, partitions, storage engines, and performance tuning for specific database systems"
+  image="/img/data-modeling/physical.png"
+  imageAlt="Database optimization and performance tuning illustration"
+  size="large"
+/>
+
+## What Is Physical Data Modeling?
+
+Your content starts here with H2 headings, not H1...
+```
+
+**Without image prop (Hero component will use fallback automatically):**
+
+```mdx
+---
+title: Software Architecture Fundamentals
+description: "Core principles and practices for designing scalable, maintainable software systems"
+hide_title: true
+---
+
+import Hero from "@site/src/components/Hero";
+
+<Hero
+  title="Software Architecture Fundamentals"
+  subtitle="Core principles and practices for designing scalable, maintainable software systems"
+  imageAlt="Software architecture concepts illustration"
+  size="large"
+/>
+
+## What Is Software Architecture?
+
+Your content starts here with H2 headings, not H1...
+```
+
+## 8.2 Engagement Layer (Mandatory, lightweight)
 
 1. TL;DR: ≤80 words placed near the top of non-index articles.
-2. Learning objectives: 3–6 bullets starting with “You will be able to…”.
+2. Learning objectives: 3–6 bullets starting with "You will be able to…".
 3. Motivating scenario: 1–2 paragraphs grounding the topic in a real‑world context.
 4. Hands‑on exercise: a small practical task using the `Steps` widget with copy‑ready code/config.
 5. Self‑check: exactly 3 short questions; can use an ordered list or `FAQ` widget.
@@ -140,34 +224,48 @@ graph TD;
 - `index.mdx` or `index.md` (overview/category introductions)
   - Keep it concise: a summary/overview of the subject (typically 2–5 short paragraphs).
   - Include a decision-making aid or mental model when applicable, preferably visualized and wrapped in `<Figure>`.
-  - It may include a short, relevant quote from a recognized authority; ensure it’s clearly relevant to the topic (not generic) and attribute it.
+  - It may include a short, relevant quote from a recognized authority; ensure it's clearly relevant to the topic (not generic) and attribute it.
   - Favor high-level framing, scope boundaries, and how to navigate deeper articles.
+  - **NO Hero component required** for index files (only for files named `index.mdx` or `index.md`).
 
 - Other topic articles (e.g., `topic.md` or `topic.mdx`)
-  - Establish scope: clarify what the topic covers and what’s out of scope (delegated to siblings).
+  - **MANDATORY: Start with Hero component** as the very first element after imports
+  - **NO H1 heading** - the Hero component provides the H1 title
+  - Start content with H2 headings (e.g., "## What Is...", "## Core Concepts")
+  - Establish scope: clarify what the topic covers and what's out of scope (delegated to siblings).
   - Organize like a well-structured book section with scannable headings and a logical flow.
   - Include real-world examples, case studies, trade-offs, and edge cases (see Depth expectations above).
   - If teaching decisions, include a vertical mental model/flow using Mermaid (top-to-bottom, wrapped in `<Figure>`) and/or other suitable visualizations.
-  - Include “When to use” and “When not to use” sections when applicable (omit if genuinely not relevant).
-  - Add a short “Design review checklist” sub-section with 6–12 bullets capturing the most important acceptance criteria for the topic. Prefer the `Checklist` widget from /editing/category/widgets for this subsection.
+  - Include "When to use" and "When not to use" sections when applicable (omit if genuinely not relevant).
+  - Add a short "Design review checklist" sub-section with 6–12 bullets capturing the most important acceptance criteria for the topic. Prefer the `Checklist` widget from /editing/category/widgets for this subsection.
   - For comparisons or showcases of options/examples, prefer the MDX components in the Editing Widgets sections (/editing/category/widgets) (e.g., `Showcase`, `Vs`, `DecisionMatrix`, `Checklist`, `ProsCons`, `Steps`/`Timeline`) rather than ad-hoc lists; use tables only when a grid communicates better.
 
 ## 11. Structure Template (Adapt as Needed for Each Topic)
 
+### For Non-Index Articles (Full Topics)
+
+1. **Hero Component** (MANDATORY - first element after imports) - provides H1 title
+2. Brief introduction: why it matters; scope and boundaries (starts with H2)
+3. Core concepts or principles.
+4. Practical examples and real-world scenarios.
+5. Decision model / mental model (visualized) if this topic guides choices.
+6. Decision matrix/table (when comparing options).
+7. Implementation notes / patterns / pitfalls.
+   - For A/B/N comparisons or curated highlights, use `Vs` (A/B/N) and `Showcase` (and related components) as documented in Editing Widgets (/editing/widgets).
+8. Operational considerations (SLO/SLI targets, rollout/rollback, quotas/limits).
+9. Security, privacy, and compliance implications (data classification, authn/authz, secrets).
+10. Observability (logs/metrics/traces, correlation IDs, dashboards and alerts).
+11. When to use / When not to use (if applicable).
+12. Alternatives and related topics (link internally).
+13. References (with nofollow, external-link emoji, open in new tab).
+
+### For Index Articles (Overview/Category)
+
 - Title (H1): Canonical topic label.
 - Brief introduction: why it matters; scope and boundaries.
-- Core concepts or principles.
-- Practical examples and real-world scenarios.
-- Decision model / mental model (visualized) if this topic guides choices.
-- Decision matrix/table (when comparing options).
-- Implementation notes / patterns / pitfalls.
-  - For A/B/N comparisons or curated highlights, use `Vs` (A/B/N) and `Showcase` (and related components) as documented in Editing Widgets (/editing/widgets).
-- Operational considerations (SLO/SLI targets, rollout/rollback, quotas/limits).
-- Security, privacy, and compliance implications (data classification, authn/authz, secrets).
-- Observability (logs/metrics/traces, correlation IDs, dashboards and alerts).
-- When to use / When not to use (if applicable).
-- Alternatives and related topics (link internally).
-- References (with nofollow, external-link emoji, open in new tab).
+- Mental model/decision aid (visualized) if applicable.
+- Optional relevant quote from recognized authority.
+- Navigation guidance to deeper articles.
 
 ## 12. Diagrams and Visualizations
 
@@ -192,26 +290,10 @@ graph TD;
 
 ### 13.1 Preventing Text Clipping and Arrow Cutoff
 
-- **Always include an init directive** at the start of Mermaid diagrams to prevent text clipping and arrow cutoff:
-
-  ```mermaid
-  %%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 40, "rankSpacing": 35, "padding": 8, "wrap": true}, "themeVariables": {"fontSize": "14px"}} }%%
-  flowchart TB
-      Start["Data Fundamentals"] --> M["Data Modeling"]
-  ```
-
 - **Break long labels** with `<br/>` to prevent horizontal overflow:
   - Good: `T["Transactions & Isolation<br/>Levels"]`
   - Avoid: `T["Transactions & Isolation Levels"]` (may clip on mobile)
-- **Key init parameters**:
-  - `useMaxWidth: false` - prevents automatic width constraints that cut arrows
-  - `htmlLabels: true` - enables HTML formatting like `<br/>`
-  - `nodeSpacing: 40, rankSpacing: 35` - increases spacing between nodes
-  - `padding: 8` - adds padding around the diagram
-  - `wrap: true` - enables text wrapping
-  - `fontSize: "14px"` - sets readable font size (adjust to 13px if still clipping)
 - **If nodes still clip on mobile**, consider:
-  - Reducing font size to `"13px"` or `"12px"`
   - Splitting into multiple smaller diagrams (5–7 nodes each)
   - Using shorter, more concise labels
 
@@ -647,6 +729,11 @@ import Head from '@docusaurus/Head'
 - [ ] targetGlob respected (resolved files only under `./docs/**`).
 - [ ] Canonical read and applied to scope, depth, and sibling boundaries.
 - [ ] `index.mdx` or `index.md` files are concise, overview/decision-focused; quotes (if any) are relevant and attributed.
+- [ ] **Frontmatter includes `hide_title: true`** to prevent Docusaurus auto-H1 generation.
+- [ ] **🚨 CRITICAL: Non-index files include Hero component as the very first element after imports** with proper props (title, subtitle, imageAlt, size; image is optional). This is MANDATORY for ALL files except `index.mdx`/`index.md`. **THIS IS THE #1 MOST FREQUENTLY MISSED REQUIREMENT.**
+- [ ] **Hero component uses correct image prop** (only specify `image` if topic-specific image exists in file structure; omit if no per-topic image exists).
+- [ ] **NO H1 heading in article content** - Hero component provides the H1 title.
+- [ ] **Content starts with H2 headings** (e.g., "## What Is...", "## Core Concepts").
 - [ ] Non-index files are comprehensive (≥800 words), with structure, examples, and (if applicable) when-to-use/not-use.
 - [ ] A vertical mental model (Mermaid `TB`) is included when the topic teaches decisions; otherwise, the most suitable diagram is used.
 - [ ] Visualization type chosen per purpose (see matrix); used Mermaid by default and Kroki/Draw.io/Structurizr/Mindmap when clearly beneficial.
