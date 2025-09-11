@@ -136,12 +136,13 @@ const config: Config = {
           label: "Learn",
         },
         { to: "/blog", label: "Blog", position: "left" },
-        { to: "/editing/", label: "Editing", position: "left" },
+        { to: "/docs/tags", label: "Tags", position: "left" },
         {
           href: "https://github.com/archman-dev",
           label: "GitHub",
           position: "right",
         },
+        { to: "/editing/", label: "Editing", position: "right" },
       ],
     },
     docs: {
@@ -209,6 +210,26 @@ const config: Config = {
 
       // Optional: whether the insights feature is enabled or not on Docsearch (`false` by default)
       insights: true,
+    },
+    mermaid: {
+      theme: { light: "default", dark: "dark" },
+      options: {
+        flowchart: {
+          useMaxWidth: true,
+          htmlLabels: true,
+          nodeSpacing: 40,
+          rankSpacing: 40,
+          padding: 20,
+          wrap: true,
+          curve: "basis",
+          // Additional spacing for edge labels
+          edgeLabelSpacing: 80,
+          // edgeLabelFontSize: 12,
+        },
+        themeVariables: {
+          fontSize: "14px",
+        },
+      },
     },
   } satisfies Preset.ThemeConfig,
   themes: ["@docusaurus/theme-mermaid"],

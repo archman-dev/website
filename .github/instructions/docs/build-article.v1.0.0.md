@@ -190,6 +190,31 @@ graph TD;
 - Prefer `flowchart TB` for decision trees; split very large flows into smaller figures (5–9 nodes each) to keep parsing and readability stable.
 - If a diagram fails to parse, first quote labels with punctuation and re-check for stray tabs or unmatched brackets.
 
+### 13.1 Preventing Text Clipping and Arrow Cutoff
+
+- **Always include an init directive** at the start of Mermaid diagrams to prevent text clipping and arrow cutoff:
+
+  ```mermaid
+  %%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 40, "rankSpacing": 35, "padding": 8, "wrap": true}, "themeVariables": {"fontSize": "14px"}} }%%
+  flowchart TB
+      Start["Data Fundamentals"] --> M["Data Modeling"]
+  ```
+
+- **Break long labels** with `<br/>` to prevent horizontal overflow:
+  - Good: `T["Transactions & Isolation<br/>Levels"]`
+  - Avoid: `T["Transactions & Isolation Levels"]` (may clip on mobile)
+- **Key init parameters**:
+  - `useMaxWidth: false` - prevents automatic width constraints that cut arrows
+  - `htmlLabels: true` - enables HTML formatting like `<br/>`
+  - `nodeSpacing: 40, rankSpacing: 35` - increases spacing between nodes
+  - `padding: 8` - adds padding around the diagram
+  - `wrap: true` - enables text wrapping
+  - `fontSize: "14px"` - sets readable font size (adjust to 13px if still clipping)
+- **If nodes still clip on mobile**, consider:
+  - Reducing font size to `"13px"` or `"12px"`
+  - Splitting into multiple smaller diagrams (5–7 nodes each)
+  - Using shorter, more concise labels
+
 ## 14. Required Diagrams (Choose What Fits Best)
 
 - Decision topics: at least one vertical flowchart (TB).
