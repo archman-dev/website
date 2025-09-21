@@ -1,0 +1,728 @@
+---
+title: Real-world Applications
+description: Database indexing, search engines, recommendation systems, load balancing, and rate limiting
+---
+
+# Real-world Applications
+
+Explore how algorithmic concepts are applied in real-world systems and applications.
+
+## Database Indexing
+
+### B-Tree Index
+```cpp
+class BTreeNode {
+public:
+    vector<int> keys;
+    vector<BTreeNode*> children;
+    bool isLeaf;
+    int degree;
+    
+    BTreeNode(int degree, bool isLeaf) : degree(degree), isLeaf(isLeaf) {
+        keys.resize(2 * degree - 1);
+        children.resize(2 * degree);
+    }
+    
+    // Search for a key in the subtree rooted at this node
+    BTreeNode* search(int key) {
+        int i = 0;
+        while (i < keys.size() && key > keys[i]) {
+            i++;
+        }
+        
+        if (i < keys.size() && keys[i] == key) {
+            return this;
+        }
+        
+        if (isLeaf) {
+            return nullptr;
+        }
+        
+        return children[i]->search(key);
+    }
+    
+    // Insert a key into the subtree rooted at this node
+    void insertNonFull(int key) {
+        int i = keys.size() - 1;
+        
+        if (isLeaf) {
+            // Insert into leaf node
+            while (i >= 0 && keys[i] > key) {
+                keys[i + 1] = keys[i];
+                i--;
+            }
+            keys[i + 1] = key;
+        } else {
+            // Find child to insert into
+            while (i >= 0 && keys[i] > key) {
+                i--;
+            }
+            i++;
+            
+            if (children[i]->keys.size() == 2 * degree - 1) {
+                splitChild(i, children[i]);
+                if (keys[i] < key) {
+                    i++;
+                }
+            }
+            
+            children[i]->insertNonFull(key);
+        }
+    }
+    
+    // Split a full child node
+    void splitChild(int i, BTreeNode* y) {
+        BTreeNode* z = new BTreeNode(y->degree, y->isLeaf);
+        
+        // Copy last degree-1 keys to z
+        for (int j = 0; j < degree - 1; j++) {
+            z->keys[j] = y->keys[j + degree];
+        }
+        
+        // Copy last degree children to z
+        if (!y->isLeaf) {
+            for (int j = 0; j < degree; j++) {
+                z->children[j] = y->children[j + degree];
+            }
+        }
+        
+        // Reduce number of keys in y
+        y->keys.resize(degree - 1);
+        
+        // Create space for new child
+        for (int j = keys.size(); j >= i + 1; j--) {
+            children[j + 1] = children[j];
+        }
+        
+        children[i + 1] = z;
+        
+        // Move median key to this node
+        for (int j = keys.size() - 1; j >= i; j--) {
+            keys[j + 1] = keys[j];
+        }
+        
+        keys[i] = y->keys[degree - 1];
+    }
+};
+
+class BTree {
+private:
+    BTreeNode* root;
+    int degree;
+    
+public:
+    BTree(int degree) : root(nullptr), degree(degree) {}
+    
+    void insert(int key) {
+        if (root == nullptr) {
+            root = new BTreeNode(degree, true);
+            root->keys[0] = key;
+        } else {
+            if (root->keys.size() == 2 * degree - 1) {
+                BTreeNode* s = new BTreeNode(degree, false);
+                s->children[0] = root;
+                s->splitChild(0, root);
+                
+                int i = 0;
+                if (s->keys[0] < key) {
+                    i++;
+                }
+                s->children[i]->insertNonFull(key);
+                
+                root = s;
+            } else {
+                root->insertNonFull(key);
+            }
+        }
+    }
+    
+    BTreeNode* search(int key) {
+        return root == nullptr ? nullptr : root->search(key);
+    }
+};
+```
+
+### Hash Index
+```cpp
+class HashIndex {
+private:
+    unordered_map<string, vector<int>> index;
+    
+public:
+    void insert(const string& key, int recordId) {
+        index[key].push_back(recordId);
+    }
+    
+    vector<int> search(const string& key) {
+        auto it = index.find(key);
+        return it != index.end() ? it->second : vector<int>();
+    }
+    
+    void remove(const string& key, int recordId) {
+        auto it = index.find(key);
+        if (it != index.end()) {
+            auto& records = it->second;
+            records.erase(remove(records.begin(), records.end(), recordId), records.end());
+            if (records.empty()) {
+                index.erase(it);
+            }
+        }
+    }
+    
+    void update(const string& oldKey, const string& newKey, int recordId) {
+        remove(oldKey, recordId);
+        insert(newKey, recordId);
+    }
+};
+```
+
+## Search Engines
+
+### Inverted Index
+```cpp
+class InvertedIndex {
+private:
+    unordered_map<string, vector<pair<int, int>>> index; // word -> [(docId, frequency)]
+    
+public:
+    void addDocument(int docId, const string& content) {
+        unordered_map<string, int> wordCount;
+        stringstream ss(content);
+        string word;
+        
+        while (ss >> word) {
+            word = cleanWord(word);
+            if (!word.empty()) {
+                wordCount[word]++;
+            }
+        }
+        
+        for (const auto& [word, count] : wordCount) {
+            index[word].push_back({docId, count});
+        }
+    }
+    
+    vector<pair<int, double>> search(const string& query) {
+        stringstream ss(query);
+        string word;
+        unordered_map<int, double> scores;
+        
+        while (ss >> word) {
+            word = cleanWord(word);
+            if (index.find(word) != index.end()) {
+                for (const auto& [docId, frequency] : index[word]) {
+                    scores[docId] += frequency;
+                }
+            }
+        }
+        
+        vector<pair<int, double>> results(scores.begin(), scores.end());
+        sort(results.begin(), results.end(), [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+        
+        return results;
+    }
+    
+private:
+    string cleanWord(const string& word) {
+        string cleaned;
+        for (char c : word) {
+            if (isalpha(c)) {
+                cleaned += tolower(c);
+            }
+        }
+        return cleaned;
+    }
+};
+```
+
+### PageRank Algorithm
+```cpp
+class PageRank {
+private:
+    unordered_map<int, vector<int>> graph;
+    unordered_map<int, double> scores;
+    double dampingFactor;
+    int maxIterations;
+    
+public:
+    PageRank(double damping = 0.85, int maxIter = 100) 
+        : dampingFactor(damping), maxIterations(maxIter) {}
+    
+    void addEdge(int from, int to) {
+        graph[from].push_back(to);
+    }
+    
+    void calculatePageRank() {
+        int numNodes = graph.size();
+        double initialScore = 1.0 / numNodes;
+        
+        // Initialize scores
+        for (const auto& [node, neighbors] : graph) {
+            scores[node] = initialScore;
+        }
+        
+        // Iterative calculation
+        for (int iter = 0; iter < maxIterations; iter++) {
+            unordered_map<int, double> newScores;
+            
+            for (const auto& [node, neighbors] : graph) {
+                double newScore = (1 - dampingFactor) / numNodes;
+                
+                for (const auto& [otherNode, otherNeighbors] : graph) {
+                    if (find(otherNeighbors.begin(), otherNeighbors.end(), node) != otherNeighbors.end()) {
+                        newScore += dampingFactor * scores[otherNode] / otherNeighbors.size();
+                    }
+                }
+                
+                newScores[node] = newScore;
+            }
+            
+            scores = newScores;
+        }
+    }
+    
+    double getScore(int node) {
+        return scores[node];
+    }
+    
+    vector<pair<int, double>> getTopPages(int k) {
+        vector<pair<int, double>> results(scores.begin(), scores.end());
+        sort(results.begin(), results.end(), [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+        
+        if (results.size() > k) {
+            results.resize(k);
+        }
+        
+        return results;
+    }
+};
+```
+
+## Recommendation Systems
+
+### Collaborative Filtering
+```cpp
+class CollaborativeFiltering {
+private:
+    unordered_map<int, unordered_map<int, double>> userItemMatrix;
+    unordered_map<int, unordered_map<int, double>> itemUserMatrix;
+    
+public:
+    void addRating(int userId, int itemId, double rating) {
+        userItemMatrix[userId][itemId] = rating;
+        itemUserMatrix[itemId][userId] = rating;
+    }
+    
+    double calculateSimilarity(const unordered_map<int, double>& user1, 
+                              const unordered_map<int, double>& user2) {
+        vector<int> commonItems;
+        for (const auto& [item, rating] : user1) {
+            if (user2.find(item) != user2.end()) {
+                commonItems.push_back(item);
+            }
+        }
+        
+        if (commonItems.empty()) return 0.0;
+        
+        double sum1 = 0, sum2 = 0, sum1Sq = 0, sum2Sq = 0, pSum = 0;
+        
+        for (int item : commonItems) {
+            double rating1 = user1.at(item);
+            double rating2 = user2.at(item);
+            
+            sum1 += rating1;
+            sum2 += rating2;
+            sum1Sq += rating1 * rating1;
+            sum2Sq += rating2 * rating2;
+            pSum += rating1 * rating2;
+        }
+        
+        int n = commonItems.size();
+        double numerator = pSum - (sum1 * sum2 / n);
+        double denominator = sqrt((sum1Sq - sum1 * sum1 / n) * (sum2Sq - sum2 * sum2 / n));
+        
+        return denominator == 0 ? 0 : numerator / denominator;
+    }
+    
+    vector<pair<int, double>> getRecommendations(int userId, int k = 10) {
+        unordered_map<int, double> scores;
+        const auto& userRatings = userItemMatrix[userId];
+        
+        for (const auto& [otherUser, otherRatings] : userItemMatrix) {
+            if (otherUser == userId) continue;
+            
+            double similarity = calculateSimilarity(userRatings, otherRatings);
+            if (similarity > 0) {
+                for (const auto& [item, rating] : otherRatings) {
+                    if (userRatings.find(item) == userRatings.end()) {
+                        scores[item] += similarity * rating;
+                    }
+                }
+            }
+        }
+        
+        vector<pair<int, double>> recommendations(scores.begin(), scores.end());
+        sort(recommendations.begin(), recommendations.end(), [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+        
+        if (recommendations.size() > k) {
+            recommendations.resize(k);
+        }
+        
+        return recommendations;
+    }
+};
+```
+
+### Content-Based Filtering
+```cpp
+class ContentBasedFiltering {
+private:
+    unordered_map<int, vector<double>> itemFeatures;
+    unordered_map<int, vector<double>> userProfiles;
+    
+public:
+    void addItemFeatures(int itemId, const vector<double>& features) {
+        itemFeatures[itemId] = features;
+    }
+    
+    void updateUserProfile(int userId, int itemId, double rating) {
+        if (itemFeatures.find(itemId) == itemFeatures.end()) return;
+        
+        const auto& features = itemFeatures[itemId];
+        
+        if (userProfiles.find(userId) == userProfiles.end()) {
+            userProfiles[userId] = vector<double>(features.size(), 0.0);
+        }
+        
+        auto& profile = userProfiles[userId];
+        for (int i = 0; i < features.size(); i++) {
+            profile[i] += rating * features[i];
+        }
+    }
+    
+    double calculateSimilarity(const vector<double>& profile, const vector<double>& features) {
+        if (profile.size() != features.size()) return 0.0;
+        
+        double dotProduct = 0, norm1 = 0, norm2 = 0;
+        
+        for (int i = 0; i < profile.size(); i++) {
+            dotProduct += profile[i] * features[i];
+            norm1 += profile[i] * profile[i];
+            norm2 += features[i] * features[i];
+        }
+        
+        return dotProduct / (sqrt(norm1) * sqrt(norm2));
+    }
+    
+    vector<pair<int, double>> getRecommendations(int userId, int k = 10) {
+        if (userProfiles.find(userId) == userProfiles.end()) {
+            return {};
+        }
+        
+        const auto& profile = userProfiles[userId];
+        vector<pair<int, double>> scores;
+        
+        for (const auto& [itemId, features] : itemFeatures) {
+            double similarity = calculateSimilarity(profile, features);
+            scores.push_back({itemId, similarity});
+        }
+        
+        sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+        
+        if (scores.size() > k) {
+            scores.resize(k);
+        }
+        
+        return scores;
+    }
+};
+```
+
+## Load Balancing
+
+### Round Robin Load Balancer
+```cpp
+class RoundRobinLoadBalancer {
+private:
+    vector<string> servers;
+    int currentIndex;
+    mutex mtx;
+    
+public:
+    RoundRobinLoadBalancer(const vector<string>& serverList) 
+        : servers(serverList), currentIndex(0) {}
+    
+    string getNextServer() {
+        lock_guard<mutex> lock(mtx);
+        string server = servers[currentIndex];
+        currentIndex = (currentIndex + 1) % servers.size();
+        return server;
+    }
+    
+    void addServer(const string& server) {
+        lock_guard<mutex> lock(mtx);
+        servers.push_back(server);
+    }
+    
+    void removeServer(const string& server) {
+        lock_guard<mutex> lock(mtx);
+        servers.erase(remove(servers.begin(), servers.end(), server), servers.end());
+    }
+};
+```
+
+### Weighted Round Robin
+```cpp
+class WeightedRoundRobinLoadBalancer {
+private:
+    struct Server {
+        string address;
+        int weight;
+        int currentWeight;
+        
+        Server(const string& addr, int w) : address(addr), weight(w), currentWeight(0) {}
+    };
+    
+    vector<Server> servers;
+    mutex mtx;
+    
+public:
+    void addServer(const string& address, int weight) {
+        lock_guard<mutex> lock(mtx);
+        servers.emplace_back(address, weight);
+    }
+    
+    string getNextServer() {
+        lock_guard<mutex> lock(mtx);
+        if (servers.empty()) return "";
+        
+        Server* selected = &servers[0];
+        int totalWeight = 0;
+        
+        for (auto& server : servers) {
+            server.currentWeight += server.weight;
+            totalWeight += server.weight;
+            
+            if (server.currentWeight > selected->currentWeight) {
+                selected = &server;
+            }
+        }
+        
+        selected->currentWeight -= totalWeight;
+        return selected->address;
+    }
+};
+```
+
+### Least Connections Load Balancer
+```cpp
+class LeastConnectionsLoadBalancer {
+private:
+    struct Server {
+        string address;
+        int connections;
+        mutex mtx;
+        
+        Server(const string& addr) : address(addr), connections(0) {}
+    };
+    
+    vector<unique_ptr<Server>> servers;
+    mutex mtx;
+    
+public:
+    void addServer(const string& address) {
+        lock_guard<mutex> lock(mtx);
+        servers.push_back(make_unique<Server>(address));
+    }
+    
+    string getNextServer() {
+        lock_guard<mutex> lock(mtx);
+        if (servers.empty()) return "";
+        
+        Server* selected = servers[0].get();
+        int minConnections = selected->connections;
+        
+        for (auto& server : servers) {
+            if (server->connections < minConnections) {
+                selected = server.get();
+                minConnections = server->connections;
+            }
+        }
+        
+        selected->connections++;
+        return selected->address;
+    }
+    
+    void releaseConnection(const string& address) {
+        lock_guard<mutex> lock(mtx);
+        for (auto& server : servers) {
+            if (server->address == address) {
+                server->connections--;
+                break;
+            }
+        }
+    }
+};
+```
+
+## Rate Limiting
+
+### Token Bucket Rate Limiter
+```cpp
+class TokenBucketRateLimiter {
+private:
+    int capacity;
+    int tokens;
+    chrono::steady_clock::time_point lastRefill;
+    int refillRate; // tokens per second
+    mutex mtx;
+    
+public:
+    TokenBucketRateLimiter(int cap, int rate) 
+        : capacity(cap), tokens(cap), refillRate(rate) {
+        lastRefill = chrono::steady_clock::now();
+    }
+    
+    bool allowRequest() {
+        lock_guard<mutex> lock(mtx);
+        refillTokens();
+        
+        if (tokens > 0) {
+            tokens--;
+            return true;
+        }
+        
+        return false;
+    }
+    
+private:
+    void refillTokens() {
+        auto now = chrono::steady_clock::now();
+        auto elapsed = chrono::duration_cast<chrono::milliseconds>(now - lastRefill);
+        
+        int tokensToAdd = (elapsed.count() * refillRate) / 1000;
+        if (tokensToAdd > 0) {
+            tokens = min(capacity, tokens + tokensToAdd);
+            lastRefill = now;
+        }
+    }
+};
+```
+
+### Sliding Window Rate Limiter
+```cpp
+class SlidingWindowRateLimiter {
+private:
+    int windowSize; // in seconds
+    int maxRequests;
+    queue<chrono::steady_clock::time_point> requests;
+    mutex mtx;
+    
+public:
+    SlidingWindowRateLimiter(int window, int maxReq) 
+        : windowSize(window), maxRequests(maxReq) {}
+    
+    bool allowRequest() {
+        lock_guard<mutex> lock(mtx);
+        auto now = chrono::steady_clock::now();
+        
+        // Remove old requests outside the window
+        while (!requests.empty()) {
+            auto requestTime = requests.front();
+            auto elapsed = chrono::duration_cast<chrono::seconds>(now - requestTime);
+            
+            if (elapsed.count() >= windowSize) {
+                requests.pop();
+            } else {
+                break;
+            }
+        }
+        
+        // Check if we can add a new request
+        if (requests.size() < maxRequests) {
+            requests.push(now);
+            return true;
+        }
+        
+        return false;
+    }
+};
+```
+
+### Fixed Window Rate Limiter
+```cpp
+class FixedWindowRateLimiter {
+private:
+    int windowSize; // in seconds
+    int maxRequests;
+    int currentRequests;
+    chrono::steady_clock::time_point windowStart;
+    mutex mtx;
+    
+public:
+    FixedWindowRateLimiter(int window, int maxReq) 
+        : windowSize(window), maxRequests(maxReq), currentRequests(0) {
+        windowStart = chrono::steady_clock::now();
+    }
+    
+    bool allowRequest() {
+        lock_guard<mutex> lock(mtx);
+        auto now = chrono::steady_clock::now();
+        auto elapsed = chrono::duration_cast<chrono::seconds>(now - windowStart);
+        
+        // Reset window if needed
+        if (elapsed.count() >= windowSize) {
+            currentRequests = 0;
+            windowStart = now;
+        }
+        
+        // Check if we can add a new request
+        if (currentRequests < maxRequests) {
+            currentRequests++;
+            return true;
+        }
+        
+        return false;
+    }
+};
+```
+
+## Performance Analysis
+
+### Time Complexity
+- **Database indexing**: O(log n) for B-tree, O(1) for hash index
+- **Search engines**: O(k) where k is number of documents
+- **Recommendation systems**: O(n²) for collaborative filtering
+- **Load balancing**: O(1) for round robin, O(n) for least connections
+- **Rate limiting**: O(1) for most algorithms
+
+### Space Complexity
+- **Database indexing**: O(n) for B-tree, O(n) for hash index
+- **Search engines**: O(n) for inverted index
+- **Recommendation systems**: O(n²) for user-item matrix
+- **Load balancing**: O(n) for server list
+- **Rate limiting**: O(n) for sliding window, O(1) for token bucket
+
+## Common Patterns
+
+1. **Indexing** for fast data retrieval
+2. **Caching** for performance optimization
+3. **Load balancing** for scalability
+4. **Rate limiting** for system protection
+5. **Recommendation** for personalization
+
+## Applications
+
+- **Databases**: MySQL, PostgreSQL, MongoDB
+- **Search engines**: Google, Elasticsearch
+- **E-commerce**: Amazon, Netflix recommendations
+- **Web services**: Load balancers, CDNs
+- **APIs**: Rate limiting, authentication

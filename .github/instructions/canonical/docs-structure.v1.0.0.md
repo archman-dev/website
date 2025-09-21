@@ -1112,8 +1112,474 @@ Too fine-grained
 
 ### 22.7 Incident Postmortem Template
 
-## 23. Glossary (for future population)
+## 23. Algorithms & Data Structures (LeetCode Preparation)
 
-### 23.1 Acronyms (SLA/SLO/SLI, RBAC/ABAC, ADR, etc.)
+### 23.1 Problem-Solving Strategies
 
-### 23.2 Common Terms (bounded context, saga, outbox, etc.)
+#### 23.1.1 Problem Analysis
+
+- Understanding requirements
+- Identifying patterns
+- Choosing data structures
+- Time/space tradeoffs
+- Edge case handling
+
+#### 23.1.2 Implementation Techniques
+
+- Code organization
+- Variable naming
+- Error handling
+- Testing strategies
+- Optimization techniques
+
+#### 23.1.3 Interview Preparation
+
+- Common question patterns
+- Time management
+- Communication skills
+- Code review
+- Follow-up questions
+
+### 23.2 Fundamentals & Prerequisites
+
+#### 23.3.1 Time & Space Complexity Analysis
+
+- Big O, Big Theta, Big Omega notation
+- Best, Average, Worst case analysis
+- Common complexity classes (O(1), O(log n), O(n), O(n log n), O(n²), O(2ⁿ))
+- Amortized analysis
+- Space-time tradeoffs
+
+#### 23.3.2 Basic Data Structures
+
+- Arrays & Dynamic Arrays
+- Linked Lists (Singly, Doubly, Circular)
+- Stacks & Queues
+- Hash Tables & Hash Maps
+- Sets & Multisets
+
+#### 23.3.3 Basic Programming Concepts
+
+- Two Pointers technique
+- Sliding Window
+- Prefix Sums
+- String manipulation basics
+- Bit manipulation fundamentals
+
+### 23.3 Arrays & Strings
+
+#### 23.3.1 Array Fundamentals
+
+- Array traversal & manipulation
+- Finding elements & indices
+- Array rotation & reversal
+- Subarray problems
+- Array sorting & searching
+
+#### 23.3.2 Two Pointers
+
+- Two sum variations
+- Container with most water
+- Remove duplicates
+- Valid palindrome
+- Merge sorted arrays
+
+#### 23.3.3 Sliding Window
+
+- Fixed size window problems
+- Variable size window problems
+- Maximum/minimum in window
+- Substring problems
+- Longest/shortest subarray
+
+#### 23.3.4 String Manipulation
+
+- String parsing & validation
+- Anagram problems
+- String matching & searching
+- String transformation
+- Regular expressions basics
+
+### 23.4 Hash Tables & Sets
+
+#### 23.3.1 Hash Table Applications
+
+- Frequency counting
+- Lookup optimization
+- Caching & memoization
+- Grouping & categorization
+- Duplicate detection
+
+#### 23.3.2 Set Operations
+
+- Union, intersection, difference
+- Subset & superset problems
+- Unique element problems
+- Set-based algorithms
+- Mathematical set problems
+
+### 23.5 Linked Lists
+
+#### 23.3.1 Basic Operations
+
+- Traversal & manipulation
+- Node insertion & deletion
+- List reversal
+- Cycle detection
+- List merging
+
+#### 23.3.2 Advanced Techniques
+
+- Fast & slow pointers
+- List partitioning
+- List sorting
+- Intersection of lists
+- Deep copy with random pointers
+
+### 23.6 Stacks & Queues
+
+#### 23.3.1 Stack Applications
+
+- Expression evaluation
+- Parentheses matching
+- Monotonic stack
+- Next greater/smaller element
+- Histogram problems
+
+#### 23.3.2 Queue Applications
+
+- BFS implementation
+- Sliding window maximum
+- Task scheduling
+- Level-order traversal
+- Circular queue
+
+#### 23.3.3 Deque & Priority Queue
+
+- Double-ended queue operations
+- Heap implementation
+- Top K problems
+- Median finding
+- Task prioritization
+
+### 23.7 Trees & Binary Trees
+
+#### 23.3.1 Tree Fundamentals
+
+- Tree terminology & properties
+- Tree traversal (pre, in, post, level)
+- Tree construction & validation
+- Tree height & depth
+- Tree serialization
+
+#### 23.3.2 Binary Tree Problems
+
+- Path sum problems
+- Tree diameter & width
+- Lowest common ancestor
+- Tree views (left, right, top, bottom)
+- Tree transformation
+
+#### 23.3.3 Binary Search Trees
+
+- BST properties & validation
+- BST operations (insert, delete, search)
+- BST to sorted array
+- Range queries
+- BST construction from array
+
+### 23.8 Heaps & Priority Queues
+
+#### 23.3.1 Heap Fundamentals
+
+- Min-heap & max-heap
+- Heap operations (insert, extract, heapify)
+- Heap sort
+- Heap implementation
+- Heap properties
+
+#### 23.3.2 Heap Applications
+
+- Top K elements
+- Median in data stream
+- Merge K sorted lists
+- Task scheduling
+- Shortest path (Dijkstra's)
+
+### 23.9 Graphs
+
+#### 23.3.1 Graph Fundamentals
+
+- Graph representation (adjacency list, matrix)
+- Graph terminology
+- Graph traversal (DFS, BFS)
+- Connected components
+- Graph properties
+
+#### 23.3.2 Graph Algorithms
+
+- Shortest path (BFS, Dijkstra, Floyd-Warshall)
+- Minimum spanning tree (Kruskal, Prim)
+- Topological sorting
+- Cycle detection
+- Strongly connected components
+
+#### 23.3.3 Advanced Graph Problems
+
+- Network flow
+- Bipartite matching
+- Graph coloring
+- Hamiltonian & Eulerian paths
+- Graph isomorphism
+
+### 23.10 Dynamic Programming
+
+#### 23.3.1 DP Fundamentals
+
+- Overlapping subproblems
+- Optimal substructure
+- Memoization vs tabulation
+- State definition
+- Transition equations
+
+#### 23.3.2 Classic DP Problems
+
+- Fibonacci & variations
+- Climbing stairs
+- House robber
+- Coin change
+- Longest common subsequence
+
+#### 23.3.3 Advanced DP Patterns
+
+- Knapsack problems
+- Edit distance
+- Longest increasing subsequence
+- Matrix chain multiplication
+- Palindrome problems
+
+#### 23.3.4 DP on Trees & Graphs
+
+- Tree DP
+- Graph DP
+- Path counting
+- Subtree problems
+- Game theory DP
+
+### 23.11 Greedy Algorithms
+
+#### 23.3.1 Greedy Fundamentals
+
+- Greedy choice property
+- Optimal substructure
+- Proof techniques
+- When to use greedy
+- Common greedy patterns
+
+#### 23.3.2 Classic Greedy Problems
+
+- Activity selection
+- Fractional knapsack
+- Huffman coding
+- Minimum spanning tree
+- Shortest path (Dijkstra)
+
+#### 23.3.3 Advanced Greedy
+
+- Interval scheduling
+- Set cover
+- Job scheduling
+- Resource allocation
+- Optimization problems
+
+### 23.12 Backtracking
+
+#### 23.3.1 Backtracking Fundamentals
+
+- Recursive exploration
+- Pruning techniques
+- State space search
+- Constraint satisfaction
+- Solution space
+
+#### 23.3.2 Classic Backtracking Problems
+
+- N-Queens
+- Sudoku solver
+- Permutations & combinations
+- Subset generation
+- Word search
+
+#### 23.3.3 Advanced Backtracking
+
+- Graph coloring
+- Hamiltonian cycle
+- Knight's tour
+- Partition problems
+- Constraint optimization
+
+### 23.13 Binary Search
+
+#### 23.3.1 Binary Search Fundamentals
+
+- Search in sorted array
+- Search space reduction
+- Boundary conditions
+- Implementation variations
+- Search in rotated array
+
+#### 23.3.2 Advanced Binary Search
+
+- Search in 2D matrix
+- Search in infinite array
+- Peak finding
+- Square root & power
+- Search with conditions
+
+### 23.14 Sorting & Searching
+
+#### 23.3.1 Sorting Algorithms
+
+- Comparison-based sorts (merge, quick, heap)
+- Non-comparison sorts (counting, radix, bucket)
+- Stability & in-place properties
+- Time & space complexity
+- When to use which sort
+
+#### 23.3.2 Searching Algorithms
+
+- Linear search
+- Binary search variations
+- Ternary search
+- Exponential search
+- Interpolation search
+
+### 23.15 Bit Manipulation
+
+#### 23.3.1 Bit Operations
+
+- Basic bit operations (AND, OR, XOR, NOT)
+- Bit shifting
+- Bit masking
+- Bit counting
+- Bit manipulation tricks
+
+#### 23.3.2 Advanced Bit Manipulation
+
+- Single number problems
+- Missing number problems
+- Power of 2 problems
+- Bit manipulation in arrays
+- Bit manipulation in strings
+
+### 23.16 Math & Number Theory
+
+#### 23.3.1 Basic Math
+
+- Prime numbers
+- GCD & LCM
+- Modular arithmetic
+- Factorial & permutations
+- Combinatorics
+
+#### 23.3.2 Advanced Math
+
+- Fast exponentiation
+- Matrix exponentiation
+- Fibonacci & linear recurrence
+- Number theory problems
+- Probability & statistics
+
+### 23.17 Advanced Data Structures
+
+#### 23.3.1 Trie (Prefix Tree)
+
+- Trie implementation
+- String prefix problems
+- Word search
+- Autocomplete
+- Dictionary problems
+
+#### 23.3.2 Segment Tree
+
+- Range queries
+- Range updates
+- Lazy propagation
+- 2D segment trees
+- Persistent segment trees
+
+#### 23.3.3 Fenwick Tree (Binary Indexed Tree)
+
+- Prefix sum queries
+- Range sum updates
+- Inversion count
+- 2D Fenwick tree
+- Advanced applications
+
+#### 23.3.4 Disjoint Set Union (Union-Find)
+
+- Union & find operations
+- Path compression
+- Union by rank
+- Connected components
+- Cycle detection
+
+### 23.18 String Algorithms
+
+#### 23.3.1 Pattern Matching
+
+- Naive string matching
+- KMP algorithm
+- Rabin-Karp
+- Z-algorithm
+- Suffix arrays
+
+#### 23.3.2 Advanced String Problems
+
+- Longest common substring
+- Longest palindromic substring
+- String compression
+- Edit distance
+- String transformation
+
+### 23.19 Geometry & Computational Geometry
+
+#### 23.3.1 Basic Geometry
+
+- Point & line operations
+- Distance calculations
+- Area & perimeter
+- Intersection problems
+- Convex hull
+
+#### 23.3.2 Advanced Geometry
+
+- Sweep line algorithm
+- Closest pair of points
+- Line segment intersection
+- Polygon operations
+- 3D geometry basics
+
+### 23.20 System Design for Algorithms
+
+#### 23.3.1 Scalable Algorithm Design
+
+- Distributed algorithms
+- Parallel processing
+- MapReduce patterns
+- Stream processing
+- Caching strategies
+
+#### 23.3.2 Real-world Applications
+
+- Database indexing
+- Search engines
+- Recommendation systems
+- Load balancing
+- Rate limiting
+
+## 24. Glossary (for future population)
+
+### 24.1 Acronyms (SLA/SLO/SLI, RBAC/ABAC, ADR, etc.)
+
+### 24.2 Common Terms (bounded context, saga, outbox, etc.)

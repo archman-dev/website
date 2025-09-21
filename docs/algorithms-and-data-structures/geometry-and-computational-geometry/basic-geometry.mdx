@@ -1,0 +1,481 @@
+---
+title: Basic Geometry
+description: Point & line operations, distance calculations, area & perimeter, intersection problems, and convex hull
+---
+
+# Basic Geometry
+
+Master fundamental geometric concepts and algorithms for solving spatial problems.
+
+## Point & Line Operations
+
+### Point Representation
+```cpp
+struct Point {
+    double x, y;
+    
+    Point(double x = 0, double y = 0) : x(x), y(y) {}
+    
+    // Vector operations
+    Point operator+(const Point& other) const {
+        return Point(x + other.x, y + other.y);
+    }
+    
+    Point operator-(const Point& other) const {
+        return Point(x - other.x, y - other.y);
+    }
+    
+    Point operator*(double scalar) const {
+        return Point(x * scalar, y * scalar);
+    }
+    
+    // Dot product
+    double dot(const Point& other) const {
+        return x * other.x + y * other.y;
+    }
+    
+    // Cross product
+    double cross(const Point& other) const {
+        return x * other.y - y * other.x;
+    }
+    
+    // Distance from origin
+    double magnitude() const {
+        return sqrt(x * x + y * y);
+    }
+    
+    // Distance to another point
+    double distanceTo(const Point& other) const {
+        return (*this - other).magnitude();
+    }
+};
+```
+
+### Line Representation
+```cpp
+struct Line {
+    double a, b, c; // ax + by + c = 0
+    
+    Line(double a = 0, double b = 0, double c = 0) : a(a), b(b), c(c) {}
+    
+    // Line from two points
+    Line(const Point& p1, const Point& p2) {
+        a = p2.y - p1.y;
+        b = p1.x - p2.x;
+        c = p2.x * p1.y - p1.x * p2.y;
+    }
+    
+    // Distance from point to line
+    double distanceToPoint(const Point& p) const {
+        return abs(a * p.x + b * p.y + c) / sqrt(a * a + b * b);
+    }
+    
+    // Check if point is on line
+    bool containsPoint(const Point& p) const {
+        return abs(a * p.x + b * p.y + c) < 1e-9;
+    }
+};
+```
+
+### Line Segment Operations
+```cpp
+struct LineSegment {
+    Point p1, p2;
+    
+    LineSegment(const Point& p1, const Point& p2) : p1(p1), p2(p2) {}
+    
+    // Check if point is on line segment
+    bool containsPoint(const Point& p) const {
+        if (p.x < min(p1.x, p2.x) || p.x > max(p1.x, p2.x) ||
+            p.y < min(p1.y, p2.y) || p.y > max(p1.y, p2.y)) {
+            return false;
+        }
+        
+        Line line(p1, p2);
+        return line.containsPoint(p);
+    }
+    
+    // Length of line segment
+    double length() const {
+        return p1.distanceTo(p2);
+    }
+    
+    // Check if two line segments intersect
+    bool intersects(const LineSegment& other) const {
+        Point p1 = this->p1, p2 = this->p2;
+        Point p3 = other.p1, p4 = other.p2;
+        
+        double d1 = (p4 - p3).cross(p1 - p3);
+        double d2 = (p4 - p3).cross(p2 - p3);
+        double d3 = (p2 - p1).cross(p3 - p1);
+        double d4 = (p2 - p1).cross(p4 - p1);
+        
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+            ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+            return true;
+        }
+        
+        if (d1 == 0 && LineSegment(p3, p4).containsPoint(p1)) return true;
+        if (d2 == 0 && LineSegment(p3, p4).containsPoint(p2)) return true;
+        if (d3 == 0 && LineSegment(p1, p2).containsPoint(p3)) return true;
+        if (d4 == 0 && LineSegment(p1, p2).containsPoint(p4)) return true;
+        
+        return false;
+    }
+};
+```
+
+## Distance Calculations
+
+### Point to Point Distance
+```cpp
+// Euclidean distance between two points
+double distance(const Point& p1, const Point& p2) {
+    return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
+}
+
+// Manhattan distance between two points
+double manhattanDistance(const Point& p1, const Point& p2) {
+    return abs(p1.x - p2.x) + abs(p1.y - p2.y);
+}
+
+// Chebyshev distance between two points
+double chebyshevDistance(const Point& p1, const Point& p2) {
+    return max(abs(p1.x - p2.x), abs(p1.y - p2.y));
+}
+```
+
+### Point to Line Distance
+```cpp
+// Distance from point to line
+double pointToLineDistance(const Point& p, const Line& line) {
+    return abs(line.a * p.x + line.b * p.y + line.c) / sqrt(line.a * line.a + line.b * line.b);
+}
+
+// Distance from point to line segment
+double pointToLineSegmentDistance(const Point& p, const LineSegment& segment) {
+    Point p1 = segment.p1, p2 = segment.p2;
+    
+    double A = p.x - p1.x;
+    double B = p.y - p1.y;
+    double C = p2.x - p1.x;
+    double D = p2.y - p1.y;
+    
+    double dot = A * C + B * D;
+    double lenSq = C * C + D * D;
+    
+    if (lenSq == 0) return distance(p, p1);
+    
+    double param = dot / lenSq;
+    
+    Point closest;
+    if (param < 0) {
+        closest = p1;
+    } else if (param > 1) {
+        closest = p2;
+    } else {
+        closest = Point(p1.x + param * C, p1.y + param * D);
+    }
+    
+    return distance(p, closest);
+}
+```
+
+## Area & Perimeter
+
+### Polygon Area
+```cpp
+// Calculate area of polygon using shoelace formula
+double polygonArea(const vector<Point>& polygon) {
+    int n = polygon.size();
+    if (n < 3) return 0;
+    
+    double area = 0;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        area += polygon[i].x * polygon[j].y;
+        area -= polygon[j].x * polygon[i].y;
+    }
+    
+    return abs(area) / 2.0;
+}
+
+// Calculate area of triangle
+double triangleArea(const Point& p1, const Point& p2, const Point& p3) {
+    return abs((p2 - p1).cross(p3 - p1)) / 2.0;
+}
+```
+
+### Polygon Perimeter
+```cpp
+// Calculate perimeter of polygon
+double polygonPerimeter(const vector<Point>& polygon) {
+    int n = polygon.size();
+    if (n < 2) return 0;
+    
+    double perimeter = 0;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        perimeter += distance(polygon[i], polygon[j]);
+    }
+    
+    return perimeter;
+}
+```
+
+### Circle Operations
+```cpp
+struct Circle {
+    Point center;
+    double radius;
+    
+    Circle(const Point& center, double radius) : center(center), radius(radius) {}
+    
+    // Area of circle
+    double area() const {
+        return M_PI * radius * radius;
+    }
+    
+    // Circumference of circle
+    double circumference() const {
+        return 2 * M_PI * radius;
+    }
+    
+    // Check if point is inside circle
+    bool containsPoint(const Point& p) const {
+        return center.distanceTo(p) <= radius;
+    }
+    
+    // Check if two circles intersect
+    bool intersects(const Circle& other) const {
+        double dist = center.distanceTo(other.center);
+        return dist <= radius + other.radius && dist >= abs(radius - other.radius);
+    }
+};
+```
+
+## Intersection Problems
+
+### Line Intersection
+```cpp
+// Find intersection point of two lines
+Point lineIntersection(const Line& line1, const Line& line2) {
+    double det = line1.a * line2.b - line2.a * line1.b;
+    
+    if (abs(det) < 1e-9) {
+        // Lines are parallel
+        return Point(INFINITY, INFINITY);
+    }
+    
+    double x = (line1.b * line2.c - line2.b * line1.c) / det;
+    double y = (line2.a * line1.c - line1.a * line2.c) / det;
+    
+    return Point(x, y);
+}
+```
+
+### Line Segment Intersection
+```cpp
+// Find intersection point of two line segments
+Point lineSegmentIntersection(const LineSegment& seg1, const LineSegment& seg2) {
+    Point p1 = seg1.p1, p2 = seg1.p2;
+    Point p3 = seg2.p1, p4 = seg2.p2;
+    
+    double d1 = (p4 - p3).cross(p1 - p3);
+    double d2 = (p4 - p3).cross(p2 - p3);
+    double d3 = (p2 - p1).cross(p3 - p1);
+    double d4 = (p2 - p1).cross(p4 - p1);
+    
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+        
+        double t = d3 / (d3 - d4);
+        return p3 + (p4 - p3) * t;
+    }
+    
+    return Point(INFINITY, INFINITY); // No intersection
+}
+```
+
+### Circle-Line Intersection
+```cpp
+// Find intersection points of circle and line
+vector<Point> circleLineIntersection(const Circle& circle, const Line& line) {
+    vector<Point> intersections;
+    
+    double a = line.a, b = line.b, c = line.c;
+    double x0 = circle.center.x, y0 = circle.center.y, r = circle.radius;
+    
+    double dist = abs(a * x0 + b * y0 + c) / sqrt(a * a + b * b);
+    
+    if (dist > r) {
+        return intersections; // No intersection
+    }
+    
+    if (abs(b) > 1e-9) {
+        // Line is not vertical
+        double m = -a / b;
+        double k = -c / b;
+        
+        double A = 1 + m * m;
+        double B = 2 * (m * k - m * y0 - x0);
+        double C = x0 * x0 + (k - y0) * (k - y0) - r * r;
+        
+        double discriminant = B * B - 4 * A * C;
+        
+        if (discriminant >= 0) {
+            double x1 = (-B + sqrt(discriminant)) / (2 * A);
+            double x2 = (-B - sqrt(discriminant)) / (2 * A);
+            
+            intersections.push_back(Point(x1, m * x1 + k));
+            if (discriminant > 0) {
+                intersections.push_back(Point(x2, m * x2 + k));
+            }
+        }
+    } else {
+        // Line is vertical
+        double x = -c / a;
+        double discriminant = r * r - (x - x0) * (x - x0);
+        
+        if (discriminant >= 0) {
+            double y1 = y0 + sqrt(discriminant);
+            double y2 = y0 - sqrt(discriminant);
+            
+            intersections.push_back(Point(x, y1));
+            if (discriminant > 0) {
+                intersections.push_back(Point(x, y2));
+            }
+        }
+    }
+    
+    return intersections;
+}
+```
+
+## Convex Hull
+
+### Graham Scan Algorithm
+```cpp
+// Find convex hull using Graham scan
+vector<Point> convexHull(vector<Point>& points) {
+    int n = points.size();
+    if (n < 3) return points;
+    
+    // Find bottom-most point (and leftmost in case of tie)
+    int bottom = 0;
+    for (int i = 1; i < n; i++) {
+        if (points[i].y < points[bottom].y ||
+            (points[i].y == points[bottom].y && points[i].x < points[bottom].x)) {
+            bottom = i;
+        }
+    }
+    
+    // Swap bottom-most point with first point
+    swap(points[0], points[bottom]);
+    
+    // Sort points by polar angle with respect to bottom-most point
+    sort(points.begin() + 1, points.end(), [&](const Point& a, const Point& b) {
+        double angleA = atan2(a.y - points[0].y, a.x - points[0].x);
+        double angleB = atan2(b.y - points[0].y, b.x - points[0].x);
+        
+        if (abs(angleA - angleB) < 1e-9) {
+            return points[0].distanceTo(a) < points[0].distanceTo(b);
+        }
+        return angleA < angleB;
+    });
+    
+    // Build convex hull
+    vector<Point> hull;
+    hull.push_back(points[0]);
+    hull.push_back(points[1]);
+    
+    for (int i = 2; i < n; i++) {
+        while (hull.size() > 1) {
+            Point p1 = hull[hull.size() - 2];
+            Point p2 = hull[hull.size() - 1];
+            Point p3 = points[i];
+            
+            if ((p2 - p1).cross(p3 - p1) <= 0) {
+                hull.pop_back();
+            } else {
+                break;
+            }
+        }
+        hull.push_back(points[i]);
+    }
+    
+    return hull;
+}
+```
+
+### Jarvis March Algorithm
+```cpp
+// Find convex hull using Jarvis march
+vector<Point> convexHullJarvis(vector<Point>& points) {
+    int n = points.size();
+    if (n < 3) return points;
+    
+    vector<Point> hull;
+    
+    // Find leftmost point
+    int leftmost = 0;
+    for (int i = 1; i < n; i++) {
+        if (points[i].x < points[leftmost].x) {
+            leftmost = i;
+        }
+    }
+    
+    int p = leftmost, q;
+    do {
+        hull.push_back(points[p]);
+        q = (p + 1) % n;
+        
+        for (int i = 0; i < n; i++) {
+            if (orientation(points[p], points[i], points[q]) == 2) {
+                q = i;
+            }
+        }
+        p = q;
+    } while (p != leftmost);
+    
+    return hull;
+}
+
+// Helper function for orientation
+int orientation(const Point& p, const Point& q, const Point& r) {
+    double val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+    
+    if (abs(val) < 1e-9) return 0; // Collinear
+    return (val > 0) ? 1 : 2; // Clockwise or Counterclockwise
+}
+```
+
+## Performance Analysis
+
+### Time Complexity
+- **Point operations**: O(1)
+- **Line intersection**: O(1)
+- **Polygon area**: O(n)
+- **Convex hull (Graham)**: O(n log n)
+- **Convex hull (Jarvis)**: O(nh) where h is number of hull points
+
+### Space Complexity
+- **Most operations**: O(1)
+- **Convex hull**: O(h) where h is number of hull points
+- **Polygon operations**: O(n)
+
+## Common Patterns
+
+1. **Vector operations** for geometric calculations
+2. **Cross product** for orientation and area
+3. **Dot product** for projections and angles
+4. **Sweep line** for intersection problems
+5. **Convex hull** for optimization problems
+
+## Applications
+
+- **Computer graphics**: Rendering and collision detection
+- **Robotics**: Path planning and obstacle avoidance
+- **GIS**: Geographic information systems
+- **Game development**: Physics and collision detection
+- **Computational geometry**: Algorithm design and analysis
