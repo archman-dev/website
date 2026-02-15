@@ -1,0 +1,359 @@
+---
+sidebar_position: 2
+title: "Assets, Attack Surfaces, and Trust Boundaries"
+description: "Identify what you're protecting and where you're vulnerable"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [architect, lead]
+keywords: [assets, attack surface, trust boundaries, data classification, vulnerability scope, threat landscape]
+image: /img/archman-social-card.webp
+tags: [threat-modeling, assets, attack-surfaces, trust-boundaries, scope, data-classification, architecture-security]
+hide_title: true
+---
+
+<Hero title="Assets, Attack Surfaces, and Trust Boundaries" subtitle="Identify what you're protecting and where vulnerabilities hide" imageAlt="Attack surface illustration" size="large" />
+
+## TL;DR
+
+**Assets** are what you're protecting: data (customer records, encryption keys), functionality (API availability), reputation. **Attack Surface** is the total area exposed to attackers: exposed APIs, client applications, user input fields, integrations. Larger surface = more vulnerabilities. **Trust Boundaries** are where different trust levels meet (internet to internal network, user to admin, device to cloud). Threats cross boundaries. Define these clearly at the start: What are your crown jewels? What's exposed? Where do trust levels change? This scoping focuses threat modeling on what matters.
+
+## Learning Objectives
+
+- Identify and classify assets by value and sensitivity
+- Map attack surfaces and entry points
+- Define trust boundaries in architecture
+- Understand trust boundary crossings as threat points
+- Scope threat models effectively
+
+## Motivating Scenario
+
+A fintech company asks: "What should we threat model?" Without asset definition, they're overwhelmed: thousands of possible threats. With asset scoping: "Our assets are customer financial data (critical), transaction logs (critical), API availability (critical), employee PII (sensitive)." They focus threat modeling on protecting these. Attack surface becomes clear: web API, mobile app, batch import tool, admin dashboard. Trust boundaries: internet (untrusted) vs internal network (semi-trusted), user (semi-trusted) vs admin (more trusted), data at rest (in encryption boundary) vs in transit.
+
+## Core Concepts
+
+### Assets
+
+**What are you protecting?**
+
+1. **Data Assets**:
+   - Customer PII (names, emails, SSNs)
+   - Financial data (credit cards, account balances)
+   - Health records
+   - Source code
+   - Encryption keys
+
+2. **Functional Assets**:
+   - System availability (can't DOS the service)
+   - Data integrity (transactions accurate)
+   - Confidentiality (data stays secret)
+
+3. **Intangible Assets**:
+   - Reputation
+   - Customer trust
+   - Intellectual property
+
+**Asset Classification**:
+- **Critical**: Loss is catastrophic (encryption keys, financial data)
+- **Sensitive**: Loss is damaging (customer PII, trade secrets)
+- **Internal**: Restricted to organization (employee records, system design)
+- **Public**: OK to share (marketing materials, public APIs)
+
+### Attack Surface
+
+**How can attackers reach assets?**
+
+```
+Attack Surface = Sum of all entry points
+
+Entry Points:
+- Web API endpoints (/users, /payments, /admin)
+- Mobile application (network requests)
+- Batch import tool (file uploads)
+- Admin dashboard (user/admin authentication)
+- Third-party integrations (webhooks, APIs)
+- Employee tools (VPN, SSH, database clients)
+- Backup/recovery processes
+- Disaster recovery failover
+```
+
+Each entry point is a potential attack vector. More entry points = larger surface = more security effort.
+
+**Attack Surface Reduction**:
+- Expose only necessary endpoints
+- Disable debugging endpoints in production
+- Remove old/deprecated APIs
+- Minimize third-party integrations
+- Restrict admin access
+
+### Trust Boundaries
+
+**Where do trust assumptions change?**
+
+A trust boundary exists where entities with different trust levels interact.
+
+```
+User (Untrusted)
+    ↓ [Trust Boundary 1: Authentication]
+Authenticated User (Semi-trusted)
+    ↓ [Trust Boundary 2: Authorization]
+Admin User (More trusted)
+    ↓ [Trust Boundary 3: Encryption boundary]
+Encrypted Data (Confidentiality boundary)
+    ↓ [Trust Boundary 4: Network]
+Database Server (Internal, semi-trusted)
+```
+
+At each boundary, validate and enforce security:
+- Boundary 1: Authenticate (password, MFA)
+- Boundary 2: Authorize (user can't access other users' data)
+- Boundary 3: Encrypt (data secret from server admins)
+- Boundary 4: TLS (data secret in transit)
+
+## Practical Example
+
+```
+E-Commerce System:
+
+ASSETS:
+┌─────────────────────────────┐
+│ Critical Assets             │
+├─────────────────────────────┤
+│ - Customer credit cards     │
+│ - Order data                │
+│ - Encryption keys           │
+│ - Customer PII              │
+└─────────────────────────────┘
+
+┌─────────────────────────────┐
+│ Sensitive Assets            │
+├─────────────────────────────┤
+│ - Pricing data              │
+│ - Inventory data            │
+│ - API keys                  │
+│ - User passwords            │
+└─────────────────────────────┘
+
+ATTACK SURFACE:
+┌──────────────────────────────────────────────┐
+│ Public Attack Surface                        │
+├──────────────────────────────────────────────┤
+│ 1. Web API: /products, /orders, /checkout   │
+│ 2. Mobile App: iOS & Android apps            │
+│ 3. Third-party integrations: Payment gateway │
+│ 4. Public admin: /admin/login               │
+└──────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────┐
+│ Internal Attack Surface                      │
+├──────────────────────────────────────────────┤
+│ 1. Admin dashboard: /admin                   │
+│ 2. Employee VPN                              │
+│ 3. Database backups                          │
+│ 4. Disaster recovery tools                   │
+└──────────────────────────────────────────────┘
+
+TRUST BOUNDARIES:
+Boundary 1 (Authentication):
+  - Internet (attacker) ↔ API (authenticated user)
+  - Enforcement: OAuth 2.0, MFA
+
+Boundary 2 (Authorization):
+  - User A ↔ User B's data
+  - Enforcement: Row-level security, user ID checks
+
+Boundary 3 (Encryption):
+  - Unencrypted (memory/code) ↔ Encrypted (at rest)
+  - Enforcement: Key management, encryption in transit
+
+Boundary 4 (Network):
+  - Internet ↔ Internal network
+  - Enforcement: VPN, TLS, firewall
+```
+
+## Mapping Attack Paths
+
+Once assets and surfaces defined, map paths from surface to asset:
+
+```
+Attack Path 1: Web API Injection
+Attacker → Web API /users endpoint
+         → Parameter: user_id=123'; DROP TABLE--
+         → SQL Injection
+         → Deletes entire customer table (Asset: Customer PII)
+Mitigation: Input validation, parameterized queries
+
+Attack Path 2: Stolen API Key
+Attacker → Gains employee's API key (from GitHub commit)
+        → Uses key to call internal API
+        → Reads customer data (Asset: Customer PII, Orders)
+Mitigation: Key rotation, secret scanning, least privilege scopes
+
+Attack Path 3: Privilege Escalation
+Attacker → Registers as regular user
+        → Modifies user profile
+        → Escalates to admin via role elevation
+        → Accesses admin dashboard
+        → Exports customer database (Asset: All data)
+Mitigation: Authorization checks, role validation, audit logging
+```
+
+## Advanced Attack Surface Analysis
+
+### Identifying Hidden Attack Surfaces
+
+**Common Missed Surfaces:**
+
+1. **Backup and Recovery Systems**
+   - Backup files often less protected than production
+   - Recovery procedures may require elevated privileges
+   - Old backups with technical debt vulnerabilities
+   - Mitigation: Encrypt backups, separate access controls
+
+2. **Development and Testing Infrastructure**
+   - Dev databases often contain production data copies
+   - Staging environments may have test accounts with admin access
+   - CI/CD pipelines can access secrets and deploy code
+   - Mitigation: Separate credentials, minimal data in dev, audit CI/CD
+
+3. **Logging and Monitoring Systems**
+   - Logs may contain sensitive data (passwords, tokens)
+   - Monitoring dashboards accessible to support staff
+   - Alert handlers can trigger automated actions
+   - Mitigation: Sanitize logs, RBAC on dashboards, validate alert sources
+
+4. **Third-Party Integrations**
+   - Webhook endpoints receive data from external sources
+   - API keys stored in multiple places (config, secrets manager, developer machines)
+   - Data shared with SaaS providers may be less secure
+   - Mitigation: Validate webhooks, rotate keys regularly, audit data sharing
+
+5. **Client Applications**
+   - Mobile/web app source code contains hints about backend architecture
+   - Client-side logic can be reversed
+   - Cache on device may contain sensitive data
+   - Mitigation: Obfuscate code, validate all requests server-side, encrypt sensitive data at rest
+
+### Real-World Data Breach Examples
+
+**Case Study: Breach Due to Trust Boundary Violation**
+
+A healthcare company stored patient data (critical asset) in a database. The application server (trusted) connected to the database (trusted). However:
+
+**Vulnerability**: The API also exposed a debug endpoint `/debug/database` that returned raw SQL query results. The debug endpoint required authentication, but the authentication check was only on the main API, not the debug endpoints.
+
+**Attack Path**:
+```
+Attacker → Discovers /debug/database endpoint (public, not in docs)
+        → Bypasses auth (accepts any token, checks bypass)
+        → Queries patient data directly from database
+        → Exfiltrates 500k records
+```
+
+**Root Cause**: Trust boundary crossing not protected. Should have been:
+1. Authentication checked at API Gateway (not just main endpoints)
+2. Debug endpoints disabled in production
+3. Database queries restricted to specific operations (not raw SQL)
+4. Monitoring for suspicious patterns
+
+### Trust Boundary Crossing Case Studies
+
+**Example 1: API Gateway Trust Boundary**
+```
+Internet (Untrusted)
+    ↓ [API Gateway - Authentication check here]
+    ↓ [Issue JWT token]
+Microservices (Semi-trusted, internal network)
+    ↓ [Verify JWT token from request]
+    ↓ [Check role claims]
+Database (Trusted, encrypted, isolated)
+
+Failure: If API Gateway doesn't properly verify requests or JWT isn't validated by microservice
+Result: Attacker bypasses authentication, accesses database directly
+Fix: Defense in depth—authenticate at gateway AND microservice
+```
+
+**Example 2: User to Admin Boundary**
+```
+Regular User (Can access own data)
+    ↓ [Authorization check: is this your resource?]
+    ↓ [Return resource or 403 Forbidden]
+Admin User (Can access all data)
+    ↓ [Authorization check: is this yours OR admin?]
+    ↓ [Return resource or 403 Forbidden]
+
+Failure: Authorization check doesn't verify ownership
+Result: User A requests User B's data, gets it anyway
+Fix: Always check ownership + role in authorization
+```
+
+## Design Review Checklist
+
+- [ ] All critical assets identified and classified
+- [ ] Attack surface documented (all entry points listed)
+- [ ] Trust boundaries clearly defined in architecture diagrams
+- [ ] Each boundary crossing has security control
+- [ ] Attack paths from surface to asset identified
+- [ ] Highest-impact assets have strongest defenses
+- [ ] Unnecessary attack surface removed
+- [ ] Third-party integrations scoped and secured
+- [ ] Backup/recovery included in threat model
+- [ ] Assumptions about trust documented
+- [ ] Hidden surfaces (logging, monitoring, dev env) reviewed
+- [ ] Boundary crossing defenses layered (defense in depth)
+
+## Data Classification and Protection
+
+### Asset Sensitivity Levels
+
+**Level 1: Public**
+- Available to anyone without authentication
+- No confidentiality, integrity, or availability requirements
+- Examples: marketing materials, API documentation, public blog posts
+- Protection: CDN caching acceptable, no encryption required
+
+**Level 2: Internal**
+- Restricted to organization members
+- Moderate confidentiality requirement
+- Examples: internal wikis, org charts, non-sensitive project documentation
+- Protection: Access control, encryption in transit, minimal encryption at rest
+
+**Level 3: Sensitive**
+- Restricted to specific teams or roles
+- High confidentiality and integrity requirements
+- Examples: source code, design documents, technical specifications
+- Protection: Encryption in transit and at rest, audit logging, access logs
+
+**Level 4: Critical**
+- Strictly protected, access logged and reviewed
+- Maximum confidentiality, integrity, availability requirements
+- Examples: customer PII, financial data, encryption keys, secrets
+- Protection: Defense in depth, encryption, key management, frequent audits, incident response plans
+
+## Self-Check
+
+- What are your system's critical assets? (List top 5)
+- What are the entry points to your system? (List all APIs, apps, integrations)
+- Map one attack path from the internet to your most sensitive asset.
+- Where do trust assumptions change in your architecture? (List boundaries)
+- What hidden surfaces exist (backups, logging, dev environments)?
+- Are backup systems as protected as production?
+
+:::info One Takeaway
+Clear scoping—what you protect, what's exposed, where trust changes—makes threat modeling manageable and focused. Start with assets, map surfaces, identify boundaries, then design controls for each boundary.
+
+:::
+
+## Next Steps
+
+- Read **STRIDE, LINDDUN, PASTA** for threat identification
+- Study **Abuse & Misuse Cases** for user-centric scenarios
+- Explore **Implementation** for mitigating identified threats
+
+## References
+
+- Asset Valuation (NIST)
+- Attack Surface Analysis (Microsoft)
+- Data Classification (ISO 27001)
+- Trust Boundaries in System Architecture

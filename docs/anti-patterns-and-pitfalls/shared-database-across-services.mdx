@@ -1,0 +1,376 @@
+---
+sidebar_position: 12
+title: "Shared Database Across Services"
+description: "Multiple services accessing one shared database, creating tight coupling."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 8
+lastReviewed: "2025-02-14"
+personas: [architect, engineer]
+keywords: [anti-pattern, shared-database, microservices, data-ownership, database-per-service]
+image: /img/archman-social-card.webp
+tags: [anti-pattern, shared-database, microservices, coupling]
+hide_title: true
+---
+
+<Hero
+  title="Shared Database Across Services"
+  subtitle="Multiple services accessing one shared database, creating tight coupling."
+  imageAlt="Shared Database Across Services illustration"
+  size="large"
+/>
+
+## TL;DR
+
+Multiple services sharing one database creates tight coupling that defeats microservice independence. Schema changes affect all services. One service's writes corrupt another's data. Can't scale independently—scaling requires scaling entire database. Services become interdependent on the database level, losing autonomy. Solution: database-per-service pattern where each service owns its data and communicates through APIs, not shared tables.
+
+## Learning Objectives
+
+You will be able to:
+- Understand why shared databases break service independence
+- Design database boundaries aligned with service boundaries
+- Implement asynchronous data synchronization
+- Handle distributed transactions safely
+- Migrate from shared to independent databases
+- Evaluate when shared databases are appropriate (rarely)
+
+## Motivating Scenario
+
+You have User Service, Order Service, and Payment Service sharing one PostgreSQL database. This seems efficient:
+- Single database to manage
+- Easy to query across services
+- ACID transactions across services
+
+But problems arise:
+
+**Problem 1: Schema Coupling**
+Order Service adds a `discount_code` column to Orders table. But Payment Service has triggers on that table. The migration breaks Payment Service for 10 minutes during deployment.
+
+**Problem 2: Independent Scaling**
+User Service gets heavy traffic (reading user profiles). You need to scale database horizontally. But the shared database must scale for all services.  Now you're scaling Payment Service's database (which has light traffic) just to handle User Service load.
+
+**Problem 3: Implicit Dependencies**
+Order Service directly queries Payments table. Payment Service doesn't know Order Service depends on it. Changes to the schema are risky.
+
+**Problem 4: Data Corruption**
+Payment Service bug writes bad data to Payments table. Order Service reads corrupt data and creates bad orders. Now you have data consistency problems spanning services.
+
+You realize: this isn't microservices, it's distributed application tightly coupled through the database.
+
+## Core Explanation
+
+**Why Shared Databases Look Good**
+
+- Simple: one database, ACID transactions, joins work
+- Efficient: no network calls, direct queries
+- Familiar: traditional monolith pattern
+
+**Why Shared Databases Break**
+
+1. **Tight Coupling**: Services are coupled through schema
+2. **Scaling Limitations**: Can't scale services independently
+3. **Deployment Risk**: Schema changes affect multiple services
+4. **Data Ownership Ambiguity**: Who owns what data?
+5. **Blame Shifting**: "Payment Service broke my data"
+
+**The Database-Per-Service Pattern**
+
+Each service owns its data store. Services communicate through APIs:
+
+```
+User Service (owns: users) ← API → Order Service (owns: orders)
+Order Service ← API → Payment Service (owns: payments)
+```
+
+Changes to Order schema don't affect Payment Service.
+
+## Code Examples
+
+<Tabs>
+  <TabItem value="sql" label="Database Design">
+    <Tabs>
+      <TabItem value="bad" label="Shared Database (Anti-pattern)">
+        ```sql
+        -- Single database shared by User, Order, Payment services
+        -- ALL services can read/write ALL tables
+
+        CREATE TABLE users (
+            id INT PRIMARY KEY,
+            name VARCHAR,
+            email VARCHAR
+        );
+
+        CREATE TABLE orders (
+            id INT PRIMARY KEY,
+            user_id INT REFERENCES users(id),
+            total DECIMAL
+        );
+
+        CREATE TABLE payments (
+            id INT PRIMARY KEY,
+            order_id INT REFERENCES orders(id),  -- Coupling!
+            amount DECIMAL,
+            status VARCHAR
+        );
+
+        -- User Service directly queries all tables
+        SELECT * FROM orders WHERE user_id = ?;
+        SELECT * FROM payments WHERE order_id = ?;
+
+        -- Payment Service directly queries all tables
+        SELECT * FROM orders WHERE id = ?;
+        UPDATE orders SET status = 'paid' WHERE id = ?;  -- Modifying Order's data!
+
+        -- Order Service modifies Payment table
+        INSERT INTO payments VALUES (...);
+
+        -- All services are tightly coupled through the database
+        -- Problems:
+        // 1. Payment Service modifies orders (who owns orders?)
+        // 2. Schema change in payments affects all services
+        // 3. Can't scale database independently per service
+        // 4. No data isolation
+        ```
+      </TabItem>
+      <TabItem value="good" label="Database Per Service (Solution)">
+        ```sql
+        -- User Service Database
+        CREATE DATABASE user_service;
+        USE user_service;
+
+        CREATE TABLE users (
+            id INT PRIMARY KEY,
+            name VARCHAR,
+            email VARCHAR
+        );
+
+        -- Order Service Database
+        CREATE DATABASE order_service;
+        USE order_service;
+
+        CREATE TABLE orders (
+            id INT PRIMARY KEY,
+            user_id INT,  -- No foreign key to users table!
+            total DECIMAL
+        );
+
+        CREATE TABLE order_items (
+            id INT PRIMARY KEY,
+            order_id INT REFERENCES orders(id),
+            product_id INT,
+            quantity INT
+        );
+
+        -- Payment Service Database
+        CREATE DATABASE payment_service;
+        USE payment_service;
+
+        CREATE TABLE payments (
+            id INT PRIMARY KEY,
+            order_id INT,  -- No foreign key to orders!
+            amount DECIMAL,
+            status VARCHAR
+        );
+
+        -- Benefits:
+        // 1. Each service owns its tables (no cross-service writes)
+        // 2. Schema changes isolated to one service
+        // 3. Can scale each database independently
+        // 4. Clear data ownership
+        // 5. Services coupled through API contracts, not database
+
+        // Communication through APIs:
+        // Order Service needs user details:
+        //   Call: GET /api/users/{id}  (User Service)
+        //
+        // Payment Service needs order details:
+        //   Call: GET /api/orders/{id}  (Order Service)
+        ```
+      </TabItem>
+    </Tabs>
+  </TabItem>
+  <TabItem value="python" label="Python">
+    <Tabs>
+      <TabItem value="bad" label="Shared Database (Anti-pattern)">
+        ```python title="shared_database.py" showLineNumbers
+        import psycopg2
+
+        # Shared database connection for all services
+        shared_db = psycopg2.connect("postgresql://localhost/shared_db")
+
+        class UserService:
+            def get_user(self, user_id):
+                cursor = shared_db.cursor()
+                cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                return cursor.fetchone()
+
+        class OrderService:
+            def create_order(self, user_id, items):
+                cursor = shared_db.cursor()
+                # Check if user exists by querying users table
+                cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+                if not cursor.fetchone():
+                    raise Exception("User not found")
+
+                # Create order
+                cursor.execute(
+                    "INSERT INTO orders (user_id, total) VALUES (%s, %s)",
+                    (user_id, self._calculate_total(items))
+                )
+                cursor.commit()
+
+            def get_order(self, order_id):
+                cursor = shared_db.cursor()
+                cursor.execute("SELECT * FROM orders WHERE id = %s", (order_id,))
+                return cursor.fetchone()
+
+        class PaymentService:
+            def process_payment(self, order_id, amount):
+                cursor = shared_db.cursor()
+                # Payment Service directly queries and modifies Order data
+                cursor.execute("SELECT * FROM orders WHERE id = %s", (order_id,))
+                order = cursor.fetchone()
+                if not order:
+                    raise Exception("Order not found")
+
+                # Process payment
+                cursor.execute(
+                    "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, %s)",
+                    (order_id, amount, 'pending')
+                )
+
+                # Payment Service modifies Order table (tight coupling!)
+                cursor.execute(
+                    "UPDATE orders SET status = %s WHERE id = %s",
+                    ('paid', order_id)
+                )
+                cursor.commit()
+
+        # Problems:
+        // 1. PaymentService modifies orders table (who owns orders?)
+        // 2. Schema change in payments affects all services
+        // 3. Direct database coupling
+        // 4. Can't scale services independently
+        ```
+      </TabItem>
+      <TabItem value="good" label="Database Per Service (Solution)">
+        ```python title="database_per_service.py" showLineNumbers
+        import psycopg2
+        import requests
+
+        # Each service has its own database
+        user_db = psycopg2.connect("postgresql://localhost/user_db")
+        order_db = psycopg2.connect("postgresql://localhost/order_db")
+        payment_db = psycopg2.connect("postgresql://localhost/payment_db")
+
+        class UserService:
+            def get_user(self, user_id):
+                """User Service owns users table"""
+                cursor = user_db.cursor()
+                cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                return cursor.fetchone()
+
+        class OrderService:
+            def create_order(self, user_id, items):
+                """Order Service owns orders table"""
+                # Check user exists via API, not database query
+                user_resp = requests.get(f"http://user-service/users/{user_id}")
+                if not user_resp.ok:
+                    raise Exception("User not found")
+
+                # Create order in Order Service's database only
+                cursor = order_db.cursor()
+                total = sum(item['price'] * item['qty'] for item in items)
+                cursor.execute(
+                    "INSERT INTO orders (user_id, total, status) VALUES (%s, %s, %s)",
+                    (user_id, total, 'pending')
+                )
+                order_id = cursor.fetchall()[0][0]
+                cursor.commit()
+
+                # Emit event for other services (asynchronously)
+                # Payment Service listens and processes payment
+                self.emit_event('OrderCreated', {
+                    'order_id': order_id,
+                    'user_id': user_id,
+                    'total': total
+                })
+
+                return order_id
+
+            def get_order(self, order_id):
+                """Order Service only queries its own table"""
+                cursor = order_db.cursor()
+                cursor.execute("SELECT * FROM orders WHERE id = %s", (order_id,))
+                return cursor.fetchone()
+
+        class PaymentService:
+            def process_payment(self, order_id, amount):
+                """Payment Service owns payments table"""
+                # Get order details via API, not direct database query
+                order_resp = requests.get(f"http://order-service/orders/{order_id}")
+                if not order_resp.ok:
+                    raise Exception("Order not found")
+                order = order_resp.json()
+
+                # Process payment in Payment Service's database only
+                cursor = payment_db.cursor()
+                cursor.execute(
+                    "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, %s)",
+                    (order_id, amount, 'pending')
+                )
+                cursor.commit()
+
+                # Emit event for Order Service to handle
+                self.emit_event('PaymentProcessed', {
+                    'order_id': order_id,
+                    'status': 'paid'
+                })
+
+        # Benefits:
+        // 1. Clear data ownership (each service owns its tables)
+        // 2. Schema changes isolated (Payment change doesn't affect Order)
+        // 3. Services loosely coupled through APIs
+        // 4. Can scale databases independently
+        // 5. Asynchronous communication is resilient
+        ```
+      </TabItem>
+    </Tabs>
+  </TabItem>
+</Tabs>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Does each service have its own database?",
+  "Are there any cross-service foreign keys?",
+  "Do services communicate through APIs, not shared tables?",
+  "Can you deploy one service without coordinating database changes?",
+  "Can you scale one service's database independently?",
+  "Is data ownership clear (no ambiguity)?",
+  "Are there no direct cross-database queries?",
+  "Do services use event-driven communication for consistency?",
+  "Can you change a service's schema without affecting others?"
+]} />
+
+## Showcase
+
+<Showcase
+  title="Signals of Shared Database Coupling"
+  sections={[
+    {label: "Anti-Signals (Problems)", body: "- Multiple services share one database\n- Cross-service foreign keys\n- Service A queries Service B's tables\n- Schema change requires coordinating multiple services\n- Can't scale services independently", tone: "warning"}, {label: "Healthy Signals (Solutions)", body: "- Database per service\n- No cross-service foreign keys\n- Services communicate via APIs\n- Schema changes isolated\n- Independent scaling possible", tone: "positive"}
+  ]}
+/>
+
+## One Takeaway
+
+<Admonition type="info">
+Database-per-service eliminates the most insidious coupling: the database schema. Services become truly independent when they don't share data stores.
+</Admonition>
+
+## References
+
+1. <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="nofollow noopener noreferrer">Database per Service Pattern ↗️</a>
+2. <a href="https://www.martinfowler.com/microservices/" target="_blank" rel="nofollow noopener noreferrer">Microservices Architecture ↗️</a>
+3. <a href="https://www.eventstore.com/" target="_blank" rel="nofollow noopener noreferrer">Event Sourcing & CQRS ↗️</a>
+4. <a href="https://saga-pattern.com/" target="_blank" rel="nofollow noopener noreferrer">Saga Pattern for Distributed Transactions ↗️</a>

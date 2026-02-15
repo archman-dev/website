@@ -1,0 +1,515 @@
+---
+sidebar_position: 1
+title: "Normalization vs Denormalization"
+description: "Balance data consistency and query performance through normalization and strategic denormalization"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [normalization, denormalization, 3NF, schema design, data consistency, query performance, anomalies]
+image: /img/archman-social-card.webp
+tags: [schema-design, normalization, denormalization, consistency, performance, design-patterns, data-modeling]
+hide_title: true
+---
+
+<Hero title="Normalization vs Denormalization" subtitle="Strategic trade-offs between consistency and performance" size="large" />
+
+## TL;DR
+
+Normalization reduces data duplication and anomalies through structured schema design (1NF, 2NF, 3NF). Denormalization intentionally reintroduces data duplication for read performance. Most production systems use hybrid approach: normalized for transactions, denormalized views/caches for analytics.
+
+## Learning Objectives
+
+- Understand normalization levels and why they matter
+- Recognize update/insert/delete anomalies in unnormalized data
+- Identify when denormalization helps performance
+- Design schemas that balance consistency and speed
+
+## Motivating Scenario
+
+E-commerce: Store author name in every book row vs separate authors table? If author name changes, how many rows update? Normalized: one update. Denormalized: millions. But listing books by author requires join.
+
+## Core Concepts
+
+<Figure
+  title="Normalization Levels"
+  description="Progression from unnormalized to fully normalized schema"
+  diagram={`
+graph TB
+    UN["Unnormalized<br/>Raw Data<br/>High Duplication"]
+    N1["1NF<br/>Atomic Values<br/>No Repeating Groups"]
+    N2["2NF<br/>Remove Partial<br/>Dependencies"]
+    N3["3NF<br/>Remove Transitive<br/>Dependencies"]
+    BCNF["BCNF<br/>Stricter<br/>Conditions"]
+    
+    UN -->|Remove Groups| N1
+    N1 -->|Partial Deps| N2
+    N2 -->|Transitive Deps| N3
+    N3 -->|Anomalies| BCNF
+    
+    style BCNF fill:#00cc00
+  `}
+/>
+
+### Normalization Forms
+
+**1NF (First Normal Form)**: Atomic values only
+- No repeating groups in rows
+- Each column contains single value
+
+**2NF (Second Normal Form)**: 1NF + No partial dependencies
+- All non-key columns depend on full primary key
+- Remove columns that depend on part of composite key
+
+**3NF (Third Normal Form)**: 2NF + No transitive dependencies
+- Non-key columns depend only on primary key
+- Remove columns that depend on other non-key columns
+
+**BCNF (Boyce-Codd NF)**: Stricter than 3NF
+- Every determinant is a candidate key
+
+## Practical Example
+
+### Unnormalized (Problems)
+
+```sql
+-- Denormalized: Author names embedded in books
+CREATE TABLE books_denormalized (
+  book_id INT,
+  title VARCHAR(255),
+  author_id INT,
+  author_name VARCHAR(255),  -- Duplication!
+  author_email VARCHAR(255), -- Duplication!
+  year INT
+);
+
+-- Problems:
+-- INSERT: Adding new author requires adding book
+-- UPDATE: Changing author name requires updating ALL books
+-- DELETE: Deleting last book loses author data
+
+INSERT INTO books_denormalized VALUES (1, 'Python Guide', 1, 'Alice Smith', 'alice@ex.com', 2025);
+INSERT INTO books_denormalized VALUES (2, 'Python Advanced', 1, 'Alice Smith', 'alice@ex.com', 2026);
+
+UPDATE books_denormalized SET author_name = 'Alice Johnson' WHERE author_id = 1;
+-- Must update 2 rows!
+```
+
+### Normalized (3NF)
+
+```sql
+-- Normalized: Separate tables
+CREATE TABLE authors (
+  author_id INT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255)
+);
+
+CREATE TABLE books (
+  book_id INT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  author_id INT,
+  year INT,
+  FOREIGN KEY (author_id) REFERENCES authors(author_id)
+);
+
+-- Benefits:
+-- INSERT: Add author once, reference in multiple books
+-- UPDATE: Change name once, all books reflect change
+-- DELETE: Delete author independently from books
+
+INSERT INTO authors VALUES (1, 'Alice Smith', 'alice@ex.com');
+INSERT INTO books VALUES (1, 'Python Guide', 1, 2025);
+INSERT INTO books VALUES (2, 'Python Advanced', 1, 2026);
+
+UPDATE authors SET name = 'Alice Johnson' WHERE author_id = 1;
+-- Single row update!
+
+-- Query requires JOIN
+SELECT b.title, a.name, b.year
+FROM books b
+JOIN authors a ON b.author_id = a.author_id
+WHERE a.author_id = 1;
+```
+
+### Strategic Denormalization
+
+```sql
+-- Base normalized schema, plus denormalized column for performance
+CREATE TABLE books (
+  book_id INT PRIMARY KEY,
+  title VARCHAR(255),
+  author_id INT,
+  author_name VARCHAR(255),  -- Denormalized for fast reads
+  year INT,
+  FOREIGN KEY (author_id) REFERENCES authors(author_id)
+);
+
+-- Consistency: Update trigger to keep author_name in sync
+CREATE TRIGGER update_book_author_name
+AFTER UPDATE ON authors
+FOR EACH ROW
+BEGIN
+  UPDATE books SET author_name = NEW.name WHERE author_id = NEW.author_id;
+END;
+
+-- Or: Periodic batch update
+-- Performance: Queries don't need JOIN
+SELECT title, author_name, year
+FROM books
+WHERE author_id = 1;  -- Single table, no JOIN
+```
+
+## When to Use Normalization / Denormalization
+
+<Vs items={[
+{
+    label: "Normalize When",
+    points: ["Write-heavy workloads (OLTP)", "Data consistency critical", "Updates frequent and widespread", "Storage cost matters", "Complex relationships between entities"]
+  },
+{
+    label: "Denormalize When",
+    points: ["Read-heavy workloads (OLAP)", "Query performance critical", "Updates infrequent to specific data", "Can handle eventual consistency", "Derived/computed values accessed frequently"]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Denormalization by Access Pattern",
+      description: "Embed/duplicate data that's always queried together",
+      tags: ["performance", "design"]
+    }, {
+      title: "Materialized Views",
+      description: "Precomputed denormalized query results, refreshed on schedule",
+      tags: ["performance", "views"]
+    }, {
+      title: "Update Triggers",
+      description: "Keep denormalized copies consistent automatically",
+      tags: ["consistency", "implementation"]
+    }, {
+      title: "Read Replicas + Denormalization",
+      description: "Denormalize in read-only replicas, keep normalized primary",
+      tags: ["scaling", "architecture"]
+    }, {
+      title: "Application-Level Denormalization",
+      description: "Cache denormalized data in application/cache layer",
+      tags: ["caching", "architecture"]
+    }, {
+      title: "Measure Before Denormalizing",
+      description: "Profile queries first. Denormalize only for measured bottlenecks"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Base schema normalized to at least 3NF",
+    "Primary key defined on all tables",
+    "Foreign keys enforce relationships",
+    "Update anomalies identified and addressed",
+    "Denormalization justified by measured performance gains",
+    "Mechanisms for consistency (triggers, batch jobs) documented",
+    "Reporting queries can use denormalized views",
+    "Storage requirements documented",
+    "Data quality rules enforced",
+    "Migration path planned if schema changes"
+  ]}
+/>
+
+## Self-Check
+
+- What's the difference between 2NF and 3NF?
+- How do you identify update anomalies in unnormalized data?
+- When would you denormalize instead of adding indexes?
+- How do you keep denormalized copies consistent?
+
+:::info
+Normalize your base schema to prevent anomalies, then strategically denormalize (with clear mechanisms for consistency) to optimize for measured performance bottlenecks.
+:::
+
+## Next Steps
+
+- Explore **Indexing Strategies** for query optimization
+- Learn **Query Patterns** for efficient data retrieval
+- Study **Materialized Views** for denormalization
+- Dive into **Caching Patterns** for application-level denormalization
+
+## Real-World Normalization Examples
+
+### E-Commerce Product Catalog
+
+Normalized approach:
+
+```sql
+-- Normalized (3NF)
+CREATE TABLE categories (
+  id INT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL UNIQUE,
+  description TEXT
+);
+
+CREATE TABLE products (
+  id INT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  category_id INT,
+  description TEXT,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
+CREATE TABLE product_attributes (
+  id INT PRIMARY KEY,
+  product_id INT,
+  attribute_name VARCHAR(255),
+  attribute_value VARCHAR(255),
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+CREATE TABLE product_prices (
+  id INT PRIMARY KEY,
+  product_id INT,
+  price DECIMAL(10,2),
+  currency VARCHAR(3),
+  region VARCHAR(50),
+  effective_from DATE,
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+-- Queries require multiple JOINs
+SELECT p.name, c.name as category, pr.price, a.attribute_name, a.attribute_value
+FROM products p
+JOIN categories c ON p.category_id = c.id
+LEFT JOIN product_prices pr ON p.id = pr.product_id AND pr.region = 'US'
+LEFT JOIN product_attributes pa ON p.id = pa.product_id
+WHERE p.id = 123;
+```
+
+**Advantages**: Single source of truth for each piece of data. Update price once, affects all queries. Consistent category names.
+
+**Disadvantages**: Multiple JOINs for simple queries. More round-trips to database. Complex schema to understand.
+
+### Denormalized Approach (Materialized View)
+
+```sql
+-- Pre-computed denormalized view
+CREATE MATERIALIZED VIEW product_summary AS
+SELECT
+  p.id,
+  p.name,
+  c.name as category,
+  STRING_AGG(pa.attribute_name || ':' || pa.attribute_value, '; ') as attributes,
+  pr.price,
+  pr.currency,
+  p.created_at
+FROM products p
+JOIN categories c ON p.category_id = c.id
+LEFT JOIN product_prices pr ON p.id = pr.product_id AND pr.region = 'US'
+LEFT JOIN product_attributes pa ON p.id = pa.product_id
+GROUP BY p.id, c.name, pr.price, pr.currency;
+
+-- Refreshed nightly
+REFRESH MATERIALIZED VIEW product_summary;
+
+-- Query is instant
+SELECT * FROM product_summary WHERE id = 123;
+```
+
+**Advantages**: Single table, no JOINs. Fast queries (under 10ms). Good for dashboards/reporting.
+
+**Disadvantages**: Stale data (refreshed nightly). Disk space (duplicate data). Must maintain refresh schedule.
+
+## Denormalization Strategies
+
+### Strategy 1: Cache Denormalization
+
+Keep cache layer in sync with normalized data:
+
+```python
+class ProductService:
+    def __init__(self, db, cache):
+        self.db = db
+        self.cache = cache
+
+    def get_product(self, product_id):
+        # Try cache first (denormalized)
+        cached = self.cache.get(f"product:{product_id}")
+        if cached:
+            return cached
+
+        # Cache miss: query normalized DB
+        product = self.db.query(f"""
+            SELECT p.*, c.name as category,
+                   STRING_AGG(pa.value) as attributes
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            LEFT JOIN product_attrs pa ON p.id = pa.product_id
+            WHERE p.id = ?
+        """, [product_id])
+
+        # Store in cache
+        self.cache.set(f"product:{product_id}", product, ttl=3600)
+        return product
+
+    def update_product(self, product_id, data):
+        # Update normalized DB
+        self.db.update('products', data, {'id': product_id})
+
+        # Invalidate cache
+        self.cache.delete(f"product:{product_id}")
+```
+
+### Strategy 2: Application-Level Denormalization
+
+Compute and store denormalized columns in the database:
+
+```sql
+-- Add denormalized column to products
+ALTER TABLE products ADD COLUMN summary TEXT;
+ALTER TABLE products ADD COLUMN avg_rating DECIMAL(3,2);
+
+-- Trigger to compute on insert/update
+CREATE TRIGGER update_product_summary
+AFTER INSERT ON products
+FOR EACH ROW
+BEGIN
+  UPDATE products SET
+    summary = (
+      SELECT STRING_AGG(attribute, ', ')
+      FROM product_attributes
+      WHERE product_id = NEW.id
+    ),
+    avg_rating = (
+      SELECT AVG(rating)
+      FROM reviews
+      WHERE product_id = NEW.id
+    )
+  WHERE id = NEW.id;
+END;
+
+-- Now queries are fast
+SELECT id, name, summary, avg_rating FROM products WHERE id = 123;
+```
+
+### Strategy 3: Read Replicas + Denormalization
+
+Keep normalized master database, denormalize in read replicas:
+
+```
+Master (Normalized)          Replicas (Denormalized)
+┌─────────────────┐          ┌──────────────────┐
+│ products        │────sync──→│ products_summary │
+│ categories      │           │ (precomputed)    │
+│ attributes      │           └──────────────────┘
+└─────────────────┘
+   (writes)                    (reads)
+
+-- Application logic
+class ProductRepository:
+    def __init__(self, master_db, replica_db):
+        self.master = master_db
+        self.replica = replica_db
+
+    def update_product(self, data):
+        # Write to master
+        self.master.update('products', data)
+
+    def get_product(self, id):
+        # Read from replica (denormalized)
+        return self.replica.query(
+            "SELECT * FROM products_summary WHERE id = ?", [id]
+        )
+```
+
+## When to Denormalize: Decision Framework
+
+```
+1. Is this a write-heavy or read-heavy workload?
+   ├─ Read-heavy: Consider denormalization
+   └─ Write-heavy: Keep normalized
+
+2. Is query performance critical?
+   ├─ YES (< 100ms required): Might need denormalization
+   └─ NO (> 1 second acceptable): Keep normalized
+
+3. Can you tolerate eventual consistency?
+   ├─ YES: Denormalize with batch refresh
+   └─ NO: Keep normalized or use triggers
+
+4. Do you have disk space to spare?
+   ├─ YES: Denormalization is feasible
+   └─ NO: Stick with normalized
+
+5. Can you maintain consistency mechanisms?
+   ├─ YES (triggers, batch jobs): Denormalize
+   └─ NO: Too risky, keep normalized
+```
+
+## Hybrid Approach: Best of Both Worlds
+
+Most production systems use both:
+
+```python
+class OptimalSchema:
+    """
+    Normalized core + denormalized views/cache
+    """
+    # Write path: normalized
+    def create_product(self, name, category, attributes):
+        # Insert to normalized tables
+        product_id = db.insert('products', {'name': name, 'category_id': category})
+        for attr_name, attr_value in attributes.items():
+            db.insert('product_attrs', {
+                'product_id': product_id,
+                'name': attr_name,
+                'value': attr_value
+            })
+        # Cache invalidated automatically
+
+    # Read path: denormalized
+    def get_product(self, product_id):
+        # Try cache (denormalized)
+        cached = cache.get(f"product:{product_id}")
+        if cached:
+            return cached
+
+        # Fallback to materialized view (also denormalized)
+        summary = db.query(
+            "SELECT * FROM product_summary WHERE id = ?", [product_id]
+        )
+        cache.set(f"product:{product_id}", summary)
+        return summary
+
+    def list_products(self, category, limit=20):
+        # List queries use denormalized view
+        return db.query(
+            "SELECT * FROM product_summary WHERE category = ? LIMIT ?",
+            [category, limit]
+        )
+```
+
+## Performance Comparison Example
+
+Real numbers from typical e-commerce system:
+
+| Operation | Normalized | Denormalized |
+|-----------|-----------|--------------|
+| Insert product | 50ms | 200ms (10 tables + triggers) |
+| Update price | 10ms | 50ms (price + cache invalidation) |
+| Get product (no cache) | 150-300ms (3 JOINs) | 20-50ms (single table) |
+| Get product (cached) | 5-10ms | 5-10ms |
+| List 20 products | 200-500ms | 50-100ms |
+| Category change (1M products) | 100ms (single update) | 5-10 minutes (full refresh) |
+
+**Conclusion**: Normalized for writes, denormalized for reads. Cache for hot paths.
+
+## References
+
+- "Database Design" by C.J. Date
+- Database Normalization Tutorials
+- "Designing Data-Intensive Applications" by Martin Kleppmann
+- "SQL Performance Explained" by Markus Winand
+- "Database Internals" by Alex Petrov

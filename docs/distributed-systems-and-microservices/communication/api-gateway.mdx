@@ -1,0 +1,777 @@
+---
+sidebar_position: 11
+title: "API Gateway"
+description: "Centralize request routing, authentication, and rate limiting using an API gateway."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [architect, engineer]
+keywords: [API gateway, routing, authentication, rate limiting, microservices]
+image: /img/archman-social-card.webp
+tags: [distributed-systems, communication, microservices]
+hide_title: true
+---
+
+<Hero title="API Gateway" subtitle="Single entry point for microservices with routing, auth, and rate limiting." size="large" />
+
+## TL;DR
+
+API Gateway: Single entry point for all client requests. Routes requests to appropriate microservice. Handles: authentication (JWT, OAuth), rate limiting, request/response transformation, logging, compression. Benefits: clients don't know service URLs, can change internals, centralized auth, single place to enforce policies. Tradeoff: single point of failure (need HA, failover), added latency (but negligible). Popular: NGINX, Kong, AWS API Gateway, Envoy. Don't put business logic in gateway (should be in services).
+
+## Learning Objectives
+
+- Understand API gateway role in microservices
+- Compare gateway implementations
+- Implement routing rules
+- Add authentication (JWT, OAuth)
+- Implement rate limiting
+- Request/response transformation
+- Monitor gateway health
+- Avoid anti-patterns (business logic in gateway)
+- Design for high availability
+
+## Motivating Scenario
+
+Clients call individual services directly: `/auth-service/login`, `/order-service/orders`, `/payment-service/charge`. Each service implements auth separately. Rate limiting in each service. Requests cross-origin (CORS headers). Fragmented. API Gateway: Single endpoint `/api/login`, `/api/orders`, `/api/charge`. All requests go through gateway. Gateway handles auth, rate limiting, CORS. Services simplified (no auth logic). Clients simplified (single URL).
+
+## Core Concepts
+
+### API Gateway Architecture
+
+```
+Client 1 ──┐
+Client 2 ──┤
+Client 3 ──┼──→ API Gateway ─┬→ Auth Service
+Client 4 ──┘                  ├→ Order Service
+                              ├→ Payment Service
+                              └→ Shipping Service
+```
+
+### Gateway Responsibilities
+
+| Responsibility | Purpose | Example |
+|----------------|---------|---------|
+| **Routing** | Route to correct service | `/api/orders` → order-service |
+| **Authentication** | Validate JWT, OAuth tokens | Verify user identity |
+| **Authorization** | Check permissions | User can access /orders |
+| **Rate Limiting** | Prevent overload | 100 req/min per user |
+| **Transformation** | Modify requests/responses | Add headers, compress |
+| **Logging** | Track all requests | Audit trail |
+| **Caching** | Cache responses | Cache GET requests |
+| **Circuit Breaking** | Fail gracefully | Stop calling dead service |
+
+### Gateway Patterns
+
+| Pattern | Purpose | Tradeoff |
+|---------|---------|----------|
+| **Backend for Frontend (BFF)** | Separate gateway per client | More flexibility, more code |
+| **Single Gateway** | One gateway for all clients | Simpler, single point of failure |
+| **Service Mesh** | No gateway, sidecars handle routing | No single point of failure, complex |
+
+## Implementation
+
+<Tabs>
+<TabItem value="nginx" label="NGINX">
+
+```nginx
+# Main load balancer / router
+http {
+  upstream auth_service {
+    server auth:3000;
+  }
+  
+  upstream order_service {
+    server order:3001;
+  }
+  
+  upstream payment_service {
+    server payment:3002;
+  }
+  
+  # Rate limiting
+  limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+  limit_req_zone $http_x_api_key zone=key_limit:10m rate=100r/s;
+  
+  # Authentication
+  map $http_authorization $jwt_claim_sub {
+    default "";
+    ~^Bearer\ (?<jwt>[\w-]+\.[\w-]+\.[\w-]+)$ $jwt;
+  }
+  
+  server {
+    listen 8080;
+    server_name _;
+    
+    # Logging
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+    
+    # CORS headers
+    add_header 'Access-Control-Allow-Origin' '*' always;
+    add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE' always;
+    add_header 'Access-Control-Allow-Headers' 'Content-Type, Authorization' always;
+    
+    # Health check endpoint
+    location /health {
+      access_log off;
+      return 200 "healthy\n";
+    }
+    
+    # Auth endpoints
+    location ~ ^/api/auth/ {
+      limit_req zone=api_limit burst=20 nodelay;
+      
+      proxy_pass http://auth_service;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # Order endpoints (requires authentication)
+    location ~ ^/api/orders/ {
+      # Require JWT token
+      if ($http_authorization = "") {
+        return 401 "Unauthorized";
+      }
+      
+      limit_req zone=api_limit burst=10 nodelay;
+      
+      proxy_pass http://order_service;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header Authorization $http_authorization;
+      proxy_set_header X-User-ID $jwt_claim_sub;
+    }
+    
+    # Payment endpoints (requires API key)
+    location ~ ^/api/payment/ {
+      if ($http_x_api_key = "") {
+        return 403 "Forbidden";
+      }
+      
+      limit_req zone=key_limit burst=5 nodelay;
+      
+      proxy_pass http://payment_service;
+      proxy_set_header X-API-Key $http_x_api_key;
+    }
+    
+    # Catch-all 404
+    location / {
+      return 404 "Not Found";
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem value="kong" label="Kong">
+
+```yaml
+# Kong API Gateway configuration
+
+_format_version: '2.1'
+_transform: true
+
+services:
+  - name: auth-service
+    host: auth
+    port: 3000
+    routes:
+      - name: auth-route
+        paths:
+          - /api/auth
+        methods:
+          - POST
+  
+  - name: order-service
+    host: order
+    port: 3001
+    routes:
+      - name: order-route
+        paths:
+          - /api/orders
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+    plugins:
+      # Rate limiting: 100 requests per minute per user
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+      
+      # JWT authentication
+      - name: jwt
+        config:
+          secret_is_base64: false
+          key_claim_name: sub
+      
+      # Request transformation
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - X-Service: order-service
+      
+      # Response transformation
+      - name: response-transformer
+        config:
+          add:
+            headers:
+              - X-Response-Time: $upstream_response_time
+      
+      # Logging
+      - name: file-log
+        config:
+          path: /var/log/kong/order-service.log
+  
+  - name: payment-service
+    host: payment
+    port: 3002
+    routes:
+      - name: payment-route
+        paths:
+          - /api/payment
+    plugins:
+      # API key authentication
+      - name: key-auth
+        config:
+          key_names:
+            - X-API-Key
+      
+      # Rate limiting: 1000 requests per minute per API key
+      - name: rate-limiting
+        config:
+          minute: 1000
+
+plugins:
+  # CORS
+  - name: cors
+    config:
+      origins:
+        - '*'
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+      headers:
+        - Content-Type
+        - Authorization
+        - X-API-Key
+
+consumers:
+  - username: default-app
+    credentials:
+      - name: key-auth
+        key: app-key-12345
+  
+  - username: premium-app
+    credentials:
+      - name: key-auth
+        key: premium-key-67890
+```
+
+</TabItem>
+<TabItem value="python" label="Python (FastAPI)">
+
+```python
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from functools import lru_cache
+import jwt
+import httpx
+from datetime import datetime, timedelta
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+security = HTTPBearer()
+
+# Configuration
+SERVICE_URLS = {
+    'auth': 'http://auth-service:3000',
+    'order': 'http://order-service:3001',
+    'payment': 'http://payment-service:3002',
+}
+
+JWT_SECRET = 'your-secret-key'
+
+# Authentication
+async def verify_jwt(credentials: HTTPAuthCredentials = Depends(security)):
+    """Verify JWT token"""
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            JWT_SECRET,
+            algorithms=['HS256']
+        )
+        return payload
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# Rate limiting
+@app.middleware("http")
+async def add_rate_limiting(request, call_next):
+    """Apply rate limiting"""
+    # Simplified - use slowapi for production
+    response = await call_next(request)
+    return response
+
+# Proxy requests
+async def proxy(path: str, method: str, service: str, 
+               headers: dict = None, body: dict = None):
+    """Generic proxy to backend service"""
+    url = f"{SERVICE_URLS[service]}{path}"
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            if method == 'GET':
+                response = await client.get(url, headers=headers, timeout=10)
+            elif method == 'POST':
+                response = await client.post(url, json=body, headers=headers, timeout=10)
+            elif method == 'PUT':
+                response = await client.put(url, json=body, headers=headers, timeout=10)
+            elif method == 'DELETE':
+                response = await client.delete(url, headers=headers, timeout=10)
+            
+            return response
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Service timeout")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Service error: {e}")
+
+# Auth endpoints
+@app.post("/api/auth/login")
+@limiter.limit("10/minute")
+async def login(request):
+    """Login endpoint (no auth required)"""
+    response = await proxy("/login", "POST", "auth", body=request.json())
+    return response.json()
+
+# Order endpoints
+@app.get("/api/orders")
+@limiter.limit("100/minute")
+async def list_orders(user = Depends(verify_jwt)):
+    """List orders (requires JWT)"""
+    headers = {'X-User-ID': user['sub']}
+    response = await proxy("/orders", "GET", "order", headers=headers)
+    return response.json()
+
+@app.post("/api/orders")
+@limiter.limit("10/minute")
+async def create_order(request, user = Depends(verify_jwt)):
+    """Create order (requires JWT)"""
+    headers = {'X-User-ID': user['sub']}
+    response = await proxy("/orders", "POST", "order", headers=headers, body=request.json())
+    return response.json()
+
+# Payment endpoints
+@app.post("/api/payment/charge")
+@limiter.limit("5/minute")
+async def charge(api_key: str = Header(...)):
+    """Charge endpoint (requires API key)"""
+    # Verify API key
+    if not api_key.startswith("sk_"):
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    
+    headers = {'X-API-Key': api_key}
+    response = await proxy("/charge", "POST", "payment", headers=headers)
+    return response.json()
+
+# Health check
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+
+# Graceful error handling
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return {
+        "error": exc.detail,
+        "status_code": exc.status_code,
+        "timestamp": datetime.now().isoformat()
+    }
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Scenario 1: Mobile + Web Clients
+
+```
+Mobile Client:
+  /api/mobile/orders  → optimized response (less data)
+  /api/mobile/user    → only essential fields
+
+Web Client:
+  /api/web/orders     → full response
+  /api/web/user       → all fields
+
+Backend services are identical
+Gateway serves different responses per client
+```
+
+### Scenario 2: Rate Limiting Hierarchy
+
+```
+Free tier:   100 req/min
+Paid tier:   1000 req/min
+Premium:     10000 req/min
+Enterprise:  Unlimited
+
+Gateway enforces limits before routing
+```
+
+### Scenario 3: Graceful Degradation
+
+```
+If order-service down:
+  Gateway returns 503 (Service Unavailable)
+  Client shown: "Checkout temporarily unavailable, try again"
+
+If auth-service down:
+  Gateway can't authenticate new users
+  Existing sessions (cached) still work
+  Gateway returns 503 for new users
+```
+
+## Common Mistakes
+
+### Mistake 1: Business Logic in Gateway
+
+```python
+# ❌ WRONG: Business logic in gateway
+@app.post("/api/orders")
+async def create_order(item):
+    if item.quantity > 100:
+        item.discount = 0.2  # Business rule!
+    # ...
+
+# ✓ CORRECT: Only routing/auth/rate-limiting
+@app.post("/api/orders")
+async def create_order(item, user = Depends(verify_jwt)):
+    return await proxy("/orders", "POST", "order", body=item)
+```
+
+### Mistake 2: No Timeout/Retry
+
+```python
+# ❌ WRONG: No timeout
+response = await client.get(url)
+
+# ✓ CORRECT: Timeout + retry
+response = await client.get(url, timeout=10)
+# Implement exponential backoff retry
+```
+
+### Mistake 3: Single Point of Failure
+
+```yaml
+# ❌ WRONG: Single gateway
+Client → Gateway → Services
+
+# ✓ CORRECT: HA gateway
+Client → [Gateway-1] ─┐
+      ↓  [Gateway-2] ─→ Services
+      └  [Gateway-3]
+```
+
+## Production Considerations
+
+### High Availability
+
+- Load balance gateway across 3+ instances
+- Health checks every 5 seconds
+- Automatic failover
+- No shared state (stateless gateways)
+
+### Monitoring
+
+- Request rate per client
+- Error rate by service
+- Latency p99 through gateway
+- Backend service health
+
+### Security
+
+- TLS/HTTPS for all traffic
+- Rate limit by IP + API key
+- JWT signature verification
+- CORS headers validation
+- Request size limits
+
+## Design Checklist
+
+<Checklist items={[
+  "Single gateway or multiple (BFF)?",
+  "HA setup (multiple instances)?",
+  "Authentication mechanism (JWT, OAuth)?",
+  "Rate limiting per client?",
+  "Request/response transformation?",
+  "Timeout values configured?",
+  "Circuit breaker for dead services?",
+  "Comprehensive logging?",
+  "CORS headers correct?",
+  "No business logic in gateway?",
+  "Monitoring and alerting?",
+  "Runbook for gateway failure?"
+]} />
+
+## Next Steps
+
+1. Choose gateway (NGINX, Kong, AWS)
+2. Design routing rules
+3. Implement authentication
+4. Add rate limiting
+5. Configure monitoring
+6. Test failover scenarios
+7. Document client usage
+
+## References
+
+- <a href="https://konghq.com/" target="_blank" rel="nofollow noopener noreferrer">Kong API Gateway ↗</a>
+- <a href="https://www.nginx.com/" target="_blank" rel="nofollow noopener noreferrer">NGINX ↗</a>
+- <a href="https://aws.amazon.com/api-gateway/" target="_blank" rel="nofollow noopener noreferrer">AWS API Gateway ↗</a>
+- <a href="https://www.envoyproxy.io/" target="_blank" rel="nofollow noopener noreferrer">Envoy Proxy ↗</a>
+
+## API Gateway Patterns
+
+### Backend for Frontend (BFF)
+
+Separate API gateways per client type:
+
+```
+Web Clients:
+  Client → API Gateway (Web) → Services
+  - Desktop-optimized responses
+  - WebSocket support
+  - Cache static assets
+
+Mobile Clients:
+  Client → API Gateway (Mobile) → Services
+  - Bandwidth-optimized (smaller payloads)
+  - Offline-first responses
+  - Push notifications
+
+Admin Clients:
+  Client → API Gateway (Admin) → Services
+  - Full data (no filtering)
+  - Extended rate limits for bulk operations
+  - Audit logging
+```
+
+Benefits:
+- Client-specific optimization
+- Independent scaling per gateway
+- Easier feature rollout (change mobile gateway without affecting web)
+
+### Rate Limiting Strategies
+
+**Token Bucket Algorithm**:
+```python
+class TokenBucket:
+    def __init__(self, capacity, refill_rate):
+        self.capacity = capacity  # Max tokens
+        self.tokens = capacity
+        self.refill_rate = refill_rate  # Tokens/sec
+        self.last_refill = time.time()
+    
+    def allow_request(self):
+        # Refill tokens
+        now = time.time()
+        elapsed = now - self.last_refill
+        self.tokens = min(
+            self.capacity,
+            self.tokens + elapsed * self.refill_rate
+        )
+        self.last_refill = now
+        
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+# Usage: 100 req/min = 100/60 = 1.67 tokens/sec
+bucket = TokenBucket(capacity=100, refill_rate=100/60)
+
+for request in requests:
+    if bucket.allow_request():
+        process(request)
+    else:
+        return 429  # Too Many Requests
+```
+
+**Leaky Bucket Algorithm**:
+```python
+class LeakyBucket:
+    def __init__(self, capacity, leak_rate):
+        self.capacity = capacity
+        self.current = 0
+        self.leak_rate = leak_rate
+        self.last_leak = time.time()
+    
+    def add_request(self):
+        # Leak requests
+        now = time.time()
+        elapsed = now - self.last_leak
+        leaked = elapsed * self.leak_rate
+        self.current = max(0, self.current - leaked)
+        self.last_leak = now
+        
+        if self.current < self.capacity:
+            self.current += 1
+            return True
+        return False
+```
+
+### Request Transformation
+
+Modify requests before routing to backend:
+
+```yaml
+# Kong request transformer
+plugins:
+- name: request-transformer
+  config:
+    # Add headers
+    add:
+      headers:
+        - X-Service: checkout
+        - X-Forwarded-By: Kong
+    
+    # Remove sensitive data
+    remove:
+      headers:
+        - Authorization  # Don't forward to backend
+    
+    # Rename query params
+    rename:
+      querystring:
+        - old_param:new_param
+    
+    # Replace values
+    replace:
+      headers:
+        - Authorization: Bearer ${jwt_token}
+```
+
+### Versioning Strategy
+
+API versions:
+
+```
+/api/v1/orders  → Old clients (legacy)
+/api/v2/orders  → New clients (recommended)
+/api/v3/orders  → Future version
+
+Gateway routes:
+- /orders → /api/v2/orders (default)
+- /api/v1/orders → /api/v1/orders (legacy)
+- /api/v3/orders → /api/v3/orders (preview)
+```
+
+Upgrade path:
+1. Deploy v2 alongside v1 (6 months)
+2. Inform clients about deprecation (3 months)
+3. Remove v1 (3 months after deprecation)
+
+### Monitoring Gateway Health
+
+Key metrics:
+- Request latency (p50, p95, p99)
+- Error rate by status code
+- Upstream service latency
+- Rate limit violations
+- Cache hit rate (if caching)
+
+Alerts:
+- Error rate > 1%
+- Latency p99 > 1 second
+- Downstream service down
+
+## Conclusion
+
+API Gateway is essential for microservices:
+- Centralized routing
+- Unified authentication
+- Rate limiting
+- Request transformation
+- Observability
+
+Choose based on:
+- Scale: NGINX for high throughput, Kong for features
+- Language: AWS API Gateway for AWS-only, Envoy for Kubernetes
+- Features: Istio for service mesh, Kong for standalone
+
+Common pitfalls:
+- Business logic in gateway (don't!)
+- Lack of timeout/retry (add them)
+- Single point of failure (run HA)
+
+In production: Monitor latency (gateway adds ~1-5ms), error rates, cache hit rate.
+
+## Gateway Implementation Details
+
+### OAuth2 in API Gateway
+
+```python
+# Validate JWT token
+import jwt
+from functools import wraps
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization', '').split(' ')[1]
+        try:
+            payload = jwt.decode(token, PUBLIC_KEY, algorithms=['RS256'])
+            request.user = payload
+        except jwt.InvalidTokenError:
+            return {'error': 'Unauthorized'}, 401
+        return f(*args, **kwargs)
+    return decorated
+
+@app.post('/api/orders')
+@require_auth
+def create_order():
+    user_id = request.user['sub']
+    # Process order for user
+    return {'order_id': '123'}
+```
+
+### Request/Response Caching
+
+Cache at gateway to reduce backend load:
+
+```python
+from functools import lru_cache
+
+@app.get('/api/products')
+def get_products(category: str):
+    # Cache GET requests (safe to cache)
+    cache_key = f'products:{category}'
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+    
+    result = proxy('/products', 'GET', 'product-service', params={'category': category})
+    
+    # Cache 1 hour
+    cache.set(cache_key, result, ttl=3600)
+    return result
+
+@app.post('/api/orders')
+def create_order():
+    # Don't cache POST (non-idempotent)
+    return proxy('/orders', 'POST', 'order-service', body=request.json())
+```
+

@@ -1,0 +1,455 @@
+---
+sidebar_position: 1
+title: "Timeouts, Retries, Exponential Backoff, and Jitter"
+description: "Master the foundation of resilience: timeouts prevent resource exhaustion, retries recover from transient failures, exponential backoff prevents overwhelming, jitter prevents thundering herd."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [timeouts, retries, exponential backoff, jitter, resource exhaustion, transient failures, thundering herd, cascade failures]
+image: /img/archman-social-card.webp
+tags: [timeouts, retries, exponential-backoff, jitter, resource-exhaustion, recovery, cascade-prevention, foundation]
+hide_title: true
+---
+
+<Hero title="Timeouts, Retries, Exponential Backoff, and Jitter" subtitle="Master the foundation of resilience: the four patterns that prevent cascading failures" imageAlt="Timeouts and retries illustration" size="large" />
+
+## TL;DR
+
+Every network call must have a timeout (preventing resource exhaustion). Transient failures are common—retry with exponential backoff (1s, 2s, 4s, 8s...). Add jitter (randomness) to backoff to prevent thundering herd (all clients retrying simultaneously). Chain multiple layers: at request level, connection level, overall latency budget. Typical: 5-second request timeout, 3-5 retries with exponential backoff, jitter on each retry.
+
+## Learning Objectives
+
+- Understand why timeouts are essential
+- Implement retries correctly
+- Apply exponential backoff to avoid overwhelming recovering services
+- Use jitter to prevent synchronized retries
+- Set realistic timeout values
+
+## Motivating Scenario
+
+Database becomes slow. API clients wait 30 seconds for response. Meanwhile, new requests arrive, also wait 30 seconds. Thread pools fill up. Memory grows. The system cascades into complete failure. A simple timeout of 5 seconds would have detected the problem, freed resources, and allowed the system to recover.
+
+## Timeouts: Prevent Resource Exhaustion
+
+Every network call needs a timeout. Without it, slow services cause resource starvation.
+
+<Figure
+  caption="Timeout Prevents Cascade"
+  content={`
+graph TB
+    subgraph NoTimeout["Without Timeout (Disaster)"]
+        A1["Database slow<br/>no response"]
+        B1["API waits 30s<br/>thread blocked"]
+        C1["New request arrives<br/>creates new thread"]
+        D1["New request waits 30s"]
+        E1["Threads exhaust<br/>System crashes"]
+    end
+
+    subgraph WithTimeout["With Timeout (Resilient)"]
+        A2["Database slow<br/>no response"]
+        B2["API times out<br/>after 5s<br/>thread freed"]
+        C2["New request arrives<br/>reuses thread"]
+        D2["New request times out<br/>thread freed"]
+        E2["Circuit breaker trips<br/>System survives"]
+    end
+
+    style E1 fill:#ff6666
+    style E2 fill:#c8e6c9
+  `}
+/>
+
+### Timeout Levels
+
+**Request Level:** How long to wait for a single RPC?
+- Typical: 5-30 seconds depending on operation
+- Too short: High failure rate on normal operations
+- Too long: Cascades when service is slow
+
+**Connection Level:** How long to establish TCP connection?
+- Typical: 1-5 seconds
+- Protects against network hangs during handshake
+
+**Overall Budget:** Total time for entire operation (all retries)?
+- Request timeout × number of retries
+- Example: 5s per request × 3 retries = 15s budget
+
+<Tabs>
+<TabItem value="timeout-example" label="Timeout Implementation">
+```python
+import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+
+# Configure timeout + retries
+def requests_with_timeout():
+    session = requests.Session()
+
+    # Timeout: 5s for connection, 10s for read
+    timeout = (5, 10)
+
+    # Retries with exponential backoff
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,  # 1s, 2s, 4s
+        status_forcelist=[429, 500, 502, 503, 504],
+        method_whitelist=["GET", "POST"]
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+# Usage
+session = requests_with_timeout()
+response = session.post(
+    'http://payment-service/charge',
+    json={'amount': 100},
+    timeout=(5, 10)  # connection_timeout, read_timeout
+)
+```
+</TabItem>
+</Tabs>
+
+## Retries: Recover from Transient Failures
+
+Network is unreliable. Services temporarily fail. Retrying often succeeds on transient failures.
+
+**When to Retry:**
+- Network timeout (maybe just slow, not dead)
+- 5xx errors (server error, might recover)
+- Connection refused (service restarting)
+
+**When NOT to Retry:**
+- 4xx errors (client error, won't improve with retry)
+- 401 Unauthorized (bad credentials won't get better)
+- Business logic failures (not transient)
+
+## Exponential Backoff: Prevent Overwhelming
+
+Retry immediately: all fail again immediately. Retry after 100ms: still too fast. Exponential backoff gives service time to recover.
+
+**Pattern:**
+```
+Attempt 1: Immediate (fail)
+Attempt 2: Wait 1s then retry
+Attempt 3: Wait 2s then retry
+Attempt 4: Wait 4s then retry
+Attempt 5: Wait 8s then retry
+```
+
+**Why It Works:**
+- Service crashes, restarts (takes 5-10 seconds)
+- Exponential backoff gives it time
+- Each retry has higher chance of success
+
+<Figure
+  caption="Exponential Backoff Timeline"
+  content={`
+graph TB
+    A["Fail<br/>t=0"]
+    B["Wait 1s"]
+    C["Retry<br/>Succeed?<br/>t=1"]
+    D["Wait 2s"]
+    E["Retry<br/>t=3"]
+    F["Wait 4s"]
+    G["Retry<br/>t=7"]
+
+    A --> B --> C
+    C -->|Fail| D --> E
+    E -->|Fail| F --> G
+
+    style A fill:#ffcccc
+    style C fill:#fff9c4
+    style E fill:#fff9c4
+    style G fill:#c8e6c9
+  `}
+/>
+
+## Jitter: Prevent Thundering Herd
+
+All clients retry simultaneously = overwhelming spike.
+
+Without jitter: All 1000 clients wait exactly 1 second, then all retry at once. Server gets hammered.
+
+With jitter: Each client waits 1s ± random value (up to 250ms). Retries spread over time.
+
+```
+Without jitter:
+t=1.0s: 1000 retries hit server simultaneously (overwhelm!)
+
+With jitter:
+t=0.75s: 50 retries
+t=0.85s: 80 retries
+t=0.95s: 70 retries
+t=1.05s: 75 retries
+t=1.15s: 65 retries (spread out, manageable)
+```
+
+<Tabs>
+<TabItem value="jitter" label="Jitter Example">
+```python
+import random
+import time
+
+def retry_with_backoff(func, max_attempts=5):
+    for attempt in range(max_attempts):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == max_attempts - 1:
+                raise
+
+            # Exponential backoff + jitter
+            backoff = 2 ** attempt  # 1, 2, 4, 8, ...
+            jitter = random.uniform(0, backoff * 0.1)  # up to 10% jitter
+            sleep_time = backoff + jitter
+
+            print(f"Attempt {attempt + 1} failed, sleeping {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+
+# Usage
+def call_payment_service():
+    return requests.post('http://payment-service/charge')
+
+try:
+    result = retry_with_backoff(call_payment_service)
+except Exception as e:
+    print(f"Failed after all retries: {e}")
+```
+</TabItem>
+</Tabs>
+
+## Practical Configuration
+
+**Conservative (Availability Focus):**
+- Request timeout: 30 seconds
+- Retry attempts: 5
+- Backoff factor: 2
+- Max backoff: 30 seconds
+
+**Aggressive (Latency Focus):**
+- Request timeout: 5 seconds
+- Retry attempts: 3
+- Backoff factor: 2
+- Max backoff: 10 seconds
+
+**Balanced (Recommended):**
+- Request timeout: 10 seconds
+- Retry attempts: 3
+- Backoff factor: 2
+- Jitter: ±10%
+
+## Anti-Patterns
+
+**Retry Without Idempotency:** Duplicate side effects (double charge, etc.). Always use idempotent operations with retries.
+
+**Linear Backoff:** 1s, 2s, 3s, 4s. Still too fast, server can't recover. Use exponential.
+
+**No Jitter:** Thundering herd. Always add jitter.
+
+**Same Timeout Everywhere:** Payment critical (short timeout). Analytics non-critical (longer timeout). Vary by importance.
+
+## Timeout and Retry Tuning Guide
+
+### Real-World Timeout Examples
+
+| Operation | Typical Timeout | Rationale |
+|-----------|-----------------|-----------|
+| HTTP GET request | 5-30s | Network + service response time |
+| Database query | 10-30s | Query complexity varies |
+| File upload | 60-300s | Network speed varies |
+| Payment authorization | 5-15s | External service latency |
+| Search query | 2-5s | User expects quick results |
+| Cache read | 100-500ms | Should be very fast |
+| Internal service call | 1-5s | Local network, should be fast |
+
+### Retry Strategy Decision Tree
+
+```
+Operation is idempotent?
+├─ YES: Safe to retry
+│  ├─ Is it a read (GET)? → Retry more aggressively (5+ times)
+│  └─ Is it a write (POST)? → Retry conservatively (2-3 times)
+│       (Idempotent writes: use idempotency key)
+└─ NO: Risky to retry
+   ├─ Is it critical? → Implement idempotent wrapper
+   └─ Is it non-critical? → Retry 1-2 times maximum
+```
+
+### Tuning Exponential Backoff
+
+**Initial Delay**: Start small (100ms) for fast services, larger (1s) for slower services.
+
+**Max Retries**:
+- Critical path: 3-5 retries
+- Non-critical: 2-3 retries
+- Background jobs: 5-10 retries
+
+**Backoff Factor**:
+- Standard: 2.0 (doubles each time)
+- Aggressive: 1.5 (slower escalation)
+- Conservative: 3.0 (faster escalation)
+
+Example:
+```
+Initial: 100ms
+Retry 1: 100ms × 2 = 200ms
+Retry 2: 200ms × 2 = 400ms
+Retry 3: 400ms × 2 = 800ms
+Retry 4: 800ms × 2 = 1600ms
+Total wait time: 3.1s + 4 requests = 7.1s total
+
+If you want max 10s total:
+- Use max_backoff: 2s (cap at 2 seconds)
+- Limits total to ~6s
+- Allows more retries within budget
+```
+
+### Jitter Strategies
+
+**Strategy 1: Equal Jitter** (Recommended)
+```
+sleep_time = (backoff / 2) + random(0, backoff / 2)
+Example: backoff=4s → sleep between 2s-4s
+```
+
+**Strategy 2: Full Jitter** (More spread)
+```
+sleep_time = random(0, backoff)
+Example: backoff=4s → sleep between 0s-4s
+Downside: Sometimes no wait (immediate retry)
+```
+
+**Strategy 3: Decorrelated Jitter** (Most sophisticated)
+```
+sleep_time = min(max_backoff, last_sleep * 3 + random(0, 1s))
+Adapts based on success patterns
+```
+
+## Self-Check
+
+1. Does every network call have a timeout?
+2. Are your operations idempotent (safe to retry)?
+3. Do you use exponential backoff with jitter?
+4. What's the maximum total time a client waits (all retries)?
+5. Have you tested timeout behavior (what happens at timeout+1ms)?
+6. Do you monitor timeout/retry rates? (High rates indicate problems)
+
+:::info One Takeaway
+Timeouts + exponential backoff + jitter = foundation of resilience. Get these right and most failures recover automatically. Measure timeout and retry rates—they're key indicators of system health.
+
+:::
+
+## Next Steps
+
+1. **Circuit Breaker:** Read [Circuit Breaker](/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/circuit-breaker)
+2. **Load Shedding:** Learn [Load Shedding](/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/load-shedding-backpressure)
+3. **Idempotency:** Explore [Idempotency](/docs/distributed-systems-and-microservices/fundamentals/idempotency)
+
+## Timeout Configuration by Technology Stack
+
+### Node.js / JavaScript
+```javascript
+// http module (default: no timeout!)
+const req = http.request(options, callback);
+req.setTimeout(5000);  // 5 second timeout
+req.on('timeout', () => {
+  req.destroy();
+  callback(new Error('Timeout'));
+});
+
+// Axios (popular HTTP client)
+const client = axios.create({
+  timeout: 5000  // 5 second timeout for all requests
+});
+
+// Fetch API (modern browsers/Node 18+)
+const controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 5000);
+try {
+  const response = await fetch(url, {
+    signal: controller.signal
+  });
+} catch (err) {
+  if (err.name === 'AbortError') {
+    console.error('Request timeout');
+  }
+} finally {
+  clearTimeout(timeoutId);
+}
+```
+
+### Python
+```python
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Requests library with timeout + retry
+session = requests.Session()
+session.timeout = 5  # 5 second timeout
+
+# Requests with retry strategy
+retry = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504]
+)
+adapter = HTTPAdapter(max_retries=retry)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+
+# Per-request timeout
+response = session.get(url, timeout=5)
+```
+
+### Go
+```go
+// HTTP client with timeout
+client := &http.Client{
+  Timeout: time.Second * 5,  // 5 second timeout
+}
+
+response, err := client.Get(url)
+
+// Or with context for finer control
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+response, err := client.Do(req)
+```
+
+## Timeout vs Deadline Concepts
+
+**Timeout**: Absolute time limit from now
+```
+Now: 10:00:00
+Timeout: 5 seconds
+Deadline: 10:00:05
+If timeout extends: deadline extends
+```
+
+**Deadline**: Absolute point in time
+```
+Deadline: 10:00:10 (fixed)
+Current: 10:00:05
+Remaining: 5 seconds
+If we delay: remaining shrinks
+```
+
+**Use timeout** for individual operations.
+**Use deadline** for overall request processing (useful in distributed systems where deadlines propagate).
+
+## References
+
+- Nygard, M. J. (2007). "Release It!: Design and Deploy Production-Ready Software". Pragmatic Programmers.
+- Newman, S. (2015). "Building Microservices". O'Reilly Media.
+- Cockroft, A. (2015). "Hystrix: Latency and Fault Tolerance". Netflix Tech Blog.
+- AWS SDK Timeout Documentation: https://docs.aws.amazon.com/general/latest/gr/aws-apis.html
+- Kubernetes Timeout Best Practices: https://kubernetes.io/docs/concepts/services-networking/service/#timeouts
+

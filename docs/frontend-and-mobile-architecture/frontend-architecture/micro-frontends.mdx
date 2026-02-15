@@ -1,0 +1,589 @@
+---
+sidebar_position: 6
+title: Micro-Frontends
+description: Independent, deployable frontend components for large teams
+docType: deep-dive
+difficulty: advanced
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","frontend-lead"]
+keywords: ["micro-frontends","module-federation","iframes","web-components","independent-deployment"]
+image: /img/archman-social-card.webp
+tags: ["frontend","architecture","scalability"]
+hide_title: true
+---
+
+<Hero
+  title="Micro-Frontends"
+  description="Decompose large frontends into independently deployable, owned-by-teams components"
+  size="large"
+/>
+
+### TL;DR
+
+Micro-frontends decompose large UI into independently owned and deployable modules by different teams. Approaches include iframes (simple isolation, performance cost), Module Federation (webpack-native, shared dependencies), and Web Components (standards-based, framework-agnostic). Trade-off: added complexity buys team autonomy and deployment independence at scale.
+
+### Learning Objectives
+
+You will be able to:
+- Evaluate and choose between iframes, Module Federation, and Web Components based on team structure and performance needs.
+- Implement shared dependency management across micro-frontend boundaries.
+- Plan independent versioning, API contracts, and deployment strategies.
+- Monitor cross-module communication and identify integration bottlenecks.
+
+### Motivating Scenario
+
+Your company operates an e-commerce platform with 50+ frontend engineers split across checkout, product discovery, recommendations, and payment teams. Deployments require coordination across all teams—a single bug in recommendations blocks checkout releases. Teams want autonomy: checkout wants React 18, recommendations prefers Vue 3. The platform needs independent deployments where payment team can ship a critical fix without waiting for the product team's review cycle.
+
+Micro-frontends solve this: each team owns a vertical slice of UI, deploys independently, and integrates at runtime. Checkout runs on React, recommendations on Vue, and they coexist in a unified shell application.
+
+## Core Concepts
+
+### What Are Micro-Frontends?
+
+Micro-frontends extend the microservices philosophy to frontend layers. Instead of a monolithic frontend codebase deployed as one artifact, you split the UI into decoupled, independently deployable modules. Each module:
+- Is owned by a single team or squad
+- Has its own repository, build process, and deployment pipeline
+- Communicates through well-defined APIs and events
+- Can use different frameworks, libraries, or versions
+
+This approach scales to large organizations where frontend monoliths become bottlenecks.
+
+### Why Consider Micro-Frontends?
+
+**Team Autonomy**: Teams deploy without coordinating with others. Removes release blockers.
+
+**Technology Flexibility**: Different teams can use different frameworks. No forced standardization.
+
+**Independent Scaling**: High-traffic modules (checkout) can optimize independently from lower-priority ones (help text).
+
+**Fault Isolation**: A bug in recommendations doesn't crash the entire page.
+
+**Faster Development**: Smaller codebases are easier to understand and modify.
+
+**Org Structure Alignment**: Conway's Law: system architecture mirrors communication structure. Micro-frontends align code ownership with team structure.
+
+### When Micro-Frontends Are Overkill
+
+For small teams (&lt;10 engineers) or simple applications, a monolithic frontend is simpler and faster. Micro-frontends introduce:
+- Build complexity (multiple entry points, shared dependency resolution)
+- Runtime overhead (network requests to load modules, duplicate dependencies)
+- Testing complexity (integration testing across module boundaries)
+- Operational overhead (monitoring, versioning, rollback)
+
+Only adopt if the pain of the monolith (coordination overhead, slow builds) exceeds the complexity burden.
+
+## Integration Approaches
+
+### 1. Iframes
+
+Embed micro-frontends as iframes in a shell (host) application.
+
+**Pros:**
+- Strongest isolation: each iframe has its own DOM, JavaScript context, and style scope
+- Simple integration: load URL, embed
+- No shared dependencies (each iframe loads its own React, CSS)
+- Safe to run third-party code
+
+**Cons:**
+- Performance: each iframe is a full browser context (memory overhead, slower startup)
+- Communication: must use postMessage API (verbose, cross-context)
+- Styling: difficult to theme consistently across iframes (duplication)
+- SEO: search engines may not index iframe content
+- Responsive design: iframes complicate responsive layouts
+
+**Use iframe when:**
+- Integration with third-party widgets (ads, chat)
+- Strong isolation requirements (untrusted code)
+- Modules are rarely updated (static content)
+- Performance is less critical than isolation
+
+<Tabs>
+<TabItem value="host" label="Host Application">
+```jsx title="shell/App.jsx" showLineNumbers
+
+export default function ShellApp() {
+  const [checkoutVisible, setCheckoutVisible] = useState(false);
+
+  return (
+    <div>
+      <nav>Home | <button onClick={() => setCheckoutVisible(true)}>Checkout</button></nav>
+      {checkoutVisible && (
+        <iframe
+          title="Checkout Module"
+          src="https://checkout-service.example.com"
+          style={{
+            width: '100%',
+            height: '600px',
+            border: 'none',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+```
+</TabItem>
+<TabItem value="checkout" label="Checkout Module (Iframe)">
+```jsx title="checkout/App.jsx" showLineNumbers
+
+export default function CheckoutApp() {
+  useEffect(() => {
+    // Notify parent that checkout is ready
+    window.parent.postMessage(
+      { type: 'CHECKOUT_READY' },
+      window.location.origin
+    );
+  }, []);
+
+  return <div>Checkout Form</div>;
+}
+```
+</TabItem>
+</Tabs>
+
+### 2. Module Federation (Webpack)
+
+Webpack plugin that allows dynamic loading of shared dependencies at runtime.
+
+**Pros:**
+- Shared dependencies: load React once, shared across all modules (reduces bundle size)
+- Framework-native: feels integrated, not bolted-on
+- Versioning: can specify min/max versions (Angular 13+)
+- Build-time type safety: TypeScript support for shared types
+- Dynamic loading: modules loaded on-demand
+
+**Cons:**
+- Webpack-specific: tied to webpack build tool
+- Version conflicts: shared dependencies can have subtle version mismatches (React.useState() from different versions)
+- Debugging: stack traces cross module boundaries (harder to trace)
+- CSS isolation: no automatic scoping (global CSS conflicts)
+- Learning curve: mental model of federated modules is complex
+
+**Use Module Federation when:**
+- Large teams with heavy build systems (webpack already in use)
+- Shared dependencies matter (React, state management)
+- Frequent module updates
+- Performance optimization of bundle size is critical
+
+<Tabs>
+<TabItem value="shell-webpack" label="Shell App - webpack.config.js">
+```js title="shell/webpack.config.js" showLineNumbers
+const ModuleFederationPlugin = require('webpack/lib/container/ModuleFederationPlugin');
+
+module.exports = {
+  mode: 'production',
+  entry: './src/index',
+  output: {
+    path: __dirname + '/dist',
+    filename: '[name].[contenthash].js',
+  },
+  devServer: {
+    port: 3000,
+    historyApiFallback: true,
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'shell',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './store': './src/store',
+      },
+      remotes: {
+        checkout: 'checkout@http://localhost:3001/remoteEntry.js',
+        recommendations: 'recommendations@http://localhost:3002/remoteEntry.js',
+      },
+      shared: {
+        react: { singleton: true, strictVersion: false },
+        'react-dom': { singleton: true, strictVersion: false },
+        zustand: { singleton: true },
+      },
+    }),
+  ],
+};
+```
+</TabItem>
+<TabItem value="checkout-webpack" label="Checkout Module - webpack.config.js">
+```js title="checkout/webpack.config.js" showLineNumbers
+const ModuleFederationPlugin = require('webpack/lib/container/ModuleFederationPlugin');
+
+module.exports = {
+  mode: 'production',
+  entry: './src/index',
+  output: {
+    path: __dirname + '/dist',
+    filename: '[name].[contenthash].js',
+  },
+  devServer: {
+    port: 3001,
+    historyApiFallback: true,
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'checkout',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './CheckoutApp': './src/CheckoutApp',
+      },
+      remotes: {
+        shell: 'shell@http://localhost:3000/remoteEntry.js',
+      },
+      shared: {
+        react: { singleton: true, strictVersion: false },
+        'react-dom': { singleton: true, strictVersion: false },
+        zustand: { singleton: true },
+      },
+    }),
+  ],
+};
+```
+</TabItem>
+</Tabs>
+
+### 3. Web Components
+
+Use native Web Components (Custom Elements + Shadow DOM) as the integration boundary.
+
+**Pros:**
+- Framework-agnostic: Web Components work with React, Vue, Angular, vanilla JS
+- Standard API: no build-time tooling required
+- Shadow DOM: built-in style isolation
+- Easy composition: `&lt;checkout-app&gt;&lt;/checkout-app&gt;` in HTML
+- Long-term stability: web standard, not dependent on framework
+
+**Cons:**
+- Limited feature set: no built-in data binding or reactivity
+- Browser support: need polyfills for older browsers
+- Attributes-only API: passing complex objects requires serialization
+- Debugging: Shadow DOM debugging less intuitive
+- Framework integration: some frameworks have limited Web Component support
+
+**Use Web Components when:**
+- Framework-agnostic integration essential
+- Modules are semi-independent (rarely update together)
+- Building design system with multi-framework support
+- Long-term maintainability > short-term velocity
+
+<Tabs>
+<TabItem value="checkout-wc" label="Checkout Web Component">
+```js title="checkout/CheckoutWebComponent.js" showLineNumbers
+class CheckoutApp extends HTMLElement {
+  connectedCallback() {
+    this.attachShadow({ mode: 'open' });
+    this.render();
+  }
+
+  render() {
+    const template = `
+      <style>
+        :host {
+          display: block;
+          font-family: system-ui, -apple-system, sans-serif;
+        }
+        .form {
+          padding: 20px;
+          border: 1px solid #ccc;
+        }
+      </style>
+      <div class="form">
+        <h2>Checkout</h2>
+        <button id="submit">Submit Order</button>
+      </div>
+    `;
+
+    this.shadowRoot.innerHTML = template;
+    this.shadowRoot
+      .getElementById('submit')
+      .addEventListener('click', () => this.dispatchEvent(
+        new CustomEvent('checkout-complete', {
+          detail: { orderId: Math.random() },
+          bubbles: true,
+        })
+      ));
+  }
+}
+
+customElements.define('checkout-app', CheckoutApp);
+```
+</TabItem>
+<TabItem value="host-wc" label="Host Application Using Web Component">
+```html title="shell/index.html" showLineNumbers
+<!DOCTYPE html>
+<html>
+  <script src="https://checkout-service.example.com/checkout-wc.js"></script>
+<body>
+  <nav>Home | Products | <span id="cart">Cart (0)</span></nav>
+  <main id="app"></main>
+
+  <script>
+    document.addEventListener('checkout-complete', (e) => {
+      console.log('Order placed:', e.detail.orderId);
+      document.getElementById('cart').textContent = 'Cart (0)';
+    });
+  </script>
+
+  <script>
+    // Render the checkout module
+    const checkout = document.createElement('checkout-app');
+    document.getElementById('app').appendChild(checkout);
+  </script>
+</body>
+</html>
+```
+</TabItem>
+</Tabs>
+
+## Shared Dependencies & Versioning
+
+### Dependency Management
+
+**Critical**: shared dependencies (React, routing, state management) must be coordinated.
+
+Options:
+1. **Singleton Pattern**: Load dependency once, share across modules. Risk: version mismatch causes subtle bugs (e.g., different React hooks implementations).
+2. **Lock Versions**: All modules use identical versions. Trade-off: blocks framework upgrades.
+3. **Version Ranges**: Specify compatible ranges (React 17-18, NOT React 15). Webpack Federation supports `singleton: true, strictVersion: false`.
+
+**Best practice**: Use semver with clear upgrade paths. Avoid major version skew in shared dependencies.
+
+### API Contracts
+
+Define clear contracts between modules:
+
+<Tabs>
+<TabItem value="contract" label="TypeScript Interface Contract">
+```ts title="shell/types/checkout.ts" showLineNumbers
+export interface CheckoutAPI {
+  initialize(config: CheckoutConfig): Promise<void>;
+  placeOrder(items: CartItem[]): Promise<OrderResult>;
+  onError: (error: CheckoutError) => void;
+}
+
+export interface CheckoutConfig {
+  apiUrl: string;
+  userId: string;
+  currencyCode: string;
+}
+
+export interface CartItem {
+  id: string;
+  quantity: number;
+  price: number;
+}
+
+export interface OrderResult {
+  orderId: string;
+  timestamp: number;
+}
+```
+</TabItem>
+<TabItem value="implementation" label="Checkout Module Implementation">
+```ts title="checkout/api.ts" showLineNumbers
+
+class CheckoutModule implements CheckoutAPI {
+  private config: CheckoutConfig;
+
+  async initialize(config: CheckoutConfig) {
+    this.config = config;
+    console.log('Checkout initialized for user:', config.userId);
+  }
+
+  async placeOrder(items: CartItem[]) {
+    const response = await fetch(`${this.config.apiUrl}/orders`, {
+      method: 'POST',
+      body: JSON.stringify({ items, userId: this.config.userId }),
+    });
+    return response.json();
+  }
+}
+
+export const checkoutAPI = new CheckoutModule();
+```
+</TabItem>
+</Tabs>
+
+## Patterns & Pitfalls
+
+### Pattern: Event Bus
+
+Use a shared event bus for inter-module communication instead of direct coupling.
+
+**Problem**: Checkout module directly calls recommendations module's API → tight coupling.
+
+**Solution**: Publish events; modules subscribe.
+
+```js title="event-bus.js" showLineNumbers
+class EventBus {
+  private listeners = new Map();
+
+  on(event, handler) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(handler);
+  }
+
+  emit(event, data) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).forEach(h => h(data));
+    }
+  }
+}
+
+// Shell app
+const eventBus = new EventBus();
+
+// Checkout module: publishes event
+eventBus.emit('order:placed', { orderId: '123', items: [...] });
+
+// Recommendations module: listens
+eventBus.on('order:placed', (data) => {
+  console.log('Update recommendations after order:', data.orderId);
+});
+```
+
+### Pitfall: Dependency Hell
+
+**Problem**: Versions of React diverge between modules. Checkout uses React 18 hooks, recommendations uses React 17 context. Different React instances lead to lost state, duplicate components in DOM.
+
+**Mitigation**:
+- Enforce singleton loading via Module Federation
+- Lock major versions in shared dependencies
+- Test with multiple versions in CI
+
+### Pitfall: Global CSS Conflicts
+
+**Problem**: Checkout defines `button { padding: 10px }`, recommendations defines `button { padding: 20px }`. Modules' styles fight.
+
+**Mitigation**:
+- Use CSS-in-JS (styled-components, CSS Modules) with scoped selectors
+- Use Shadow DOM (Web Components) for strong isolation
+- BEM naming convention for traditional CSS
+
+## Operational Considerations
+
+### Performance Budgets
+
+**Load time**: Each module adds HTTP requests. Monitor:
+- remoteEntry.js size (shared deps manifest)
+- Module chunk sizes (lazy loading)
+- Total time to interactive
+
+**Typical overhead**:
+- iframes: +100-300ms per iframe (separate browser context)
+- Module Federation: +50-100ms (dynamic import, shared dep resolution)
+- Web Components: +10-30ms (custom element registration)
+
+### Monitoring & Error Tracking
+
+Track cross-module failures:
+
+```js title="error-tracking.js" showLineNumbers
+window.addEventListener('error', (event) => {
+  if (event.filename.includes('remoteEntry.js')) {
+    // Module federation failure
+    reportError({
+      type: 'MODULE_LOAD_FAILURE',
+      module: extractModuleName(event.filename),
+      message: event.message,
+      timestamp: Date.now(),
+    });
+  }
+});
+
+// Custom event for checkout-specific errors
+window.addEventListener('checkout-error', (event) => {
+  reportError({
+    type: 'CHECKOUT_MODULE_ERROR',
+    ...event.detail,
+  });
+});
+```
+
+### Versioning Strategy
+
+- **Module version**: Track independently. Use semver.
+- **API version**: Define major/minor for public contracts.
+- **Shared dependency version**: Lock major versions; test minor upgrades in canary.
+
+Example version matrix:
+
+```
+Checkout v2.1.0  →  API v2  →  Requires: React 18.0+, Zustand ^4.0
+Recommendations v1.5.2  →  API v1  →  Requires: React 17+, Zustand ^3.5
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is module ownership clear (one team per module)?",
+  "Are API contracts documented (TypeScript interfaces)?",
+  "Is independent deployability tested in CI/CD?",
+  "Are shared dependencies versioned and documented?",
+  "Is error isolation verified (module crash doesn't crash shell)?",
+  "Are integration tests for module boundaries in place?",
+  "Is monitoring configured for cross-module failures?",
+  "Can modules be lazy-loaded to reduce initial bundle?",
+  "Is CSS/style isolation strategy implemented?",
+  "Are rollback procedures for module versions documented?"
+]} />
+
+## When to Use / When Not to Use
+
+**Use Micro-Frontends When:**
+- Multiple teams (5+) with conflicting release cycles
+- Independent technology choices required per team
+- Large frontend codebase with coordination overhead
+- Different modules have vastly different performance/scale needs
+- Want to adopt new framework versions incrementally
+
+**Avoid Micro-Frontends When:**
+- Single team or tight-knit squad
+- High coupling between features (frequent inter-module changes)
+- Performance is already a primary concern (micro-frontends add complexity)
+- Simple application (startup MVP, internal tool)
+- Team lacks operational maturity (weak monitoring, deployment pipelines)
+
+## Showcase: Comparison of Approaches
+
+<Vs
+  title="Integration Approach Comparison"
+  columns={["Iframe", "Module Federation", "Web Components"]}
+  rows={[
+    { aspect: "Isolation", values: ["Strongest", "Moderate", "Strong (Shadow DOM)"] },
+    { aspect: "Performance", values: ["Slowest (+100-300ms)", "Fast (+50ms)", "Fastest (&lt;30ms)"] },
+    { aspect: "Shared Dependencies", values: ["None (duplication)", "Built-in", "Manual via attributes"] },
+    { aspect: "Framework Flexibility", values: ["High", "High (webpack)", "Highest (standard)"] },
+    { aspect: "Learning Curve", values: ["Low", "High", "Medium"] },
+    { aspect: "Debugging", values: ["Hard (cross-context)", "Moderate", "Medium"] },
+    { aspect: "SEO", values: ["Poor", "Good", "Good"] },
+  ]}
+/>
+
+## Self-Check
+
+1. **At what team size do micro-frontends become valuable?** Why doesn't a 5-engineer startup need them?
+2. **What is the key difference between Module Federation's singleton pattern and version locking?** Which is more flexible?
+3. **How would you prevent a crash in the recommendations module from taking down the entire page?**
+
+## Next Steps
+
+- <a href="https://webpack.js.org/concepts/module-federation/" target="_blank" rel="nofollow noopener noreferrer">Webpack Module Federation Docs ↗️</a>
+- Read about <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/state-management-conceptual" target="_blank" rel="nofollow noopener noreferrer">State Management Patterns ↗️</a>
+- Explore <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/component-based-design-and-design-systems" target="_blank" rel="nofollow noopener noreferrer">Design Systems ↗️</a>
+- Study <a href="https://martinfowler.com/articles/micro-frontends.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler's Micro Frontends ↗️</a>
+
+### One Takeaway
+
+<Admonition type="info">
+Micro-frontends solve organizational scaling problems, not technical ones. Start with a monolith; split only when coordination overhead becomes the bottleneck. When you do, begin with iframes for simplicity, graduate to Module Federation for performance.
+</Admonition>
+
+## References
+
+1. <a href="https://webpack.js.org/concepts/module-federation/" target="_blank" rel="nofollow noopener noreferrer">Webpack Module Federation Documentation</a>
+2. <a href="https://martinfowler.com/articles/micro-frontends.html" target="_blank" rel="nofollow noopener noreferrer">Micro Frontends - Martin Fowler</a>
+3. <a href="https://single-spa.js.org/" target="_blank" rel="nofollow noopener noreferrer">single-spa: JavaScript Framework for Micro Frontends</a>
+4. <a href="https://www.w3.org/TR/custom-elements/" target="_blank" rel="nofollow noopener noreferrer">Web Components Custom Elements Standard</a>
+5. <a href="https://bit.cloud/blog/micro-frontends-architecture-best-practices-l6ankuef" target="_blank" rel="nofollow noopener noreferrer">Micro Frontends Architecture Best Practices</a>
+---

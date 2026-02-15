@@ -1,0 +1,499 @@
+---
+sidebar_position: 3
+title: Background Tasks & Notifications
+description: Work scheduling, push notifications, and location tracking
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","mobile-lead"]
+keywords: ["background-tasks","notifications","push","work-manager","jobscheduler","geofencing"]
+image: /img/archman-social-card.webp
+tags: ["mobile","background","notifications"]
+hide_title: true
+---
+
+<Hero
+  title="Background Tasks & Notifications"
+  description="Schedule reliable background work, send timely notifications, and handle location events"
+  size="large"
+/>
+
+## TL;DR
+
+**Background Tasks**: WorkManager (Android), BGTask (iOS) for reliable scheduling even after app kill. Respect system constraints (battery, network, storage).
+
+**Push Notifications**: Firebase Cloud Messaging (Android), APNs (iOS). Sent from backend, wakes app, critical for engagement.
+
+**Geofencing**: Location-based triggers; use carefully (battery impact significant). Monitor permissions (iOS restrictions).
+
+**Local Notifications**: Scheduled without server; useful for reminders, alarms.
+
+## Learning Objectives
+
+You will be able to:
+- Implement reliable background work that survives app termination.
+- Integrate push notifications from server to device.
+- Handle geofencing and location-based triggers responsibly.
+- Optimize battery consumption for background tasks.
+- Monitor permissions and handle user denials gracefully.
+
+## Motivating Scenario
+
+Your fitness app tracks workouts and sends notifications. Users expect:
+- "Time for a run!" notification at scheduled times (even if app is closed)
+- Real-time push notifications from friends joining their run
+- Location-based alerts ("Great spot to run nearby")
+
+Without proper background task handling:
+- Scheduling only works while app is open
+- Notifications require server polling (battery drain)
+- Location tracking drains battery in minutes
+
+With proper implementation:
+- Tasks run on system schedule, respect battery
+- Push notifications wake app only when needed
+- Location features use geofencing (efficient) vs continuous tracking
+
+## Background Tasks
+
+### Android: WorkManager
+
+Persistent work scheduling that survives app termination.
+
+<Tabs>
+<TabItem value="worker" label="Define Work">
+```kotlin title="SyncWorker.kt" showLineNumbers
+import androidx.work.Worker
+import androidx.work.WorkerParameters
+
+class SyncWorker(context: Context, params: WorkerParameters) :
+    Worker(context, params) {
+
+  override fun doWork(): Result {
+    return try {
+      // Do work here (API calls, database updates)
+      val result = syncWithServer()
+      Result.success()
+    } catch (e: Exception) {
+      // Retry on failure
+      Result.retry()
+    }
+  }
+
+  private fun syncWithServer(): Boolean {
+    // Call API, update local database
+    return true
+  }
+}
+```
+</TabItem>
+<TabItem value="schedule" label="Schedule Work">
+```kotlin title="MainActivity.kt" showLineNumbers
+import androidx.work.*
+import java.util.concurrent.TimeUnit
+
+class MainActivity : AppCompatActivity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+
+    // Schedule periodic work
+    val syncWork = PeriodicWorkRequestBuilder<SyncWorker>(
+      15, TimeUnit.MINUTES
+    ).build()
+
+    WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+      "sync_work",
+      ExistingPeriodicWorkPolicy.KEEP,
+      syncWork
+    )
+
+    // Schedule one-time work
+    val uploadWork = OneTimeWorkRequestBuilder<UploadWorker>()
+      .setInitialDelay(10, TimeUnit.MINUTES)
+      .setBackoffCriteria(
+        BackoffPolicy.EXPONENTIAL,
+        10, TimeUnit.SECONDS
+      )
+      .build()
+
+    WorkManager.getInstance(this).enqueueUniqueWork(
+      "upload_work",
+      ExistingWorkPolicy.REPLACE,
+      uploadWork
+    )
+  }
+}
+```
+</TabItem>
+<TabItem value="constraints" label="Set Constraints">
+```kotlin title="ConstrainedWork.kt" showLineNumbers
+val constraints = Constraints.Builder()
+  .setRequiredNetworkType(NetworkType.CONNECTED)
+  .setRequiresBatteryNotLow(true)
+  .setRequiresStorageNotLow(true)
+  .setRequiresCharging(false)
+  .setRequiresDeviceIdle(false) // Doze mode aware
+  .build()
+
+val work = PeriodicWorkRequestBuilder<SyncWorker>(
+  15, TimeUnit.MINUTES
+)
+  .setConstraints(constraints)
+  .build()
+
+WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+  "sync",
+  ExistingPeriodicWorkPolicy.KEEP,
+  work
+)
+```
+</TabItem>
+</Tabs>
+
+WorkManager handles:
+- Batching tasks for efficiency
+- Backoff + retry
+- Doze mode awareness (Android's battery saver)
+- Device reboot persistence
+
+### iOS: Background Tasks
+
+`BGTaskScheduler` for periodic background processing.
+
+```swift title="BackgroundTasks.swift" showLineNumbers
+import BackgroundTasks
+
+class BackgroundTaskManager {
+  static func scheduleProcessingTask() {
+    let request = BGProcessingTaskRequest(identifier: "com.example.sync")
+    request.requiresNetworkConnectivity = true
+    request.requiresExternalPower = false // Allow on battery
+
+    do {
+      try BGTaskScheduler.shared.submit(request)
+    } catch {
+      print("Failed to schedule: \(error)")
+    }
+  }
+
+  // Handle when system triggers task
+  static func setupBackgroundHandlers() {
+    BGTaskScheduler.shared.register(
+      forTaskWithIdentifier: "com.example.sync",
+      using: nil
+    ) { task in
+      handleSyncTask(task as! BGProcessingTask)
+    }
+  }
+
+  static func handleSyncTask(_ task: BGProcessingTask) {
+    // Reschedule next task immediately
+    scheduleProcessingTask()
+
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = 1
+
+    let operation = BlockOperation {
+      // Do work: sync data, upload files
+      sleep(5) // Simulate work
+    }
+
+    operation.completionBlock = {
+      task.setTaskCompleted(success: !operation.isCancelled)
+    }
+
+    task.expirationHandler = {
+      operation.cancel()
+    }
+
+    queue.addOperation(operation)
+  }
+}
+```
+
+Key differences from Android:
+- No guarantee of execution (iOS suspends background work)
+- Requires Info.plist: `BGTaskSchedulerPermittedIdentifiers`
+- Limited to ~30 seconds execution time
+
+## Push Notifications
+
+### Android: Firebase Cloud Messaging (FCM)
+
+Server sends message → FCM → Device → App.
+
+<Tabs>
+<TabItem value="fcm-setup" label="Setup FCM">
+```kotlin title="MyFirebaseMessagingService.kt" showLineNumbers
+import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
+
+class MyFirebaseMessagingService : FirebaseMessagingService() {
+
+  // New token available (register with backend)
+  override fun onNewToken(token: String) {
+    super.onNewToken(token)
+    sendTokenToServer(token)
+  }
+
+  // Received message
+  override fun onMessageReceived(message: RemoteMessage) {
+    super.onMessageReceived(message)
+
+    // Display notification
+    val title = message.notification?.title ?: "New message"
+    val body = message.notification?.body ?: ""
+
+    showNotification(title, body)
+
+    // Custom data handling
+    if (message.data.isNotEmpty()) {
+      val customData = message.data
+      handleCustomData(customData)
+    }
+  }
+
+  private fun showNotification(title: String, message: String) {
+    val notificationId = 1
+    val intent = Intent(this, MainActivity::class.java)
+    val pendingIntent = PendingIntent.getActivity(
+      this, 0, intent, PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val notification = NotificationCompat.Builder(this, "channel_id")
+      .setSmallIcon(R.drawable.ic_notification)
+      .setContentTitle(title)
+      .setContentText(message)
+      .setContentIntent(pendingIntent)
+      .setAutoCancel(true)
+      .build()
+
+    NotificationManagerCompat.from(this).notify(notificationId, notification)
+  }
+
+  private fun sendTokenToServer(token: String) {
+    // POST token to backend
+    val retrofit = Retrofit.Builder()
+      .baseUrl("https://api.example.com/")
+      .addConverterFactory(GsonConverterFactory.create())
+      .build()
+
+    val api = retrofit.create(ApiService::class.java)
+    api.registerToken(TokenRequest(token)).enqueue(
+      object : Callback<Void> {
+        override fun onResponse(call: Call<Void>, response: Response<Void>) {}
+        override fun onFailure(call: Call<Void>, t: Throwable) {}
+      }
+    )
+  }
+}
+```
+</TabItem>
+<TabItem value="fcm-backend" label="Backend Sending">
+```python title="send_notification.py" showLineNumbers
+import firebase_admin
+from firebase_admin import messaging
+
+# Initialize Firebase
+firebase_admin.initialize_app()
+
+def send_notification(user_token: str, title: str, body: str):
+  """Send push notification to user device."""
+  message = messaging.Message(
+    notification=messaging.Notification(
+      title=title,
+      body=body,
+    ),
+    data={
+      "custom_key": "custom_value",
+    },
+    token=user_token,
+  )
+
+  response = messaging.send(message)
+  print(f"Sent message: {response}")
+
+# Send to topic (all subscribers)
+def send_to_topic(topic: str, title: str, body: str):
+  message = messaging.Message(
+    notification=messaging.Notification(title=title, body=body),
+    topic=topic,
+  )
+  messaging.send(message)
+
+send_notification("device_token_here", "Hello", "Push notification body")
+send_to_topic("news", "Breaking News", "Check out this article")
+```
+</TabItem>
+</Tabs>
+
+### iOS: Apple Push Notification Service (APNs)
+
+Server sends → APNs → Device → App.
+
+```swift title="UserNotifications.swift" showLineNumbers
+import UserNotifications
+
+class NotificationManager {
+  static func requestPermissions() {
+    UNUserNotificationCenter.current().requestAuthorization(
+      options: [.alert, .sound, .badge]
+    ) { granted, error in
+      if granted {
+        DispatchQueue.main.async {
+          UIApplication.shared.registerForRemoteNotifications()
+        }
+      }
+    }
+  }
+
+  // Receive notification while app in foreground
+  static func setupNotificationHandling() {
+    UNUserNotificationCenter.current().delegate = self
+  }
+}
+
+// Delegate methods
+extension UIApplicationDelegate {
+  func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+  ) -> Bool {
+    // Register for remote notifications
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in
+      DispatchQueue.main.async {
+        UIApplication.shared.registerForRemoteNotifications()
+      }
+    }
+    return true
+  }
+
+  // Get device token (send to backend)
+  func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+    sendTokenToServer(token)
+  }
+
+  // Handle received notification while app is foreground
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler:
+    @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    let userInfo = notification.request.content.userInfo
+    // Handle notification
+    completionHandler([.banner, .sound])
+  }
+}
+```
+
+## Patterns & Pitfalls
+
+### Pattern: Exponential Backoff
+
+Retry failed tasks with increasing delays:
+
+```kotlin title="ExponentialBackoff.kt" showLineNumbers
+val work = OneTimeWorkRequestBuilder<SyncWorker>()
+  .setBackoffCriteria(
+    BackoffPolicy.EXPONENTIAL,
+    WorkRequest.MIN_BACKOFF_MILLIS, // 15 seconds
+    TimeUnit.MILLISECONDS
+  )
+  .build()
+
+// Retries: 15s → 30s → 60s → max 5 hours
+```
+
+### Pitfall: Battery Drain from Location
+
+**Problem**: Continuous location tracking uses 5-10% battery per hour.
+
+**Mitigation**: Use geofencing (efficient) instead:
+
+```kotlin title="Geofencing.kt" showLineNumbers
+val geofence = Geofence.Builder()
+  .setRequestId("workout_spot")
+  .setCircularRegion(40.7128, -74.0060, 500f) // 500m radius
+  .setExpirationDuration(Geofence.NEVER_EXPIRE)
+  .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER)
+  .build()
+
+val request = GeofencingRequest.Builder()
+  .addGeofences(geofence)
+  .setInitialTrigger(Geofence.GEOFENCE_TRANSITION_ENTER)
+  .build()
+
+LocationServices.getGeofencingClient(context)
+  .addGeofences(request, geofencingPendingIntent)
+```
+
+### Pitfall: Notification Spam
+
+**Problem**: Sending too many notifications annoys users, they disable notifications.
+
+**Mitigation**: Rate-limit, group notifications, respect quiet hours.
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Are background tasks respecting battery constraints?",
+  "Does app fail gracefully if permissions denied?",
+  "Is work idempotent (safe to retry)?",
+  "Are notifications actionable and timely?",
+  "Is notification frequency reasonable (not spam)?",
+  "Are tokens registered with backend after app install?",
+  "Do notifications work while app in background?",
+  "Is battery impact monitored (profiling tools)?",
+  "Are old tokens cleaned up (prevent stale tokens)?",
+  "Do tasks handle network failures (offline scenarios)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Use Background Tasks When:**
+- Periodic work (sync, refresh)
+- Work that can wait (non-urgent)
+- Respect battery constraints important
+
+**Use Push Notifications When:**
+- Real-time, urgent alerts
+- Server-initiated messages
+- Need to wake app immediately
+
+**Use Geofencing When:**
+- Location-based features
+- Efficiency more important than precision
+
+## Self-Check
+
+1. **Why use WorkManager instead of just scheduling with Handler?**
+2. **How would you limit battery drain from background tasks?**
+3. **What's the difference between local and push notifications?**
+
+## Next Steps
+
+- <a href="https://developer.android.com/topic/libraries/architecture/workmanager" target="_blank" rel="nofollow noopener noreferrer">Android WorkManager ↗️</a>
+- Learn about <a href="https://developer.apple.com/documentation/backgroundtasks" target="_blank" rel="nofollow noopener noreferrer">iOS Background Tasks ↗️</a>
+- Study <a href="https://firebase.google.com/docs/cloud-messaging" target="_blank" rel="nofollow noopener noreferrer">Firebase Cloud Messaging ↗️</a>
+- Explore <a href="/docs/frontend-and-mobile-architecture/mobile-architecture/battery-network-constraints" target="_blank" rel="nofollow noopener noreferrer">Battery & Network Constraints ↗️</a>
+
+## One Takeaway
+
+<Callout tone="info">
+Background tasks and notifications drive engagement, but must be implemented responsibly. Use WorkManager/BGTask for periodic work, respect battery constraints, and push notifications only for truly important messages. Monitor battery impact with profiling tools.
+</Callout>
+
+## References
+
+1. <a href="https://developer.android.com/topic/libraries/architecture/workmanager" target="_blank" rel="nofollow noopener noreferrer">Android WorkManager Documentation</a>
+2. <a href="https://developer.apple.com/documentation/backgroundtasks" target="_blank" rel="nofollow noopener noreferrer">iOS Background Tasks Framework</a>
+3. <a href="https://firebase.google.com/docs/cloud-messaging" target="_blank" rel="nofollow noopener noreferrer">Firebase Cloud Messaging</a>
+4. <a href="https://developer.apple.com/documentation/usernotifications" target="_blank" rel="nofollow noopener noreferrer">iOS UserNotifications Framework</a>
+5. <a href="https://developer.android.com/training/location/geofencing" target="_blank" rel="nofollow noopener noreferrer">Android Geofencing</a>
+---

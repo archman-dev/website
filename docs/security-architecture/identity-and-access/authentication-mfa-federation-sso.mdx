@@ -1,0 +1,428 @@
+---
+sidebar_position: 1
+title: "Authentication, MFA, Federation & SSO"
+description: "Implement multi-factor authentication, federated identity, and single sign-on"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [authentication, MFA, multi-factor, SSO, single sign-on, OIDC, OAuth, federation, identity provider]
+image: /img/archman-social-card.webp
+tags: [authentication, MFA, SSO, OIDC, OAuth, identity-federation, zero-trust, security-architecture]
+hide_title: true
+---
+
+<Hero title="Authentication, MFA, Federation & SSO" subtitle="Prove user identity securely across systems" imageAlt="authentication illustration" size="large" />
+
+## TL;DR
+
+**Authentication** proves identity; **MFA** requires multiple proofs (password + biometric + hardware key). **Federation** delegates identity management to external providers (Okta, Azure AD). **SSO** allows one login to access multiple systems. Use OIDC for modern authentication, enforce MFA for all users, and federate identity to centralize security controls.
+
+## Learning Objectives
+
+- Distinguish authentication from authorization
+- Implement multi-factor authentication (MFA) strategies
+- Design federated identity with external providers
+- Use OAuth 2.0 and OIDC for modern authentication
+- Balance security with user experience
+
+## Motivating Scenario
+
+**Problem**: A company has 20 web apps, 5 mobile apps, and custom internal tools. Each requires separate login credentials. Developers manage passwords locally. An employee leaves; admins struggle to revoke access from all systems. A password is compromised; the attacker accesses multiple apps.
+
+**Solution**: Federate identity to Okta. All apps redirect to Okta for login. Okta enforces MFA. Admins manage access centrally. Employee leaves; one revocation blocks all apps. Compromised password? MFA blocks the attacker.
+
+## Core Concepts
+
+### Authentication Mechanisms
+
+**Single-Factor Authentication**: Password alone.
+- **Strength**: Simple for users
+- **Weakness**: Passwords are weak, reused, phished
+
+**Multi-Factor Authentication (MFA)**: Password + something else.
+- **Knowledge**: Password, security question
+- **Possession**: Hardware key, phone, authenticator app
+- **Inherence**: Biometric (fingerprint, face)
+
+Layers:
+1. User enters password
+2. System sends OTP to email or phone
+3. User enters OTP
+4. System grants access
+
+**Best**: Something you have (hardware key) + something you know (password) + something you are (biometric).
+
+### Federation & SSO
+
+**Traditional**: Each app manages its own users and passwords.
+```
+User → App A (login) → User database
+User → App B (login) → User database
+User → App C (login) → User database
+```
+
+**Federated**: Central identity provider. Apps trust the provider.
+```
+User → App A → Redirects to IdP → IdP authenticates → Returns token → App A accepts
+User → App B → Redirects to IdP → IdP recognizes session → Returns token → App B accepts
+```
+
+**SSO Benefits**:
+- One login for all apps
+- Centralized password management
+- Consistent MFA policy
+- Easier revocation
+- Better audit trail
+
+### OAuth 2.0 & OIDC
+
+**OAuth 2.0**: Delegates authorization. "This app wants permission to access your calendar."
+
+**OIDC (OpenID Connect)**: Adds authentication layer on top of OAuth. "Prove you are who you claim."
+
+<Vs items={[
+{
+    label: "OAuth 2.0 (Authorization)",
+    points: [
+      "App requests access to user resource",
+      "User grants permission",
+      "App receives access token",
+      "App uses token to call API",
+      "No identity information in token"
+    ]
+  },
+{
+    label: "OIDC (Authentication + Authorization)",
+    points: [
+      "App requests authentication",
+      "User authenticates with IdP",
+      "IdP returns ID token (contains identity)",
+      "App verifies token signature",
+      "App trusts user's identity",
+      "Also returns access token for API access"
+    ]
+  }
+]} />
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="mfa-flow" label="MFA Flow" default>
+    **Step 1**: User enters email and password
+
+    **Step 2**: System validates credentials
+
+    **Step 3**: System generates OTP and sends to phone
+
+    **Step 4**: User receives SMS: "Your code is 847392"
+
+    **Step 5**: User enters code
+
+    **Step 6**: System verifies code and grants session token
+
+    **Result**: User authenticated with 2 factors
+  </TabItem>
+
+  <TabItem value="sso-flow" label="SSO/OIDC Flow">
+    **Step 1**: User visits app.example.com (first time)
+
+    **Step 2**: App checks for session; none exists
+
+    **Step 3**: App redirects to: `idp.example.com/authorize?client_id=...&redirect_uri=app.example.com/callback`
+
+    **Step 4**: User authenticates at IdP (MFA if required)
+
+    **Step 5**: IdP creates ID token and redirects: `app.example.com/callback?code=...`
+
+    **Step 6**: App backend exchanges code for ID token
+
+    **Step 7**: App verifies token signature and creates session
+
+    **Step 8**: User can now access app
+
+    **Later**: User visits app2.example.com
+
+    **Step 3b**: App2 redirects to IdP (same process)
+
+    **Step 4b**: IdP recognizes user's browser session; no re-authentication needed
+
+    **Result**: User logged into both apps with one login
+  </TabItem>
+
+  <TabItem value="code" label="OIDC Implementation">
+    ```javascript
+    // Example: Node.js with OpenID Client library
+    const Issuer = require('openid-client').Issuer;
+
+    // Discover IdP configuration
+    const issuer = await Issuer.discover('https://idp.example.com');
+    const client = new issuer.Client({
+      client_id: 'my_app',
+      client_secret: 'secret',
+      redirect_uris: ['https://app.example.com/callback'],
+      response_types: ['code'],
+    });
+
+    // Generate authorization URL
+    const authorization_url = client.authorizationUrl({
+      scope: 'openid profile email',
+      state: generateRandomState(), // Prevent CSRF
+      nonce: generateRandomNonce(), // Prevent replay
+    });
+    // Redirect user to authorization_url
+
+    // Handle callback
+    const params = client.callbackParams(req);
+    const tokenSet = await client.callback('https://app.example.com/callback', params);
+
+    // Verify token signature
+    const userinfo = await client.userinfo(tokenSet.access_token);
+    console.log('Authenticated user:', userinfo.sub);
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0,0]} items={[
+{
+    label: "Use MFA When",
+    points: [
+      "Accessing sensitive data or systems",
+      "Financial transactions",
+      "Admin/privileged accounts (always)",
+      "Remote work (VPN, cloud apps)",
+      "Handling customer data",
+      "Regulatory compliance (HIPAA, PCI)"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Skip MFA When (Be Careful!)",
+    points: [
+      "Low-risk read-only applications",
+      "Internal tools behind VPN",
+      "Development/testing environments",
+      "BUT: Reconsider if app grows or stores sensitive data"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+**Pattern**: Require MFA for all admin accounts immediately. Easier than retrofitting later.
+
+**Pattern**: Support multiple MFA methods: authenticator app (offline), SMS (backup), hardware key (most secure).
+
+**Pitfall**: SMS-based MFA is vulnerable to SIM swapping. Preferred: authenticator apps or hardware keys.
+
+**Pitfall**: Storing MFA recovery codes insecurely. Users backup to Notes app; attacker reads Notes.
+
+**Pattern**: Force MFA re-verification for sensitive operations (password change, admin actions, API key generation).
+
+**Pitfall**: SSO session lasts too long. User logs out of IdP but remains logged into app. Use session timeout and re-verify.
+
+## Design Review Checklist
+
+- [ ] Authentication mechanisms identified (username/password, OIDC, etc.)
+- [ ] MFA enforced for all user accounts (esp. admin)
+- [ ] MFA backup methods documented (recovery codes, hardware key fallback)
+- [ ] IdP selected and integrated (Okta, Azure AD, Cognito, etc.)
+- [ ] OIDC/OAuth flow validated (state, nonce, PKCE for mobile/SPA)
+- [ ] Token signature verification implemented
+- [ ] Session timeout configured appropriately
+- [ ] Device fingerprinting or anomaly detection considered
+- [ ] Phishing resistance (FIDO2, hardware keys preferred)
+- [ ] Audit log captures all authentication events
+- [ ] Recovery/account unlock process defined
+
+## Phishing-Resistant Authentication
+
+SMS and email-based MFA are vulnerable to phishing. Hardware keys offer better security:
+
+```
+Phishing Attack Flow:
+1. Attacker sends fake email: "Verify your account"
+2. User clicks link; lands on attacker's clone of login page
+3. User enters password and SMS code on fake site
+4. Attacker now has both factors; gains access to real account
+
+Hardware Key (FIDO2) Protection:
+1. Attacker tricks user to login
+2. User taps hardware key
+3. Key verifies domain (e.g., github.com) before responding
+4. Attacker's fake site (attacker.com) gets no response
+5. Attack fails; user is never compromised
+
+Why hardware keys are phishing-resistant:
+- Domain-verified: key only works for registered domain
+- No secrets transmitted: challenge-response cryptography
+- Resident credentials: user can't accidentally use wrong account
+```
+
+### Passwordless Authentication
+
+The future of authentication removes passwords entirely:
+
+```
+Option 1: Biometric (Fingerprint, Face)
+- Fastest user experience
+- Can't be phished (not transmitted)
+- Works on phones and computers
+- Fallback: PIN or hardware key needed
+- Challenge: Biometric spoofing risks
+
+Option 2: Magic Links (Stateless)
+- Email: "Click here to log in"
+- Link contains signed JWT token
+- No password needed
+- Trade-off: email account is critical (email is new password)
+
+Option 3: WebAuthn/FIDO2 (Hardware Key)
+- Most secure
+- Phishing-resistant
+- Works across devices/browsers
+- Challenge: Users must carry hardware key
+
+Best: Multi-factor passwordless
+- Biometric (something you are)
+- Hardware key or device (something you have)
+- Both required; even if biometric spoofed, hardware key blocks attack
+```
+
+## Token-Based Authentication Security
+
+Modern apps use tokens (JWT) instead of sessions. Secure them properly:
+
+```javascript
+// ❌ Insecure: Token in URL (visible in logs, history)
+window.location.href = `https://app.example.com?token=eyJhbGc...`
+
+// ❌ Insecure: Token in local storage (XSS attack steals it)
+localStorage.setItem('auth_token', token)
+
+// ✅ Secure: HttpOnly cookie (JavaScript can't access)
+Set-Cookie: auth_token=eyJhbGc...; HttpOnly; Secure; SameSite=Strict
+
+// Token structure (JWT = header.payload.signature)
+Header: { "alg": "RS256", "typ": "JWT" }
+Payload: {
+  "sub": "user123",           // Subject (who)
+  "iat": 1707906000,          // Issued at
+  "exp": 1707909600,          // Expires in 1 hour
+  "aud": "app.example.com",   // Audience (for whom)
+  "iss": "idp.example.com"    // Issuer (who issued)
+}
+Signature: HMAC-SHA256(header.payload, secret_key)
+
+// Verify signature before trusting payload
+const verified = jwt.verify(token, publicKey)
+// If signature invalid, token is rejected (modified or fake)
+```
+
+## Session Security
+
+If using sessions instead of tokens:
+
+```python
+# ❌ Insecure: Session stored in cookie without protection
+# User cookie contains session ID; attacker can forge it
+
+# ✅ Secure: Session server-side only
+# Cookie contains opaque session ID
+# Session data stored in secure server-side storage
+# Attacker can't forge session (doesn't know data)
+
+session_id = generate_random_string(32)  # Cryptographically secure
+sessions[session_id] = {
+    'user_id': 123,
+    'created_at': now(),
+    'last_activity': now(),
+    'ip_address': request.remote_addr,
+    'user_agent': request.user_agent
+}
+
+# Send session ID to client in HttpOnly cookie
+response.set_cookie('session_id', session_id,
+    httponly=True,       # JavaScript can't access (XSS safe)
+    secure=True,         # HTTPS only
+    samesite='Strict',   # CSRF protection
+    max_age=3600)        # 1 hour expiration
+
+# On each request, verify session
+def get_session(session_id):
+    if session_id not in sessions:
+        raise AuthenticationError("Invalid session")
+
+    session = sessions[session_id]
+
+    # Verify session hasn't been hijacked
+    if request.remote_addr != session['ip_address']:
+        del sessions[session_id]  # Suspicious; delete
+        raise AuthenticationError("IP mismatch")
+
+    # Refresh expiration
+    session['last_activity'] = now()
+    return session
+```
+
+## Zero-Trust Authentication
+
+Assume every request could be from an attacker; verify every time:
+
+```
+Traditional: Trust once (at login), then allow all requests
+Zero-Trust: Verify every request
+
+Implementation:
+1. Require MFA for initial login
+2. On subsequent requests, don't trust only session cookie
+3. Also require:
+   - Device fingerprinting (browser, OS, hardware)
+   - Geolocation check (user usually in US; request from Russia = suspicious)
+   - Risk score (calculate from IP reputation, device, time)
+   - If risk > threshold, require additional MFA (step-up)
+
+Example: High-risk scenario
+- User (usually in New York) suddenly accessing from Russia
+- At 3am (unusual time)
+- From new device
+- Risk score: 92/100 (very high)
+- Action: Require additional MFA verification
+
+Benefits:
+- Compromised password less harmful (device fingerprint + geolocation verify)
+- Token stolen from one session; but device fingerprint prevents reuse
+- Attacker can't use stolen token from different device/location
+```
+
+## Self-Check
+
+- What's the difference between OAuth 2.0 and OIDC?
+- Why is SMS-based MFA considered weaker than authenticator apps?
+- How would you implement SSO across 10 separate applications?
+- What's phishing-resistant authentication and why does it matter?
+- How would you protect JWT tokens in a web app?
+- What's zero-trust authentication and when would you use it?
+
+:::info One Takeaway
+Authentication + MFA + Federation = a security posture that survives credential compromise and scales across systems. Add phishing resistance (hardware keys) and zero-trust verification (device fingerprint, geolocation) to protect against sophisticated attacks.
+
+:::
+
+## Next Steps
+
+- Read **Authorization (RBAC, ABAC)** to control what authenticated users can do
+- Study **Session & Token Management** for secure session handling
+- Explore **Secrets Management** for API keys and tokens
+
+## References
+
+- OAuth 2.0 Authorization Framework (RFC 6749)
+- OpenID Connect Core 1.0
+- NIST Cybersecurity Framework: Identity Management
+- OWASP Authentication Cheat Sheet
+- Okta Developer Documentation
+- Microsoft Azure AD Documentation

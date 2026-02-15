@@ -1,0 +1,689 @@
+---
+sidebar_position: 7
+title: Offline-First & Caching, PWA Concepts
+description: Service workers, local caching, and progressive web app patterns
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","frontend-lead"]
+keywords: ["offline-first","service-worker","pwa","caching","localstorage","indexeddb","sync"]
+image: /img/archman-social-card.webp
+tags: ["frontend","offline-first","performance"]
+hide_title: true
+---
+
+<Hero
+  title="Offline-First & Caching, PWA Concepts"
+  description="Enable offline-first UX with service workers, caching strategies, and progressive enhancement"
+  size="large"
+/>
+
+### TL;DR
+
+**Service Workers**: JavaScript worker process that intercepts all network requests from the page. Enables offline functionality and advanced caching strategies (cache-first, network-first, stale-while-revalidate).
+
+**PWA (Progressive Web App)**: Web application combining responsive design, offline functionality, installability, and push notifications. Uses service workers + web app manifest.
+
+**Caching Strategies**: Cache-first (offline-first, may be stale), network-first (always fresh, slow offline), stale-while-revalidate (fast + refresh in background), network-only, and cache-only.
+
+**Storage**: LocalStorage (5-10MB, synchronous), IndexedDB (50MB+, async), Service Worker Cache API (unlimited, offline-friendly).
+
+### Learning Objectives
+
+You will be able to:
+- Implement service worker lifecycle and caching strategies for different content types.
+- Build Progressive Web Apps with offline-first architecture and installability.
+- Use IndexedDB and Cache API for reliable offline state management.
+- Design sync strategies (background sync, retry logic) for offline-to-online transitions.
+- Monitor cache efficiency and optimize storage usage patterns.
+
+### Motivating Scenario
+
+Your mobile web app serves users in developing regions with unreliable 3G connectivity. Users open the app, browse products, add items to cart, but lose connectivity while checking out. The app becomes unusable—blank screens, spinners, timeouts. Users abandon purchases.
+
+With offline-first architecture: users continue browsing cached product data, their cart saves locally, and when connectivity returns, the app syncs in background. Users can complete checkout. Your conversion rate increases 25% because the app works on flaky networks.
+
+Progressive Web App features let users install the app on their home screen, giving it native app feel. Push notifications re-engage users. The app works offline, loads fast, and feels like a real app—not a website.
+
+## Core Concepts
+
+### What Are Service Workers?
+
+Service Workers are JavaScript worker processes that run in the background, independent of your web page. They act as a proxy between your app and the network:
+
+```
+User App Request → Service Worker → Network or Cache → Service Worker → Response
+```
+
+Key properties:
+- **Offline-capable**: Intercepts requests and serves cached responses when offline
+- **Persistent**: Installed once, runs across page reloads and browser restarts
+- **Network-agnostic**: Works the same on fast fiber, slow 3G, or offline
+- **Scoped**: Service Worker registered at `/sw.js` intercepts only that origin and path
+
+### What Are Progressive Web Apps?
+
+PWAs combine web technologies to deliver app-like experiences:
+
+1. **Responsive Design**: Works on phone, tablet, desktop
+2. **Offline-First**: Uses service workers to work without network
+3. **HTTPS-Only**: Secure transmission required
+4. **Installable**: Add to home screen; appears in app drawer (iOS, Android)
+5. **Push Notifications**: Re-engage users with timely messages
+6. **Fast**: LCP < 2.5s, smooth animations (60fps)
+
+PWAs blur the line between web and native apps. No app store approval, instant updates, but with app-like UX.
+
+## Service Worker Lifecycle & Caching Strategies
+
+### Service Worker Registration & Lifecycle
+
+```js title="main.js" showLineNumbers
+// Register service worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(registration => {
+      console.log('SW registered:', registration.scope);
+    })
+    .catch(error => {
+      console.error('SW registration failed:', error);
+    });
+}
+
+// Listen for messages from service worker
+navigator.serviceWorker.addEventListener('message', (event) => {
+  if (event.data.type === 'OFFLINE_STATUS') {
+    console.log('App is now', event.data.offline ? 'offline' : 'online');
+  }
+});
+```
+
+Service Worker states:
+1. **Registration**: Browser downloads `sw.js`, creates SW instance
+2. **Installation**: `install` event fires; cache static assets
+3. **Activation**: `activate` event fires; old caches cleaned up
+4. **Fetch**: `fetch` event fires on every request; apply caching strategy
+
+### Core Caching Strategies
+
+#### 1. Cache-First (Offline-First)
+
+Return cached response if available; fall back to network.
+
+**Use for**: Static assets (JS, CSS, images), product images, user profile photos
+
+**Pros**: Instant load, works offline
+**Cons**: Stale data until cache expires
+
+```js title="sw.js - Cache-First" showLineNumbers
+const CACHE_NAME = 'v1-assets';
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll([
+        '/',
+        '/styles/main.css',
+        '/scripts/app.js',
+        '/images/logo.png',
+      ]);
+    })
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  // Cache-first strategy
+  event.respondWith(
+    caches.match(event.request)
+      .then((response) => {
+        // Found in cache
+        if (response) return response;
+
+        // Not in cache, fetch from network
+        return fetch(event.request).then((networkResponse) => {
+          // Cache for next time
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, networkResponse.clone());
+          });
+          return networkResponse;
+        });
+      })
+      .catch(() => {
+        // Network failed, offline
+        return new Response('Offline', { status: 503 });
+      })
+  );
+});
+```
+
+#### 2. Network-First (Fresh Data Priority)
+
+Try network first; fall back to cache if offline.
+
+**Use for**: Dynamic data (product prices, inventory, user messages)
+
+**Pros**: Always fresh when online
+**Cons**: Slow to fallback when offline (network timeout ~30s)
+
+```js title="sw.js - Network-First" showLineNumbers
+const CACHE_NAME = 'v1-api';
+const TIMEOUT = 5000; // 5s timeout
+
+self.addEventListener('fetch', (event) => {
+  // Network-first strategy
+  event.respondWith(
+    Promise.race([
+      fetch(event.request).then((networkResponse) => {
+        // Update cache
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, networkResponse.clone());
+        });
+        return networkResponse;
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), TIMEOUT)
+      ),
+    ])
+      .catch(() => {
+        // Network failed or timeout, try cache
+        return caches.match(event.request) ||
+          new Response('No cached data', { status: 503 });
+      })
+  );
+});
+```
+
+#### 3. Stale-While-Revalidate (Best of Both)
+
+Return cached response immediately; update cache in background.
+
+**Use for**: Blog posts, articles, product details (data that changes infrequently)
+
+**Pros**: Fast, always fresh in background
+**Cons**: Users see slightly stale data initially
+
+```js title="sw.js - Stale-While-Revalidate" showLineNumbers
+const CACHE_NAME = 'v1-content';
+
+self.addEventListener('fetch', (event) => {
+  // Stale-while-revalidate strategy
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      const fetchPromise = fetch(event.request).then((networkResponse) => {
+        // Update cache with fresh response
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, networkResponse.clone());
+        });
+        return networkResponse;
+      });
+
+      // Return cached immediately, or wait for network
+      return cachedResponse || fetchPromise;
+    })
+      .catch(() => new Response('Offline', { status: 503 }))
+  );
+});
+```
+
+## Progressive Web App Implementation
+
+### Web App Manifest
+
+Defines installability and app metadata:
+
+```json title="manifest.webmanifest" showLineNumbers
+{
+  "name": "E-Commerce Store",
+  "short_name": "Store",
+  "description": "Shop online with offline support",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2196F3",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/images/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/images/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/images/screenshot-540.png",
+      "sizes": "540x720",
+      "form_factor": "narrow"
+    }
+  ]
+}
+```
+
+Link manifest in HTML:
+
+```html title="index.html" showLineNumbers
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#2196F3">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+```
+
+### Offline-First State Management
+
+Use IndexedDB for client-side state that syncs when online:
+
+<Tabs>
+<TabItem value="indexeddb" label="IndexedDB Store">
+```js title="db.js" showLineNumbers
+class CartDB {
+  constructor() {
+    this.dbName = 'ecommerce';
+    this.storeName = 'cart';
+    this.db = null;
+  }
+
+  async init() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, 1);
+
+      request.onerror = () => reject(request.error);
+
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        db.createObjectStore(this.storeName, { keyPath: 'id' });
+      };
+
+      request.onsuccess = () => {
+        this.db = request.result;
+        resolve();
+      };
+    });
+  }
+
+  async addToCart(item) {
+    const tx = this.db.transaction(this.storeName, 'readwrite');
+    const store = tx.objectStore(this.storeName);
+    return new Promise((resolve, reject) => {
+      const request = store.put({
+        id: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        timestamp: Date.now(),
+      });
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve();
+    });
+  }
+
+  async getCart() {
+    const tx = this.db.transaction(this.storeName, 'readonly');
+    const store = tx.objectStore(this.storeName);
+    return new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+  }
+
+  async clearCart() {
+    const tx = this.db.transaction(this.storeName, 'readwrite');
+    const store = tx.objectStore(this.storeName);
+    return new Promise((resolve, reject) => {
+      const request = store.clear();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve();
+    });
+  }
+}
+
+export const cartDB = new CartDB();
+```
+</TabItem>
+<TabItem value="sync-component" label="React Component with Sync">
+```jsx title="CartComponent.jsx" showLineNumbers
+
+export default function Cart() {
+  const [items, setItems] = useState([]);
+  const [syncing, setSyncing] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    // Load cart from IndexedDB
+    cartDB.init().then(() => {
+      cartDB.getCart().then(setItems);
+    });
+
+    // Monitor online/offline
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const handleAddItem = async (product) => {
+    const item = {
+      productId: product.id,
+      quantity: 1,
+      price: product.price,
+    };
+    await cartDB.addToCart(item);
+    const updated = await cartDB.getCart();
+    setItems(updated);
+  };
+
+  const handleCheckout = async () => {
+    setSyncing(true);
+    try {
+      const cartItems = await cartDB.getCart();
+      const response = await fetch('/api/orders', {
+        method: 'POST',
+        body: JSON.stringify({ items: cartItems }),
+      });
+      if (response.ok) {
+        await cartDB.clearCart();
+        setItems([]);
+      }
+    } catch (error) {
+      console.error('Checkout failed:', error);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2>Cart {!online && '(Offline)'}</h2>
+      {items.map(item => (
+        <div key={item.id}>
+          Product {item.id} x{item.quantity} = ${item.price * item.quantity}
+        </div>
+      ))}
+      <button onClick={handleCheckout} disabled={syncing || items.length === 0}>
+        {syncing ? 'Syncing...' : 'Checkout'}
+      </button>
+    </div>
+  );
+}
+```
+</TabItem>
+</Tabs>
+
+### Background Sync
+
+Retry failed requests when connection returns:
+
+```js title="sw.js - Background Sync" showLineNumbers
+// In service worker
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'sync-cart') {
+    event.waitUntil(syncCart());
+  }
+});
+
+async function syncCart() {
+  try {
+    const db = await openDB();
+    const cartItems = await db.getAll('cart');
+
+    if (cartItems.length === 0) return;
+
+    const response = await fetch('/api/orders', {
+      method: 'POST',
+      body: JSON.stringify({ items: cartItems }),
+    });
+
+    if (response.ok) {
+      const db = await openDB();
+      await db.clear('cart');
+    }
+  } catch (error) {
+    console.error('Sync failed:', error);
+    throw error; // Retry
+  }
+}
+```
+
+In app, register sync:
+
+```js title="main.js" showLineNumbers
+navigator.serviceWorker.ready.then((registration) => {
+  // Queue sync on next connectivity
+  return registration.sync.register('sync-cart');
+});
+```
+
+## Patterns & Pitfalls
+
+### Pattern: Cache Versioning
+
+Always version caches to enable cleanup:
+
+```js title="sw.js" showLineNumbers
+const CACHE_V1 = 'v1-assets';
+const CACHE_V2 = 'v2-assets';
+const CURRENT_CACHES = [CACHE_V1, CACHE_V2];
+
+self.addEventListener('activate', (event) => {
+  // Delete old caches
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((name) => {
+          if (!CURRENT_CACHES.includes(name)) {
+            return caches.delete(name);
+          }
+        })
+      );
+    })
+  );
+});
+```
+
+### Pitfall: Cache Bloat
+
+**Problem**: Cache grows unbounded; older data never purged. Device storage fills.
+
+**Mitigation**: Implement cache expiration:
+
+```js title="cache-utils.js" showLineNumbers
+async function getCachedWithExpiry(request, maxAge = 86400000) { // 24h
+  const cache = await caches.open('v1-data');
+  const response = await cache.match(request);
+
+  if (!response) return null;
+
+  const cachedTime = new Date(response.headers.get('sw-cached')).getTime();
+  const age = Date.now() - cachedTime;
+
+  if (age > maxAge) {
+    cache.delete(request);
+    return null;
+  }
+
+  return response;
+}
+
+// When caching, add timestamp
+const newResponse = new Response(blob, {
+  headers: {
+    'sw-cached': new Date().toISOString(),
+  },
+});
+```
+
+### Pitfall: Silent Failures
+
+**Problem**: Service worker fails silently; user has no idea app is offline.
+
+**Mitigation**: Notify user of offline status:
+
+```js title="main.js" showLineNumbers
+window.addEventListener('offline', () => {
+  showNotification({
+    type: 'warning',
+    message: 'You are offline. Some features may be unavailable.',
+  });
+});
+
+window.addEventListener('online', () => {
+  showNotification({
+    type: 'success',
+    message: 'Back online.',
+  });
+});
+```
+
+## Operational Considerations
+
+### Cache Size Management
+
+Monitor cache usage:
+
+```js title="sw.js" showLineNumbers
+async function getCacheSize() {
+  const cacheNames = await caches.keys();
+  let totalSize = 0;
+
+  for (const name of cacheNames) {
+    const cache = await caches.open(name);
+    const requests = await cache.keys();
+    for (const request of requests) {
+      const response = await cache.match(request);
+      totalSize += response.headers.get('content-length') || 0;
+    }
+  }
+
+  return totalSize; // bytes
+}
+```
+
+Set storage quota limits:
+
+```js title="main.js" showLineNumbers
+if (navigator.storage?.estimate) {
+  navigator.storage.estimate().then(({ usage, quota }) => {
+    console.log(`Using ${usage} of ${quota} bytes`);
+    if (usage > quota * 0.8) {
+      console.warn('Approaching storage limit');
+    }
+  });
+}
+```
+
+### Testing Offline Behavior
+
+Chrome DevTools:
+1. Open DevTools → Network tab
+2. Check "Offline" checkbox
+3. Reload page; verify fallback responses
+
+Service Worker updates:
+- Users must close all app tabs to get new SW version
+- Use `skipWaiting()` to force update, but risks inconsistency
+
+```js title="sw.js" showLineNumbers
+self.addEventListener('install', (event) => {
+  // Force immediate activation
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  // Claim all pages
+  event.waitUntil(self.clients.claim());
+});
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is service worker registered and tested in offline mode?",
+  "Are cache expiry strategies defined for each content type?",
+  "Is web app manifest complete with icons and proper metadata?",
+  "Is IndexedDB used for client-side state (not just localStorage)?",
+  "Are background sync strategies implemented for failed requests?",
+  "Is cache size monitored and garbage collection implemented?",
+  "Are users notified of online/offline status?",
+  "Are critical assets pre-cached on install?",
+  "Is HTTPS enforced (required for service workers)?",
+  "Is fallback UI provided for offline scenarios (e.g., offline page)?",
+  "Are service worker update scenarios tested (new version deployment)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Use Offline-First & PWA When:**
+- Users on flaky networks (mobile, developing countries)
+- App features work meaningfully without connectivity
+- Want mobile-like experience without native app
+- Frequent updates (no app store approval delays)
+- Need to re-engage users (push notifications)
+
+**Avoid When:**
+- Real-time data essential (e.g., stock trading app)
+- Heavy offline processing required (video editing)
+- High security/authentication requirements (easy to proxy intercept)
+- Browser support for older IE11 needed
+
+## Showcase: Caching Strategy Decision Tree
+
+<Figure caption="Decision tree for choosing caching strategy">
+```
+Start: Fetch Request
+  ├─ Is it a static asset (CSS, JS, images)?
+  │  └─ YES → Cache-First (offline-first, fast)
+  │
+  ├─ Is it dynamic data (prices, inventory, messages)?
+  │  └─ YES → Network-First (fresh when online)
+  │
+  ├─ Is it semi-static (blog post, product detail)?
+  │  └─ YES → Stale-While-Revalidate (fast + fresh)
+  │
+  ├─ Does it require fresh data always?
+  │  └─ YES → Network-Only (no cache)
+  │
+  └─ Edge case: Always-available content?
+     └─ YES → Cache-Only (pre-cached, never fetches)
+```
+</Figure>
+
+## Self-Check
+
+1. **What's the main difference between cache-first and network-first strategies? When would you use each?**
+2. **Why does a service worker need to be installed before it can intercept fetch requests?**
+3. **How would you implement a cache that automatically expires data after 24 hours?**
+
+## Next Steps
+
+- <a href="https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API" target="_blank" rel="nofollow noopener noreferrer">MDN Service Worker API ↗️</a>
+- Explore <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/performance-ttfb-tti-core-web-vitals-conceptual" target="_blank" rel="nofollow noopener noreferrer">Core Web Vitals & Performance ↗️</a>
+- Learn about <a href="/docs/frontend-and-mobile-architecture/mobile-architecture/offline-sync-and-conflict-resolution" target="_blank" rel="nofollow noopener noreferrer">Offline Sync & Conflict Resolution ↗️</a>
+- Build with <a href="https://web.dev/progressive-web-apps/" target="_blank" rel="nofollow noopener noreferrer">Google's PWA Guide ↗️</a>
+
+### One Takeaway
+
+<Callout tone="info">
+Service workers and offline-first architecture transform web apps into resilient experiences that work on poor connections. Start with cache-first for static assets, network-first for APIs, and stale-while-revalidate for semi-dynamic content. Monitor cache size and test offline scenarios in your QA process.
+</Callout>
+
+## References
+
+1. <a href="https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API" target="_blank" rel="nofollow noopener noreferrer">MDN Service Worker API</a>
+2. <a href="https://web.dev/progressive-web-apps/" target="_blank" rel="nofollow noopener noreferrer">Google: Progressive Web Apps</a>
+3. <a href="https://jakearchibald.com/2014/offline-cookbook/" target="_blank" rel="nofollow noopener noreferrer">The Offline Cookbook - Jake Archibald</a>
+4. <a href="https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API" target="_blank" rel="nofollow noopener noreferrer">MDN IndexedDB API</a>
+5. <a href="https://www.w3.org/TR/appmanifest/" target="_blank" rel="nofollow noopener noreferrer">Web App Manifest Standard</a>
+---

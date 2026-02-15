@@ -1,0 +1,454 @@
+---
+sidebar_position: 4
+title: "Rate Limiting and Throttling"
+description: "Control request flow to protect resources. Token bucket, sliding window, and adaptive rate limiting strategies."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [rate limiting, throttling, token bucket, sliding window, quota, request flow control]
+image: /img/archman-social-card.webp
+tags: [rate-limiting, throttling, token-bucket, sliding-window, quota, flow-control, protection]
+hide_title: true
+---
+
+<Hero title="Rate Limiting and Throttling" subtitle="Control request flow to protect shared resources and prevent abuse" imageAlt="Rate limiting illustration" size="large" />
+
+## TL;DR
+
+Rate limiting controls request flow proactively, preventing resource exhaustion before it happens. Token bucket algorithm refills tokens at a fixed rate; each request consumes a token. Requests rejected if no tokens available. Unlike load shedding (reactive), rate limiting is proactive. Throttling is client-side rate limiting (voluntary); rate limiting is server-side enforcement. Strategies include per-user quotas, per-IP limits, global thresholds, and adaptive limits based on system health. Essential for public APIs, multi-tenant systems, and preventing both intentional abuse and accidental DDoS.
+
+## Learning Objectives
+
+- Understand token bucket, sliding window, and leaky bucket algorithms
+- Design appropriate rate limits for different request types
+- Implement distributed rate limiting (across multiple servers)
+- Choose between per-user, per-IP, and global rate limits
+- Handle burst traffic while maintaining fairness
+- Communicate limits to clients via headers and status codes
+
+## Motivating Scenario
+
+A public API for weather data limits users to 100 requests/minute. User A makes 50 requests/minute consistently. User B suddenly makes 200 requests in 30 seconds (burst). Without rate limiting, both succeed (total 250/min) and the backend saturates. With token bucket rate limiting (100 tokens/minute capacity), User A gets 50 requests, User B gets 50 requests (tokens depleted), then must wait. Burst traffic is handled fairly. After 30 seconds, User B has a few tokens available and can make a few more requests, but cannot exceed the sustained limit.
+
+## Core Concepts
+
+<Figure
+  caption="Rate Limiting Algorithms"
+  content={`
+graph TB
+    subgraph token["Token Bucket"]
+        T1["Bucket: 100 tokens<br/>Refill: 10 tok/sec"]
+        T2["Request costs 1 token"]
+        T3["Burst OK<br/>(up to 100)"]
+        T4["Sustained: 10/sec"]
+        T1 --> T2
+        T2 --> T3
+        T2 --> T4
+        style T1 fill:#c8e6c9
+        style T3 fill:#fff9c4
+        style T4 fill:#c8e6c9
+    end
+
+    subgraph sliding["Sliding Window"]
+        S1["Count requests<br/>in last 60 sec"]
+        S2["Request count > 100?"]
+        S3["Reject"]
+        S4["Accept"]
+        S1 --> S2
+        S2 -->|Yes| S3
+        S2 -->|No| S4
+        style S1 fill:#c8e6c9
+        style S4 fill:#c8e6c9
+        style S3 fill:#ffcccc
+    end
+
+    subgraph leaky["Leaky Bucket"]
+        L1["Queue requests<br/>Max: 200"]
+        L2["Drain at fixed rate<br/>10 req/sec"]
+        L3["Smooth traffic"]
+        L1 --> L2
+        L2 --> L3
+        style L1 fill:#c8e6c9
+        style L3 fill:#c8e6c9
+    end
+`}
+/>
+
+**Token Bucket:** Simple, handles bursts well. Best for: APIs with expected burstiness (image uploads, batch processing). Clients can make rapid requests if within capacity.
+
+**Sliding Window:** Precise count-based limits. Best for: strict quotas (100 API calls per hour). More memory overhead.
+
+**Leaky Bucket:** Smooths traffic perfectly. Best for: protecting backends from sudden spikes. Adds latency (requests wait in queue).
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="python" label="Python">
+```python
+import time
+from collections import defaultdict
+from threading import Lock
+
+class TokenBucketRateLimiter:
+    def __init__(self, capacity, refill_rate):
+        """
+        capacity: max tokens in bucket
+        refill_rate: tokens per second
+        """
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self.tokens = capacity
+        self.last_refill = time.time()
+        self.lock = Lock()
+
+    def try_consume(self, tokens=1):
+        """Try to consume tokens, return True if successful"""
+        with self.lock:
+            self._refill()
+
+            if self.tokens >= tokens:
+                self.tokens -= tokens
+                return True, "Request allowed"
+            else:
+                wait_time = (tokens - self.tokens) / self.refill_rate
+                return False, f"Rate limited. Retry after {wait_time:.1f}s"
+
+    def _refill(self):
+        """Refill tokens based on elapsed time"""
+        now = time.time()
+        elapsed = now - self.last_refill
+        tokens_to_add = elapsed * self.refill_rate
+        self.tokens = min(self.capacity, self.tokens + tokens_to_add)
+        self.last_refill = now
+
+    def get_status(self):
+        with self.lock:
+            self._refill()
+            return {"tokens": self.tokens, "capacity": self.capacity}
+
+class PerUserRateLimiter:
+    def __init__(self, default_capacity=100, default_rate=10):
+        self.limiters = defaultdict(
+            lambda: TokenBucketRateLimiter(default_capacity, default_rate)
+        )
+        self.lock = Lock()
+
+    def check_limit(self, user_id, tokens=1):
+        """Check if user can make request"""
+        with self.lock:
+            limiter = self.limiters[user_id]
+        return limiter.try_consume(tokens)
+
+    def set_user_limit(self, user_id, capacity, rate):
+        """Set custom limit for user (e.g., premium tier)"""
+        with self.lock:
+            self.limiters[user_id] = TokenBucketRateLimiter(capacity, rate)
+
+class DistributedRateLimiter:
+    """Rate limiter with IP-based limits"""
+    def __init__(self):
+        self.ip_limiters = defaultdict(
+            lambda: TokenBucketRateLimiter(capacity=100, refill_rate=10)
+        )
+        self.global_limiter = TokenBucketRateLimiter(capacity=10000, refill_rate=1000)
+
+    def check_limit(self, client_ip):
+        """Check both IP and global limits"""
+        # Check global limit first (cheap check)
+        global_ok, global_msg = self.global_limiter.try_consume()
+        if not global_ok:
+            return False, "Service rate limit exceeded (429)"
+
+        # Check per-IP limit
+        ip_ok, ip_msg = self.ip_limiters[client_ip].try_consume()
+        if not ip_ok:
+            return False, f"IP rate limit exceeded: {ip_msg}"
+
+        return True, "Request allowed"
+
+# Example usage
+limiter = PerUserRateLimiter(capacity=100, default_rate=10)
+
+# Simulate requests from different users
+for i in range(150):
+    user = "user-1" if i < 50 else "user-2"
+    allowed, msg = limiter.check_limit(user)
+    if not allowed:
+        print(f"Request {i} ({user}): {msg}")
+
+print("User-1 status:", limiter.limiters["user-1"].get_status())
+print("User-2 status:", limiter.limiters["user-2"].get_status())
+```
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+type TokenBucketRateLimiter struct {
+    capacity   float64
+    refillRate float64
+    tokens     float64
+    lastRefill time.Time
+    mu         sync.Mutex
+}
+
+func NewTokenBucketRateLimiter(capacity float64, refillRate float64) *TokenBucketRateLimiter {
+    return &TokenBucketRateLimiter{
+        capacity:   capacity,
+        refillRate: refillRate,
+        tokens:     capacity,
+        lastRefill: time.Now(),
+    }
+}
+
+func (tbl *TokenBucketRateLimiter) refill() {
+    now := time.Now()
+    elapsed := now.Sub(tbl.lastRefill).Seconds()
+    tokensToAdd := elapsed * tbl.refillRate
+    tbl.tokens = math.Min(tbl.capacity, tbl.tokens+tokensToAdd)
+    tbl.lastRefill = now
+}
+
+func (tbl *TokenBucketRateLimiter) TryConsume(tokens float64) (bool, string) {
+    tbl.mu.Lock()
+    defer tbl.mu.Unlock()
+
+    tbl.refill()
+
+    if tbl.tokens >= tokens {
+        tbl.tokens -= tokens
+        return true, "Request allowed"
+    }
+
+    waitTime := (tokens - tbl.tokens) / tbl.refillRate
+    return false, fmt.Sprintf("Rate limited. Retry after %.1fs", waitTime)
+}
+
+type PerUserRateLimiter struct {
+    limiters map[string]*TokenBucketRateLimiter
+    mu       sync.Mutex
+}
+
+func NewPerUserRateLimiter() *PerUserRateLimiter {
+    return &PerUserRateLimiter{
+        limiters: make(map[string]*TokenBucketRateLimiter),
+    }
+}
+
+func (purl *PerUserRateLimiter) CheckLimit(userID string) (bool, string) {
+    purl.mu.Lock()
+
+    limiter, exists := purl.limiters[userID]
+    if !exists {
+        limiter = NewTokenBucketRateLimiter(100, 10)
+        purl.limiters[userID] = limiter
+    }
+
+    purl.mu.Unlock()
+
+    return limiter.TryConsume(1)
+}
+
+func main() {
+    limiter := NewPerUserRateLimiter()
+
+    for i := 0; i < 150; i++ {
+        user := "user-1"
+        if i >= 50 {
+            user = "user-2"
+        }
+
+        allowed, msg := limiter.CheckLimit(user)
+        if !allowed {
+            fmt.Printf("Request %d (%s): %s\n", i, user, msg)
+        }
+    }
+}
+```
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js">
+```javascript
+class TokenBucketRateLimiter {
+    constructor(capacity, refillRate) {
+        this.capacity = capacity;
+        this.refillRate = refillRate; // tokens per second
+        this.tokens = capacity;
+        this.lastRefill = Date.now();
+    }
+
+    refill() {
+        const now = Date.now();
+        const elapsed = (now - this.lastRefill) / 1000; // seconds
+        const tokensToAdd = elapsed * this.refillRate;
+        this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
+        this.lastRefill = now;
+    }
+
+    tryConsume(tokens = 1) {
+        this.refill();
+
+        if (this.tokens >= tokens) {
+            this.tokens -= tokens;
+            return [true, 'Request allowed'];
+        } else {
+            const waitTime = (tokens - this.tokens) / this.refillRate;
+            return [false, `Rate limited. Retry after ${waitTime.toFixed(1)}s`];
+        }
+    }
+
+    getStatus() {
+        this.refill();
+        return {
+            tokens: Math.floor(this.tokens),
+            capacity: this.capacity,
+            refillRate: this.refillRate
+        };
+    }
+}
+
+class PerUserRateLimiter {
+    constructor(defaultCapacity = 100, defaultRate = 10) {
+        this.limiters = new Map();
+        this.defaultCapacity = defaultCapacity;
+        this.defaultRate = defaultRate;
+    }
+
+    checkLimit(userId) {
+        if (!this.limiters.has(userId)) {
+            this.limiters.set(
+                userId,
+                new TokenBucketRateLimiter(this.defaultCapacity, this.defaultRate)
+            );
+        }
+
+        const limiter = this.limiters.get(userId);
+        return limiter.tryConsume(1);
+    }
+
+    setUserLimit(userId, capacity, rate) {
+        this.limiters.set(userId, new TokenBucketRateLimiter(capacity, rate));
+    }
+
+    getUserStatus(userId) {
+        if (!this.limiters.has(userId)) {
+            return null;
+        }
+        return this.limiters.get(userId).getStatus();
+    }
+}
+
+// Example usage
+const limiter = new PerUserRateLimiter(100, 10);
+
+// Simulate requests
+for (let i = 0; i < 150; i++) {
+    const user = i < 50 ? 'user-1' : 'user-2';
+    const [allowed, msg] = limiter.checkLimit(user);
+    if (!allowed) {
+        console.log(`Request ${i} (${user}): ${msg}`);
+    }
+}
+
+console.log('User-1 status:', limiter.getUserStatus('user-1'));
+console.log('User-2 status:', limiter.getUserStatus('user-2'));
+```
+  </TabItem>
+</Tabs>
+
+## When to Use vs. When NOT to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "Use Rate Limiting",
+    points: [
+      "Public APIs with unknown clients",
+      "Multi-tenant systems with quotas"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid Rate Limiting",
+    points: [
+      "Protecting critical backend resources",
+      "Preventing DDoS attacks (intentional or accidental)",
+      "Fair resource sharing among users/services"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: HTTP Headers for Rate Limit Info",
+      body: "Return X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset headers. Clients know exactly when they can retry. Better UX than guessing."
+    },
+    {
+      label: "Pattern: Tiered Limits",
+      body: "Free tier: 100 req/day. Pro tier: 10K req/day. Enterprise: unlimited. Different limits for different SLAs. Monetization and resource management aligned."
+    },
+    {
+      label: "Pitfall: Distributed Rate Limiting",
+      body: "Rate limiter in one service. User makes requests across 5 services. Each sees 20 requests/minute, all pass limits. Total: 100 req/min, system overloaded. Solution: centralized rate limit state (Redis) or coordination."
+    },
+    {
+      label: "Pitfall: Too Strict Limits",
+      body: "Legitimate users hit limits during peak usage. Negative experience. Monitor actual usage; set limits at 2x average + headroom, not 1x."
+    },
+    {
+      label: "Pattern: Burst Allowance",
+      body: "Token bucket with capacity > refill rate. User has quota of 10 req/sec sustained, but can burst to 100 req/sec for 10 seconds. Handles spiky traffic while maintaining overall capacity."
+    },
+    {
+      label: "Pitfall: Client-Side Only",
+      body: "Relying on clients to throttle. Malicious client ignores throttle. Always enforce server-side. Client-side is optimization only."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Rate limits are specified per dimension (user, IP, global)",
+    "Limits are based on actual capacity testing, not guesses",
+    "Burst capacity (token bucket size) is defined per tier",
+    "Refill rate allows sustainable traffic within SLA",
+    "HTTP 429 Too Many Requests is returned with Retry-After header",
+    "X-RateLimit-* headers are included in all responses",
+    "Distributed rate limiting uses shared state (Redis, Memcached)",
+    "Rate limit thresholds have monitoring and alerting",
+    "Client libraries document rate limits in documentation",
+    "Fallback strategy exists if rate limiter fails (fail open vs. closed?)"
+  ]}
+/>
+
+## Self-Check
+
+- Can you explain token bucket vs. sliding window algorithms?
+- How does your system handle burst traffic?
+- What happens if the rate limiter itself goes down?
+- How do you coordinate rate limits across multiple servers?
+- What limits do you return to clients, and how?
+
+## Next Steps
+
+1. **Load Shedding:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/load-shedding-backpressure" target="_blank" rel="nofollow noopener noreferrer">Load Shedding and Backpressure ↗️</a> for reactive overload handling
+2. **Bulkhead Isolation:** Learn <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/bulkhead-isolation" target="_blank" rel="nofollow noopener noreferrer">Bulkhead Isolation ↗️</a> for resource-level isolation
+3. **Circuit Breaker:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/circuit-breaker" target="_blank" rel="nofollow noopener noreferrer">Circuit Breaker ↗️</a> to handle dependency failures
+
+## References
+
+- Newman, S. (2015). Building Microservices. O'Reilly Media.
+- Rafaels, A. (2012). <a href="https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/" target="_blank" rel="nofollow noopener noreferrer">Rate Limiting Strategies ↗️</a>. Figma Engineering Blog.
+- Kong Documentation. <a href="https://docs.konghq.com/hub/kong-inc/rate-limiting/" target="_blank" rel="nofollow noopener noreferrer">Rate Limiting Plugin ↗️</a>

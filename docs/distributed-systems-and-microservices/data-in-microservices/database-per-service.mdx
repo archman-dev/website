@@ -1,0 +1,286 @@
+---
+sidebar_position: 1
+title: "Database Per Service"
+description: "Isolate service data with dedicated databases to maintain independence and prevent tight coupling."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [database-per-service, data-isolation, microservices-architecture, schema-ownership, independence, polyglot-persistence, data-silos, consistency]
+image: /img/archman-social-card.webp
+tags: [microservices, data-management, architecture, decoupling, independence, polyglot-persistence, schema-design, database-strategy, operational-excellence, best-practices]
+hide_title: true
+---
+
+<Hero title="Database Per Service" subtitle="Isolate service data with dedicated databases to maintain independence and prevent tight coupling." imageAlt="Database per service architecture" size="large" />
+
+## TL;DR
+
+Each microservice should own and manage its own database. This principle—database per service—prevents tight coupling, allows services to evolve independently, and enables teams to choose appropriate storage technologies for their specific needs. However, it introduces data consistency challenges that must be solved through patterns like eventual consistency, sagas, and event-driven architecture. The tradeoff is worth it: independence and scalability outweigh the complexity of distributed data coordination.
+
+## Learning Objectives
+
+- Understand why shared databases create unacceptable coupling in microservices
+- Design service boundaries around data ownership
+- Implement database isolation strategies
+- Choose appropriate storage technologies per service
+- Manage cross-service queries and data consistency
+- Navigate the tradeoffs of data isolation
+
+## Motivating Scenario
+
+Two teams share a database: users and orders tables. The orders team needs to add a new column for a feature. They request a migration. The users team delays approval (they're busy). Meanwhile, the orders team is blocked. Later, a query on the users table runs long and locks the entire database—orders performance suffers even though nothing changed in their code. This coupling is unacceptable in microservices.
+
+## Core Concepts
+
+### Why Shared Databases Fail
+
+Shared databases create invisible dependencies. Even without direct coupling, teams are coupled through schema evolution, locking, resource contention, and operational decisions. Each team can't move independently. One team's schema change impacts everyone. One team's runaway query affects all services.
+
+### Database Per Service Pattern
+
+Each service owns a database schema and is the sole reader/writer of that data. No other service directly queries the database. If services need data from each other, they use APIs. This enforces data boundaries and service independence.
+
+### Polyglot Persistence
+
+Different services have different data needs. A service handling real-time metrics might use time-series databases. An analytics service might use columnar storage. A transactional service might use relational databases. Database per service enables polyglot persistence—choosing the right tool for each job.
+
+### Data Consistency Challenges
+
+The cost of isolation is complexity: how do services stay consistent? Solutions include eventual consistency through events, sagas for distributed transactions, outbox patterns, and change data capture. These are explored in subsequent sections.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Shared database with direct queries
+class UserService:
+    def get_user(self, user_id):
+        # Direct query to shared database
+        return db.query("SELECT * FROM users WHERE id = %s", user_id)
+
+class OrderService:
+    def create_order(self, user_id, items):
+        # Tight coupling: Orders service directly accesses users table
+        user = db.query("SELECT * FROM users WHERE id = %s", user_id)
+        if not user:
+            raise ValueError("User not found")
+        # Create order...
+
+# ✅ EXCELLENT - Database per service with API boundaries
+class UserService:
+    def __init__(self, user_db):
+        self.db = user_db  # Dedicated database
+
+    def get_user(self, user_id):
+        return self.db.query("SELECT * FROM users WHERE id = %s", user_id)
+
+    def expose_api_endpoint(self, app):
+        @app.route('/users/<user_id>')
+        def get_user_endpoint(user_id):
+            return self.get_user(user_id)
+
+class OrderService:
+    def __init__(self, order_db, user_service_client):
+        self.db = order_db  # Dedicated database
+        self.user_client = user_service_client  # Uses API
+
+    def create_order(self, user_id, items):
+        # Access user data via API, not direct query
+        try:
+            user = self.user_client.get_user(user_id)
+        except UserNotFoundError:
+            raise ValueError("User not found")
+
+        order = Order(user_id=user_id, items=items)
+        self.db.insert(order)
+        return order
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Shared database connection
+type UserService struct {
+    db *sql.DB  // Shared database
+}
+
+type OrderService struct {
+    db *sql.DB  // Same database
+}
+
+func (os *OrderService) CreateOrder(ctx context.Context, userID string, items []Item) error {
+    // Tight coupling: Orders service directly queries users table
+    var user User
+    err := os.db.QueryRowContext(ctx, "SELECT * FROM users WHERE id = ?", userID).Scan(&user.ID)
+    // ...
+}
+
+// ✅ EXCELLENT - Database per service with API client
+type UserClient interface {
+    GetUser(ctx context.Context, userID string) (*User, error)
+}
+
+type UserService struct {
+    db *sql.DB  // Dedicated database
+}
+
+type OrderService struct {
+    db         *sql.DB      // Dedicated database
+    userClient UserClient   // Calls user service API
+}
+
+func (os *OrderService) CreateOrder(ctx context.Context, userID string, items []Item) error {
+    // Access user via API, not direct database query
+    user, err := os.userClient.GetUser(ctx, userID)
+    if err != nil {
+        return fmt.Errorf("failed to fetch user: %w", err)
+    }
+
+    order := &Order{UserID: userID, Items: items}
+    _, err = os.db.ExecContext(ctx, "INSERT INTO orders (user_id, items) VALUES (?, ?)", userID, items)
+    return err
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Shared database
+const pool = new Pool({ connectionString: 'postgresql://localhost/shared_db' });
+
+class UserService {
+    async getUser(userId) {
+        const result = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+        return result.rows[0];
+    }
+}
+
+class OrderService {
+    async createOrder(userId, items) {
+        // Tight coupling: directly queries users table
+        const userResult = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+        if (!userResult.rows.length) throw new Error('User not found');
+
+        // Create order...
+    }
+}
+
+// ✅ EXCELLENT - Database per service with HTTP API
+class UserService {
+    constructor() {
+        this.db = new Pool({ connectionString: 'postgresql://localhost/users_db' });
+    }
+
+    async getUser(userId) {
+        const result = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+        return result.rows[0];
+    }
+
+    setupEndpoints(app) {
+        app.get('/users/:userId', async (req, res) => {
+            const user = await this.getUser(req.params.userId);
+            res.json(user);
+        });
+    }
+}
+
+class OrderService {
+    constructor(userServiceUrl) {
+        this.db = new Pool({ connectionString: 'postgresql://localhost/orders_db' });
+        this.userServiceUrl = userServiceUrl;
+    }
+
+    async createOrder(userId, items) {
+        // Access user via HTTP API
+        const userResponse = await fetch(`${this.userServiceUrl}/users/${userId}`);
+        if (!userResponse.ok) throw new Error('User not found');
+
+        const order = { userId, items };
+        await this.db.query('INSERT INTO orders (user_id, items) VALUES ($1, $2)', [userId, items]);
+        return order;
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "When to Use Database Per Service",
+    points: ["Services with independent data models and different scaling needs", "Teams working in parallel who need autonomy", "Systems where services need different storage technologies", "Mature microservices architectures with event infrastructure", "High-scale systems where shared databases become bottlenecks"],
+    highlightTone: "positive"
+  },
+{
+    label: "When NOT to Use (Use Shared Database)",
+    points: ["Early-stage monoliths being built (premature optimization)", "Simple systems with few services and minimal scaling needs", "When distributed transactions are essential and sagas are infeasible", "Systems without event infrastructure or event-driven capabilities", "Teams lacking operational maturity for distributed systems"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Data Duplication",
+      description: "Services cache data from other services. Manage staleness explicitly through TTLs and refresh strategies.",
+      icon: "⚠️"
+    }, {
+      title: "Join Complexity",
+      description: "Queries that would be simple joins become complex distributed logic. This is acceptable—it's a design constraint that forces better service boundaries.",
+      icon: "⚠️"
+    }, {
+      title: "Event-Driven Consistency",
+      description: "Use events to keep related data eventually consistent. When one service's data changes, emit events that other services consume.",
+      icon: "✓"
+    }, {
+      title: "API-Driven Data Access",
+      description: "All data access between services flows through APIs. This enforces contract boundaries and enables version management.",
+      icon: "✓"
+    }, {
+      title: "Polyglot Persistence",
+      description: "Choose the right database for each service's needs rather than using one-size-fits-all technology.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Each service has sole write access to its database schema",
+    "Services access each other's data through APIs, not direct database queries",
+    "Schema changes are owned by the service and don't require approval from other teams",
+    "Data consistency mechanisms (events, sagas) are designed for critical workflows",
+    "Read replicas or caching strategies are considered for frequently accessed data",
+    "Database selection is justified for each service's use case",
+    "Monitoring alerts for data consistency issues are in place"
+  ]}
+/>
+
+## Self-Check
+
+- Can you explain why shared databases create coupling in microservices?
+- What are the consistency tradeoffs of database per service, and how do you address them?
+- How would you handle a query that needs data from multiple services' databases?
+
+:::info One Takeaway
+Database per service is a constraint that forces good design. Yes, it's harder than shared databases. But that difficulty is intentional—it prevents accidental tight coupling that becomes architectural debt.
+
+:::
+
+## Next Steps
+
+- Implement eventual consistency patterns for cross-service data synchronization
+- Explore CQRS and event sourcing for complex data consistency requirements
+- Design change data capture (CDC) systems to keep services synchronized
+- Study saga patterns for distributed transactions
+
+## References
+
+- Sam Newman, *Building Microservices* (O'Reilly)
+- Chris Richardson, Microservices Patterns: Pattern Language for Microservices
+- Martin Fowler & James Lewis, Microservices

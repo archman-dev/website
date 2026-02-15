@@ -1,0 +1,671 @@
+---
+sidebar_position: 12
+title: "DR, RTO/RPO, Backups and Restores"
+description: "Prepare for disasters with recovery planning, backups, and restore procedures."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [architect, sre]
+keywords: [disaster recovery, RTO, RPO, backups, restores]
+image: /img/archman-social-card.webp
+tags: [availability, reliability, operations]
+hide_title: true
+---
+
+<Hero title="DR, RTO/RPO, Backups and Restores" subtitle="Prepare for disasters with comprehensive recovery strategies." size="large" />
+
+## TL;DR
+
+DR (Disaster Recovery): Plan for worst case. RTO: Recovery Time Objective (how long to recover). RPO: Recovery Point Objective (how much data loss). Backup: Copy of data at point in time. Restore: Recover from backup. Backup strategies: full (everything), incremental (changes only), differential (all changes since last full). Frequency: hourly, daily, weekly depending on RPO. Store backups offsite (not same datacenter). Test restores monthly (if untested, backup is useless). 3-2-1 rule: 3 copies of data, 2 storage types, 1 offsite.
+
+## Learning Objectives
+
+- Define RTO and RPO targets
+- Design backup strategies
+- Implement incremental/differential backups
+- Store backups securely offsite
+- Test restore procedures
+- Automate backup/restore
+- Monitor backup health
+- Calculate backup cost
+
+## Motivating Scenario
+
+Ransomware attack. All data encrypted. Check backup: last backup was 2 weeks old (data loss). Restore: 48 hours (RTO). Cost: 2 weeks data loss + 2 days downtime = millions. Better plan: daily backups + 4 hour restore + immutable backups = minimal loss.
+
+## Core Concepts
+
+### RTO vs. RPO Matrix
+
+```
+                 Low RPO (< 1 day)    High RPO (> 1 week)
+Low RTO (< 1h)    $$$$$$$$$$         $$$$$$$
+                  (Expensive)        (Moderate)
+
+High RTO (> 1d)   $$                 $
+                  (Cold standby)     (Tape backup)
+```
+
+### Backup Strategy Options
+
+| Strategy | Frequency | RPO | RTO | Cost |
+|----------|-----------|-----|-----|------|
+| **Full Daily** | 1x/day | 24h | 4h | $$ |
+| **Incremental Hourly** | 24x/day | 1h | 2h | $$$ |
+| **Continuous Replication** | Real-time | 0 | 1min | $$$$ |
+| **Cold Backup (Tape)** | 1x/week | 7d | 24h | $ |
+
+### 3-2-1 Backup Rule
+
+```
+3 Copies:
+  - Production database (copy 1)
+  - Hot backup (copy 2)
+  - Cold backup / archive (copy 3)
+
+2 Storage Types:
+  - Primary: Database
+  - Secondary: S3 / Cloud Storage
+  - Tertiary: Tape Archive
+
+1 Offsite:
+  - All backups in same region? Not good
+  - 1 copy in different region (protected from regional disaster)
+```
+
+## Implementation
+
+<Tabs>
+<TabItem value="postgres" label="PostgreSQL">
+
+```bash
+#!/bin/bash
+# PostgreSQL backup strategy
+
+# Full backup daily at 2 AM
+0 2 * * * /usr/local/bin/backup-full.sh
+
+# Incremental backup (WAL) every hour
+0 * * * * /usr/local/bin/backup-wal.sh
+
+# Verification: restore test monthly
+0 3 1 * * /usr/local/bin/test-restore.sh
+
+# Upload to S3 (offsite)
+30 2 * * * /usr/local/bin/upload-s3.sh
+
+# cleanup.sh - Remove backups older than 30 days
+find /backups/postgresql -name "*.backup" -mtime +30 -delete
+
+# backup-full.sh - Full backup
+BACKUP_DIR="/backups/postgresql"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/full_backup_$TIMESTAMP.backup"
+
+pg_basebackup -D $BACKUP_FILE -Ft -z
+echo "Full backup completed: $BACKUP_FILE"
+
+# backup-wal.sh - Continuous WAL archiving
+pg_wal_dir="/var/lib/postgresql/15/main/pg_wal"
+archive_dir="/backups/postgresql/wal_archive"
+
+# Already configured in postgresql.conf:
+# archive_mode = on
+# archive_command = 'cp %p /archive/%f'
+
+# test-restore.sh - Monthly restore test
+TEST_DIR="/tmp/pg_restore_test"
+rm -rf $TEST_DIR
+mkdir -p $TEST_DIR
+
+# Restore latest full backup
+LATEST_BACKUP=$(ls -t /backups/postgresql/full_backup_*.backup | head -1)
+pg_basebackup -D $TEST_DIR -c fast -R
+
+# Start test instance
+pg_ctl -D $TEST_DIR start
+sleep 5
+
+# Run queries to verify
+psql -h localhost -U postgres -c "SELECT COUNT(*) FROM orders;"
+
+# Check result
+if [ $? -eq 0 ]; then
+  echo "Restore test PASSED"
+else
+  echo "Restore test FAILED - ALERT!"
+  exit 1
+fi
+
+# Cleanup
+pg_ctl -D $TEST_DIR stop
+
+# upload-s3.sh - Upload to S3 for offsite storage
+BACKUP_FILE=$1
+BUCKET="company-backups-us-west-2"
+
+aws s3 cp $BACKUP_FILE s3://$BUCKET/postgresql/$(basename $BACKUP_FILE) --sse=AES256
+
+# Enable versioning for protection
+aws s3api put-bucket-versioning --bucket $BUCKET --versioning-configuration Status=Enabled
+```
+
+</TabItem>
+<TabItem value="mysql" label="MySQL">
+
+```bash
+#!/bin/bash
+# MySQL backup with xtrabackup
+
+# Full backup daily
+0 1 * * * /backup/full_backup.sh
+
+# Incremental backup every 6 hours
+0 0,6,12,18 * * * /backup/incremental_backup.sh
+
+# Verify backup integrity daily
+0 4 * * * /backup/verify_backup.sh
+
+# full_backup.sh
+BACKUP_DIR="/backups/mysql"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_PATH="$BACKUP_DIR/full_$TIMESTAMP"
+
+mkdir -p $BACKUP_PATH
+
+# Innobackupex (xtrabackup) - full backup
+innobackupex \
+  --user=backup_user \
+  --password=$BACKUP_PASS \
+  --compress \
+  --compress-chunk-size=65536 \
+  $BACKUP_PATH
+
+# Prepare backup (ensure consistency)
+innobackupex --decompress $BACKUP_PATH
+innobackupex --apply-log $BACKUP_PATH
+
+echo "Full backup: $BACKUP_PATH"
+
+# incremental_backup.sh
+BACKUP_DIR="/backups/mysql"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_PATH="$BACKUP_DIR/incremental_$TIMESTAMP"
+
+# Get latest full backup
+FULL_BACKUP=$(ls -dt $BACKUP_DIR/full_* | head -1)
+
+mkdir -p $BACKUP_PATH
+
+# Incremental based on LSN
+innobackupex \
+  --user=backup_user \
+  --password=$BACKUP_PASS \
+  --incremental $BACKUP_PATH \
+  --incremental-basedir=$FULL_BACKUP \
+  --compress
+
+echo "Incremental backup: $BACKUP_PATH"
+
+# verify_backup.sh - Restore to test instance
+LATEST_FULL=$(ls -dt /backups/mysql/full_* | head -1)
+
+# Prepare backup
+innobackupex --apply-log --redo-only $LATEST_FULL
+
+# Apply incremental backups
+for INCR in $(ls -dt /backups/mysql/incremental_* | head -5); do
+  innobackupex --apply-log --redo-only $LATEST_FULL --incremental-dir=$INCR
+done
+
+# Final apply-log
+innobackupex --apply-log $LATEST_FULL
+
+# Restore to test directory
+mkdir -p /tmp/mysql_restore
+innobackupex --copy-back $LATEST_FULL --target-dir=/tmp/mysql_restore
+
+# Start MySQL test instance
+mysql_install_db --datadir=/tmp/mysql_restore
+mysqld --datadir=/tmp/mysql_restore &
+
+# Test queries
+sleep 5
+mysql -u root -e "SELECT COUNT(*) FROM orders;" 2>/dev/null
+
+if [ $? -eq 0 ]; then
+  echo "Backup verification PASSED"
+  pkill mysqld
+else
+  echo "Backup verification FAILED"
+  exit 1
+fi
+```
+
+</TabItem>
+<TabItem value="monitoring" label="Backup Monitoring">
+
+```python
+import boto3
+import json
+from datetime import datetime, timedelta
+from slack_sdk import WebClient
+
+# Monitor backup health
+def check_backup_status():
+    s3 = boto3.client('s3')
+    slack = WebClient(token="xoxb-...")
+    
+    bucket = 'company-backups'
+    prefix = 'postgresql/'
+    
+    # List backups
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    
+    if 'Contents' not in response:
+        slack.chat_postMessage(
+            channel='#ops',
+            text='CRITICAL: No backups found!',
+            blocks=[{
+                'type': 'section',
+                'text': {'type': 'mrkdwn', 'text': '🔴 *No backups found in S3*'}
+            }]
+        )
+        return False
+    
+    # Check backup age
+    latest_backup = max(response['Contents'], key=lambda x: x['LastModified'])
+    backup_age = datetime.now(latest_backup['LastModified'].tzinfo) - latest_backup['LastModified']
+    
+    if backup_age > timedelta(hours=25):
+        slack.chat_postMessage(
+            channel='#ops',
+            text=f'⚠️  Latest backup is {backup_age.total_seconds()/3600:.1f} hours old',
+        )
+        return False
+    
+    # Check backup size (sanity check)
+    backup_size_gb = latest_backup['Size'] / (1024**3)
+    
+    if backup_size_gb < 1:  # Should be larger
+        slack.chat_postMessage(
+            channel='#ops',
+            text=f'⚠️  Backup suspiciously small: {backup_size_gb:.1f}GB',
+        )
+        return False
+    
+    print(f"✓ Latest backup: {latest_backup['Key']}")
+    print(f"  Age: {backup_age.total_seconds()/3600:.1f} hours")
+    print(f"  Size: {backup_size_gb:.1f}GB")
+    
+    return True
+
+def test_restore_monthly():
+    """Monthly restore test"""
+    import subprocess
+    
+    # Run restore test script
+    result = subprocess.run(['/backup/test_restore.sh'], capture_output=True)
+    
+    if result.returncode != 0:
+        slack.chat_postMessage(
+            channel='#ops',
+            text=f'🔴 *Monthly restore test FAILED*\n```{result.stderr.decode()}```'
+        )
+    else:
+        slack.chat_postMessage(
+            channel='#ops',
+            text='✓ Monthly restore test PASSED'
+        )
+
+def backup_report():
+    """Monthly backup report"""
+    s3 = boto3.client('s3')
+    
+    # List all backups
+    response = s3.list_objects_v2(Bucket='company-backups')
+    
+    total_size = sum(obj['Size'] for obj in response.get('Contents', []))
+    backup_count = len(response.get('Contents', []))
+    
+    report = f"""
+    Backup Report
+    =============
+    Total backups: {backup_count}
+    Total size: {total_size / (1024**3):.1f}GB
+    Cost estimate: ${(total_size / (1024**3)) * 0.023:.2f}/month (S3)
+    """
+    
+    print(report)
+
+if __name__ == '__main__':
+    check_backup_status()
+    test_restore_monthly()
+    backup_report()
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Scenarios
+
+### Scenario 1: Regional Disaster
+
+```
+Production:  us-west-2 (primary)
+Backup:      us-east-1 (offsite)
+
+Disaster: us-west-2 datacenter destroyed
+
+Recovery:
+1. Detect (5 min)
+2. Restore from us-east-1 backup (4 hours)
+3. Update DNS to us-east-1 (5 min)
+
+RTO: ~4.5 hours
+RPO: 1 hour (if hourly backups)
+```
+
+### Scenario 2: Ransomware Attack
+
+```
+Attack detected: All production files encrypted
+
+Recovery options:
+1. Incremental backups from last 24 hours (infected)
+2. Full backup from 2 days ago (known good)
+
+Restore from 2 days ago: 4 hours
+Data loss: 2 days
+
+Prevention: Immutable backups (object lock)
+Automatic snap with encryption key rotation
+```
+
+### Scenario 3: Accidental Data Deletion
+
+```
+Customer: "Oops, deleted all orders!"
+Alert: 30 sec (monitoring detects data loss)
+Restore: Select backup from 1 hour ago
+Result: 1 hour data loss, 5 min restore
+
+Without backup: Unrecoverable
+```
+
+## Common Mistakes
+
+### Mistake 1: Never Testing Restore
+
+```
+❌ WRONG: "Backup process works, I'm sure restores work too"
+Result: Can't actually restore when needed
+
+✓ CORRECT: Monthly restore drills
+- Restore to test instance
+- Run queries to verify
+- Document any issues
+```
+
+### Mistake 2: Backup in Same Datacenter
+
+```
+❌ WRONG: Backups on same storage as primary
+Regional disaster = data + backups lost
+
+✓ CORRECT: 3-2-1 rule
+- Primary: local
+- Secondary: different AZ
+- Tertiary: different region
+```
+
+### Mistake 3: Unencrypted Backups
+
+```
+❌ WRONG: Backups with plaintext data
+Anyone with S3 access can read sensitive data
+
+✓ CORRECT: Encryption at rest + in transit
+- S3 encryption (AES-256)
+- TLS for upload
+- Access control (IAM roles)
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "RTO target defined?",
+  "RPO target defined?",
+  "Backup frequency matches RPO?",
+  "3-2-1 backup rule implemented?",
+  "Offsite backups (different region)?",
+  "Encryption enabled?",
+  "Monthly restore tests?",
+  "Automated backup processes?",
+  "Monitoring and alerts?",
+  "Backup retention policy?",
+  "Cost calculated and justified?",
+  "Runbook for disaster recovery?"
+]} />
+
+## Next Steps
+
+1. Define RTO/RPO targets
+2. Design backup strategy
+3. Implement automated backups
+4. Setup offsite storage
+5. Test restore monthly
+6. Monitor backup health
+7. Document runbooks
+
+## References
+
+- <a href="https://www.postgresql.org/docs/current/backup.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL Backup ↗</a>
+- <a href="https://dev.mysql.com/doc/refman/8.0/en/backup-and-recovery.html" target="_blank" rel="nofollow noopener noreferrer">MySQL Backup ↗</a>
+- <a href="https://aws.amazon.com/backup/" target="_blank" rel="nofollow noopener noreferrer">AWS Backup ↗</a>
+
+## Disaster Recovery Patterns
+
+### Recovery Strategies by Scenario
+
+**Data Corruption**:
+- Detection: 30 minutes (monitoring)
+- Recovery: 30 minutes (restore from clean backup)
+- RTO: 1 hour, RPO: varies
+
+**Hardware Failure**:
+- Detection: Immediate (health check)
+- Recovery: 5 minutes (promote replica)
+- RTO: 5 minutes, RPO: 0 (with sync replication)
+
+**Regional Outage**:
+- Detection: 1 minute (DNS health check)
+- Recovery: 5 minutes (failover to backup region)
+- RTO: 5 minutes, RPO: 1 hour
+
+**Human Error** (DELETE * FROM orders):
+- Detection: Hours (if noticed at all)
+- Recovery: Manual restore from backup
+- RTO: 2-4 hours, RPO: 24 hours (point-in-time recovery)
+
+### Backup Versioning
+
+Keep multiple backup versions:
+```
+Daily: 7 versions (1 week)
+Weekly: 4 versions (1 month)
+Monthly: 12 versions (1 year)
+Yearly: Keep all
+
+Example schedule:
+Mon backup → keep daily
+Tue backup → keep daily
+...
+Sun backup → keep as weekly
+
+Month 1 → keep as monthly
+Month 2 → keep as monthly
+...
+```
+
+### Testing Restore Procedures
+
+Types of tests:
+1. **Backup integrity test**: Verify backup file is not corrupted
+2. **Restore to test environment**: Actually restore and verify data
+3. **Failover drill**: Switch to backup system, run production load
+4. **Rollback test**: Can we revert bad changes?
+
+Frequency:
+- Automated daily: Backup integrity
+- Weekly: Restore to test environment
+- Monthly: Failover drill
+- Quarterly: Full DR exercise
+
+### Cold Standby vs. Hot Standby
+
+**Cold Standby**:
+- Backup system powered off
+- Low cost, high RTO
+- Requires manual or automated provisioning
+- Good for: Non-critical services
+
+**Warm Standby**:
+- Backup system running but not serving traffic
+- Medium cost, medium RTO
+- Automatic failover possible
+- Good for: Important services
+
+**Hot Standby** (Active-Active):
+- Both systems serve traffic
+- High cost, low RTO
+- Requires conflict resolution
+- Good for: Critical services
+
+## Backup Encryption and Security
+
+### Encryption Best Practices
+
+```bash
+# Encrypt backup at rest
+aws s3api put-object \
+  --bucket company-backups \
+  --key postgresql/backup.sql.gz \
+  --sse ServerSideEncryption=AES256 \
+  --body backup.sql.gz
+
+# Or use AWS KMS
+aws s3api put-object \
+  --bucket company-backups \
+  --key postgresql/backup.sql.gz \
+  --sse aws:kms \
+  --sse-kms-key-id arn:aws:kms:region:account:key/id \
+  --body backup.sql.gz
+
+# TLS for upload
+curl --tlsv1.2 -u user:pass -T backup.sql.gz \
+  https://backup-server.example.com/uploads/
+```
+
+### Access Control
+
+Principle of least privilege:
+```
+- Backup creator: Read/Write
+- Restore operator: Read only (for backups > 30 days old)
+- Auditor: List and metadata only
+```
+
+### Off-site Storage
+
+Protect against regional disasters:
+- Primary: us-west-2
+- Backup: us-east-1 (different region)
+- Archive: Cloud vault or tape (immutable)
+
+Multi-cloud backup:
+- AWS S3 for primary
+- Google Cloud Storage for secondary
+- Azure Backup for tertiary
+
+## Recovery Metrics Dashboard
+
+Track:
+- Last successful backup timestamp
+- Backup size and growth trend
+- Restore test success rate
+- Time to restore (measured weekly)
+- Data loss estimate (RPO)
+- Recovery cost estimate
+
+Alerts:
+- Backup failed (24h no successful backup)
+- Backup size anomaly (2x increase)
+- Restore test failure
+- Backup older than RPO target
+
+## Conclusion
+
+Disaster Recovery is critical for production systems:
+- RTO/RPO targets drive architecture
+- Backups are useless if untested
+- Multiple backup versions needed
+- Encrypt and store offsite
+
+Implement:
+1. Daily backups
+2. Monthly restore tests
+3. Offsite storage (different region)
+4. Automated monitoring
+5. Documented runbooks
+
+Cost is small vs. downtime risk. Budget accordingly.
+
+### Incremental vs. Differential Backups
+
+**Full backup** (weekly):
+```
+Monday: Full backup (all data) - 2 hours, 50GB
+```
+
+**Incremental** (daily, faster):
+```
+Tuesday: Incremental (only Tuesday changes) - 10 min, 5GB
+Wednesday: Incremental (Wed changes) - 10 min, 6GB
+Thursday: Incremental (Thu changes) - 10 min, 4GB
+
+To restore Thursday: Full (Monday) + Incremental (Tue) + Incremental (Wed) + Incremental (Thu)
+Restore time: 2.5 hours
+```
+
+**Differential** (daily, restore faster):
+```
+Tuesday: Differential (all changes since Mon) - 15 min, 8GB
+Wednesday: Differential (all changes since Mon) - 20 min, 10GB
+Thursday: Differential (all changes since Mon) - 18 min, 9GB
+
+To restore Thursday: Full (Monday) + Differential (Thursday)
+Restore time: 2.1 hours (faster than incremental)
+```
+
+Choice:
+- Incremental: Slower restore, faster backup, less storage
+- Differential: Faster restore, slower backup, more storage
+- Hybrid: Full weekly + Differential daily
+
+### Backup Validation Process
+
+Monthly validation checklist:
+
+```
+☐ Backup file exists and is not corrupted
+☐ Backup file is encrypted
+☐ Backup is older than X days (detect stale backups)
+☐ Restore to test environment succeeds
+☐ Data integrity checks pass (checksums, record counts)
+☐ Application can start with restored data
+☐ Basic smoke tests pass
+☐ Document any issues found
+```
+

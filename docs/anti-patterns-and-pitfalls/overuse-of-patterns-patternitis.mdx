@@ -1,0 +1,521 @@
+---
+sidebar_position: 13
+title: "Overuse of Patterns: Patternitis"
+description: "Using design patterns everywhere, even when simple solutions work better."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 8
+lastReviewed: "2025-02-14"
+personas: [engineer, architect]
+keywords: [anti-pattern, patternitis, overuse, design-patterns, over-engineering]
+image: /img/archman-social-card.webp
+tags: [anti-pattern, patternitis, over-engineering, design-patterns]
+hide_title: true
+---
+
+<Hero
+  title="Overuse of Patterns: Patternitis"
+  subtitle="Using design patterns everywhere, even when simple solutions work better."
+  imageAlt="Overuse of Patterns: Patternitis illustration"
+  size="large"
+/>
+
+## TL;DR
+
+Patternitis is the obsession with applying design patterns to every situation, even when a simple solution is better. A Factory pattern to create a single object type. A Strategy pattern when an if-statement suffices. Patterns add complexity: more classes, more indirection, more code to understand. Use patterns only when they solve a real problem, not because you learned them recently. Over-engineering with patterns makes code harder to read and maintain.
+
+## Learning Objectives
+
+You will be able to:
+- Identify when patterns add value vs. complexity
+- Understand the cost-benefit tradeoff of design patterns
+- Recognize situations where simple solutions are better
+- Apply patterns only when justified
+- Refactor over-engineered code back to simplicity
+- Know when to use and not use common patterns
+
+## Motivating Scenario
+
+You join a team that just learned about design patterns. The codebase is now a museum of patterns:
+
+Creating a User requires:
+- UserFactory (creates Users)
+- UserFactoryInterface (UserFactory implements it)
+- UserBuilderPattern (alternative builder)
+- UserSingletonFactory (singleton variant)
+
+Creating a user now requires:
+
+```java
+UserFactory factory = UserFactoryImplementation.getInstance();
+User user = factory.createUser("john", "john@example.com");
+```
+
+Instead of simply:
+
+```java
+User user = new User("john", "john@example.com");
+```
+
+Four classes for what should be a constructor call. The team spent time building this "architecture" instead of shipping features.
+
+## Core Explanation
+
+**What is Patternitis?**
+
+The compulsive application of design patterns beyond their useful scope. Patterns treated as rules rather than tools. Learning a pattern and seeing it everywhere.
+
+**Why Patterns Exist**
+
+Patterns solve specific problems:
+- **Factory**: When object creation is complex (multiple subclasses, conditional logic)
+- **Strategy**: When algorithm choice varies at runtime
+- **Observer**: When changes in one object must trigger updates in many
+- **Decorator**: When adding behavior dynamically
+
+**When Patterns Create Waste**
+
+- Creating one User with User constructor: no need for Factory
+- One algorithm with if/else: no need for Strategy
+- Defensive coding "we might change it later": YAGNI (You Aren't Gonna Need It)
+- The problem doesn't exist yet: speculative abstraction
+
+**The Cost of Patterns**
+
+- More classes to understand and maintain
+- More indirection (harder to trace code flow)
+- More files to change for simple modifications
+- Larger cognitive load for new developers
+- Usually unnecessary until the problem actually manifests
+
+## Code Examples
+
+<Tabs>
+  <TabItem value="python" label="Python">
+    <Tabs>
+      <TabItem value="bad" label="Patternitis (Anti-pattern)">
+        ```python title="user_module.py" showLineNumbers
+        from abc import ABC, abstractmethod
+        from enum import Enum
+
+        # Over-engineered for a simple problem
+
+        class UserType(Enum):
+            REGULAR = "regular"
+            PREMIUM = "premium"
+
+        class UserBuilder(ABC):
+            """Abstract builder"""
+            @abstractmethod
+            def build(self) -> 'User':
+                pass
+
+        class RegularUserBuilder(UserBuilder):
+            """Concrete builder for regular users"""
+            def __init__(self, name, email):
+                self.name = name
+                self.email = email
+
+            def build(self):
+                return User(self.name, self.email, UserType.REGULAR)
+
+        class PremiumUserBuilder(UserBuilder):
+            """Concrete builder for premium users"""
+            def __init__(self, name, email, plan):
+                self.name = name
+                self.email = email
+                self.plan = plan
+
+            def build(self):
+                return User(self.name, self.email, UserType.PREMIUM, plan=self.plan)
+
+        class UserFactory(ABC):
+            """Abstract factory"""
+            @abstractmethod
+            def create_user(self) -> User:
+                pass
+
+        class RegularUserFactory(UserFactory):
+            """Factory for regular users"""
+            def __init__(self, name, email):
+                self.builder = RegularUserBuilder(name, email)
+
+            def create_user(self):
+                return self.builder.build()
+
+        class PremiumUserFactory(UserFactory):
+            """Factory for premium users"""
+            def __init__(self, name, email, plan):
+                self.builder = PremiumUserBuilder(name, email, plan)
+
+            def create_user(self):
+                return self.builder.build()
+
+        class User:
+            """The actual user class (was simple)"""
+            def __init__(self, name, email, user_type, plan=None):
+                self.name = name
+                self.email = email
+                self.user_type = user_type
+                self.plan = plan
+
+        # Usage is now incredibly complex:
+        factory = RegularUserFactory("john", "john@example.com")
+        user = factory.create_user()
+
+        # Instead of: user = User("john", "john@example.com", UserType.REGULAR)
+
+        # This added:
+        # - 4 new classes
+        # - 50+ lines of boilerplate
+        # - Multiple layers of indirection
+        # - For a simple problem!
+        ```
+      </TabItem>
+      <TabItem value="good" label="Simple Solution (Solution)">
+        ```python title="user_module.py" showLineNumbers
+        from enum import Enum
+
+        class UserType(Enum):
+            REGULAR = "regular"
+            PREMIUM = "premium"
+
+        class User:
+            """Simple user class - use directly"""
+            def __init__(self, name: str, email: str, user_type: UserType = UserType.REGULAR, plan: str = None):
+                self.name = name
+                self.email = email
+                self.user_type = user_type
+                self.plan = plan
+
+            @classmethod
+            def create_regular(cls, name: str, email: str):
+                """Alternative: class method as factory if needed"""
+                return cls(name, email, UserType.REGULAR)
+
+            @classmethod
+            def create_premium(cls, name: str, email: str, plan: str):
+                """Alternative: class method as factory if needed"""
+                return cls(name, email, UserType.PREMIUM, plan=plan)
+
+        # Usage is simple and clear:
+        # Direct construction
+        user1 = User("john", "john@example.com")
+
+        # Or using class methods if you prefer
+        user2 = User.create_premium("jane", "jane@example.com", "pro")
+
+        # 10 lines instead of 50+
+        # 1 class instead of 5
+        # Clear and maintainable
+        ```
+      </TabItem>
+    </Tabs>
+  </TabItem>
+  <TabItem value="go" label="Go">
+    <Tabs>
+      <TabItem value="bad" label="Patternitis (Anti-pattern)">
+        ```go title="user.go" showLineNumbers
+        package user
+
+        // Over-engineered with pattern fever
+
+        type UserType string
+
+        const (
+            Regular UserType = "regular"
+            Premium UserType = "premium"
+        )
+
+        // Abstract strategy for user creation
+        type UserCreationStrategy interface {
+            Create(name, email string) *User
+        }
+
+        type RegularUserStrategy struct{}
+
+        func (s *RegularUserStrategy) Create(name, email string) *User {
+            return &User{Name: name, Email: email, Type: Regular}
+        }
+
+        type PremiumUserStrategy struct {
+            plan string
+        }
+
+        func (s *PremiumUserStrategy) Create(name, email string) *User {
+            return &User{Name: name, Email: email, Type: Premium, Plan: s.plan}
+        }
+
+        // Factory that uses the strategy
+        type UserFactory struct {
+            strategy UserCreationStrategy
+        }
+
+        func (f *UserFactory) CreateUser(name, email string) *User {
+            return f.strategy.Create(name, email)
+        }
+
+        type User struct {
+            Name  string
+            Email string
+            Type  UserType
+            Plan  string
+        }
+
+        // Usage: way too complex
+        factory := &UserFactory{
+            strategy: &RegularUserStrategy{},
+        }
+        user := factory.CreateUser("john", "john@example.com")
+
+        // All this for just creating an object!
+        ```
+      </TabItem>
+      <TabItem value="good" label="Simple Solution (Solution)">
+        ```go title="user.go" showLineNumbers
+        package user
+
+        type UserType string
+
+        const (
+            Regular UserType = "regular"
+            Premium UserType = "premium"
+        )
+
+        type User struct {
+            Name  string
+            Email string
+            Type  UserType
+            Plan  string
+        }
+
+        // Simple: use struct directly
+        user1 := &User{
+            Name:  "john",
+            Email: "john@example.com",
+            Type:  Regular,
+        }
+
+        // Or provide constructor functions only if needed
+        func NewRegularUser(name, email string) *User {
+            return &User{
+                Name:  name,
+                Email: email,
+                Type:  Regular,
+            }
+        }
+
+        func NewPremiumUser(name, email, plan string) *User {
+            return &User{
+                Name:  name,
+                Email: email,
+                Type:  Premium,
+                Plan:  plan,
+            }
+        }
+
+        // Usage is simple and clear
+        user2 := NewPremiumUser("jane", "jane@example.com", "pro")
+
+        // 20 lines instead of 50+
+        // 1 type instead of 5+
+        // Easy to understand
+        ```
+      </TabItem>
+    </Tabs>
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js">
+    <Tabs>
+      <TabItem value="bad" label="Patternitis (Anti-pattern)">
+        ```javascript title="user.js" showLineNumbers
+        // Over-engineered pattern fever
+
+        class UserCreationStrategy {
+            create(name, email) {
+                throw new Error('Must implement create()');
+            }
+        }
+
+        class RegularUserStrategy extends UserCreationStrategy {
+            create(name, email) {
+                return new User(name, email, 'regular');
+            }
+        }
+
+        class PremiumUserStrategy extends UserCreationStrategy {
+            constructor(plan) {
+                super();
+                this.plan = plan;
+            }
+
+            create(name, email) {
+                return new User(name, email, 'premium', this.plan);
+            }
+        }
+
+        class UserFactory {
+            constructor(strategy) {
+                this.strategy = strategy;
+            }
+
+            createUser(name, email) {
+                return this.strategy.create(name, email);
+            }
+        }
+
+        class User {
+            constructor(name, email, type = 'regular', plan = null) {
+                this.name = name;
+                this.email = email;
+                this.type = type;
+                this.plan = plan;
+            }
+        }
+
+        // Usage: incredibly complex for a simple thing
+        const factory = new UserFactory(new RegularUserStrategy());
+        const user = factory.createUser('john', 'john@example.com');
+
+        // All this for what should be: new User('john', 'john@example.com')
+        ```
+      </TabItem>
+      <TabItem value="good" label="Simple Solution (Solution)">
+        ```javascript title="user.js" showLineNumbers
+        // Simple and clear: use directly
+
+        class User {
+            constructor(name, email, type = 'regular', plan = null) {
+                this.name = name;
+                this.email = email;
+                this.type = type;
+                this.plan = plan;
+            }
+
+            static createRegular(name, email) {
+                return new User(name, email, 'regular');
+            }
+
+            static createPremium(name, email, plan) {
+                return new User(name, email, 'premium', plan);
+            }
+        }
+
+        // Usage is simple and clear:
+        const user1 = new User('john', 'john@example.com');
+
+        // Or use static methods if preferred
+        const user2 = User.createPremium('jane', 'jane@example.com', 'pro');
+
+        // 15 lines instead of 50+
+        // 1 class instead of 5+
+        // Easy to understand and maintain
+        ```
+      </TabItem>
+    </Tabs>
+  </TabItem>
+</Tabs>
+
+## Patterns and Pitfalls
+
+### Why Patternitis Develops
+
+**1. Pattern Learning Enthusiasm**
+New developer learns Factory pattern, sees it as a solution for everything.
+
+**2. "Enterprise" Cargo Cult**
+Big systems use patterns, therefore patterns = sophistication.
+
+**3. Resume-Driven Development**
+"I'll use patterns to impress in code reviews."
+
+**4. Defensive Programming**
+"We might need this flexibility someday." Patterns built speculatively.
+
+### When Patterns Are Justified
+
+- **Complexity**: Actual problem requires the pattern
+- **Reuse**: Same pattern used in 2-3 places
+- **Clarity**: Pattern clarifies intent more than simple code
+- **Flexibility**: Actual requirement (not speculative) for flexibility
+
+## When This Happens / How to Detect
+
+**Red Flags:**
+
+1. More classes than necessary for the problem
+2. Interfaces with single implementation
+3. Factory that does almost nothing
+4. Strategy with two strategies for simple conditional
+5. Comments like "Uses Factory pattern for flexibility"
+6. 5+ files needed for a simple operation
+7. "We might need to support X in the future" (speculative)
+
+## How to Fix / Refactor
+
+### Step 1: Identify Over-Engineered Patterns
+
+Mark code using patterns with no clear benefit.
+
+### Step 2: Inline or Remove
+
+Replace:
+```java
+factory.create() → new Class()
+strategy.execute() → simple method call
+```
+
+### Step 3: Add Patterns Back When Needed
+
+When you actually need flexibility (2-3 use cases), add the pattern back.
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Can this problem be solved without patterns?",
+  "Are there 2-3 real use cases for this pattern?",
+  "Does the pattern reduce complexity or add it?",
+  "Could a new developer understand this without pattern knowledge?",
+  "Is the pattern solving a current problem or a speculative one?",
+  "Would removing this pattern break functionality?",
+  "Is there clear documentation why the pattern is needed?",
+  "Are interfaces/abstract classes used or just indirection?",
+  "Does the code have more classes than necessary?"
+]} />
+
+## Showcase
+
+<Showcase
+  title="Signals of Patternitis"
+  sections={[
+    {label: "Anti-Signals (Problems)", body: "- Factory for single object type\n- Interfaces with one implementation\n- Strategy for if-else logic\n- 5+ classes for simple operation\n- 'Flexibility' as justification without real use cases", tone: "warning"}, {label: "Healthy Signals (Solutions)", body: "- Direct object construction when simple\n- Patterns used for 2-3 actual use cases\n- Clear justification for each pattern\n- Simple solution when it works\n- Patterns added when needed, not speculatively", tone: "positive"}
+  ]}
+/>
+
+## Self-Check
+
+1. **Can you explain why this pattern is needed?** If your answer is "flexibility someday," it's patternitis.
+
+2. **Are there 2-3 places using this pattern?** If only one, you don't need the pattern.
+
+3. **Would removing this pattern break functionality?** If no, it's over-engineering.
+
+## Next Steps
+
+- **Audit**: Identify patterns in your codebase with single use case
+- **Remove**: Inline simple patterns, use direct construction
+- **Simplify**: Replace Strategy with functions where applicable
+- **Test**: Ensure functionality doesn't change
+- **Document**: If keeping patterns, document why
+
+## One Takeaway
+
+<Admonition type="info">
+Use the simplest solution that works. Add patterns only when you have 2-3 real use cases, not when you imagine needing them.
+</Admonition>
+
+## References
+
+1. <a href="https://refactoring.guru/design-patterns" target="_blank" rel="nofollow noopener noreferrer">Design Patterns Reference ↗️</a>
+2. <a href="https://en.wikipedia.org/wiki/YAGNI" target="_blank" rel="nofollow noopener noreferrer">YAGNI: You Aren't Gonna Need It ↗️</a>
+3. <a href="https://www.martinfowler.com/bliki/AnemicDomainModel.html" target="_blank" rel="nofollow noopener noreferrer">Code Smell: Over-Engineering ↗️</a>
+4. <a href="https://refactoring.guru/refactoring/techniques/simplify-method" target="_blank" rel="nofollow noopener noreferrer">Simplification Techniques ↗️</a>

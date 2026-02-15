@@ -1,0 +1,1038 @@
+---
+sidebar_position: 2
+title: "Event Storming Workshops"
+description: "Collaborate with business stakeholders to understand domain complexity through events."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [architect, product, engineer]
+keywords: [event storming, domain modeling, collaborative design, DDD, business logic]
+image: /img/archman-social-card.webp
+tags: [domain-driven-design, collaboration, design-workshops]
+hide_title: true
+---
+
+<Hero title="Event Storming Workshops" subtitle="Unlock domain knowledge by visualizing business events and their causal relationships." size="large" />
+
+## TL;DR
+
+Event storming is a collaborative workshop technique where domain experts, product managers, and engineers visualize business processes as sequences of events. Events are immutable facts (OrderCreated, PaymentProcessed, ShipmentConfirmed). Participants brainstorm events, arrange them chronologically, identify actors and commands, spot inconsistencies, and agree on bounded contexts. It's not a UML diagram—it's a conversation tool. Maximum 2-hour sessions with 5-10 participants. The output: shared domain understanding, identified subdomains, clear event flows, and reduced miscommunication.
+
+## Learning Objectives
+
+- Understand what events are in DDD and why they matter
+- Run event storming workshops effectively
+- Identify actors, commands, aggregates, and bounded contexts
+- Design event-driven architectures from domain knowledge
+- Translate workshop outputs into code (event handlers, sagas)
+- Avoid common pitfalls (wrong participants, too many events)
+- Scale event storming to large domains
+- Bridge communication gap between business and engineering
+
+## Motivating Scenario
+
+A checkout flow. Business says "after payment, we ship immediately." Engineering says "we need 2 days for fraud checks." Product doesn't know the delay exists. During event storming, you discover the fraud check is a parallel process that can run while shipment is prepared. You visualize: PaymentProcessed → FraudCheckStarted (parallel) → ShipmentPrepared → FraudCheckCompleted → ShipmentConfirmed. Now everyone understands the process. Without event storming, these misunderstandings live in email threads and get baked into code.
+
+## Core Concepts
+
+### What is an Event?
+
+An event is an immutable fact about something that happened in the domain. Written in past tense.
+
+```
+PaymentProcessed
+OrderShipped
+RefundInitiated
+InventoryReserved
+CustomerBlocked
+```
+
+Events flow through time. They're not requests; they're records of what occurred.
+
+### Types of Events in Event Storming
+
+| Type | Definition | Example |
+|------|-----------|---------|
+| **Domain Event** | Business-critical event triggering processes | OrderCreated, PaymentFailed |
+| **Integration Event** | Event crossing system boundaries | UserRegistered (sent to email service) |
+| **Policy Event** | Triggered by business rules (commands) | WarehouseNotified (when OrderCreated) |
+| **Hotspot Event** | Uncertain/complex event needing clarification | FraudDetected (unclear how to handle) |
+
+### Workshop Phases
+
+1. **Chaotic Exploration** (30 min): Dump all events on the wall. No order, no organization. Unconstrained brainstorm.
+2. **Event Sequencing** (40 min): Arrange events on a timeline. Identify gaps, redundancy, confusion.
+3. **Actor Identification** (30 min): Who triggers events? Users? Systems? Scheduled jobs?
+4. **Command Mapping** (20 min): What commands cause events? CreateOrder → OrderCreated.
+5. **Aggregate Identification** (20 min): Which events belong together? Order aggregate: OrderCreated, OrderConfirmed, OrderShipped.
+6. **Bounded Context Definition** (30 min): Where do boundaries exist? Separate contexts: Orders, Payments, Shipping.
+
+Total time: 2-3 hours, ideally with breaks.
+
+## Practical Workshop Example: E-Commerce Domain
+
+### Step 1: Chaotic Exploration
+
+Dump events on index cards or sticky notes:
+
+```
+CustomerRegistered
+CartCreated
+CartItemAdded
+CartItemRemoved
+CheckoutStarted
+PaymentAuthorized
+PaymentProcessed
+OrderCreated
+FraudCheckStarted
+FraudCheckPassed
+FraudCheckFailed
+InventoryReserved
+InventoryReservationFailed
+ShipmentPrepared
+ShipmentShipped
+DeliveryArrived
+DeliveryFailed
+RefundInitiated
+RefundProcessed
+OrderCancelled
+CustomerContacted
+```
+
+### Step 2: Event Sequencing & Timeline
+
+Arrange events chronologically on a physical or digital timeline:
+
+```
+Timeline:
+─────────────────────────────────────────────────────────────
+
+Customer        Cart          Checkout        Payment      Fulfillment      Delivery
+─────────        ─────         ────────────     ──────      ────────────     ────────
+
+  │             │               │               │            │                │
+  ├─ CustomerRegistered        │               │            │                │
+  │             │               │               │            │                │
+  │             ├─ CartCreated  │               │            │                │
+  │             │               │               │            │                │
+  │             ├─ CartItemAdded│               │            │                │
+  │             │ (multiple)    │               │            │                │
+  │             │               │               │            │                │
+  │             │               ├─ CheckoutStarted│          │                │
+  │             │               │               │            │                │
+  │             │               │               ├─ PaymentAuthorized│         │
+  │             │               │               │            │                │
+  │             │               │               ├─ FraudCheckStarted│         │
+  │             │               │               │            │                │
+  │             │               │               ├─ FraudCheckPassed│          │
+  │             │               │               │            │                │
+  │             │               │               ├─ PaymentProcessed│─┐        │
+  │             │               │               │            │ │   │         │
+  │             │               │               │            │ ├─ InventoryReserved
+  │             │               │               │            │ │   │         │
+  │             │               │               │            │ ├─ ShipmentPrepared
+  │             │               │               │            │ │   │         │
+  │             │               │               │            │ ├─ ShipmentShipped─┐
+  │             │               │               │            │                   │
+  │             │               │               │            │                   ├─ DeliveryArrived
+  │             │               │               │            │                   │
+  │             │               │               ├─ RefundInitiated (if needed) │
+  │             │               │               │                             │
+  │             │               │               └─ RefundProcessed            │
+  │             │               │                                             │
+  │             │               └─ OrderCancelled (at any time before ship)   │
+```
+
+### Step 3: Identify Actors (Who & What)
+
+| Actor | Triggers | Events Produced |
+|-------|----------|-----------------|
+| Customer | Registers, adds items to cart, initiates checkout | CustomerRegistered, CartItemAdded, CheckoutStarted |
+| Checkout Service | Validates and initiates payment | PaymentAuthorized |
+| Payment Service | Processes payment | PaymentProcessed, PaymentFailed |
+| Fraud Service | Runs fraud checks asynchronously | FraudCheckPassed, FraudCheckFailed |
+| Fulfillment Service | Reserves inventory, prepares shipment | InventoryReserved, ShipmentPrepared, ShipmentShipped |
+| Delivery Service | Tracks delivery | DeliveryArrived, DeliveryFailed |
+
+### Step 4: Commands (What Actions Trigger Events?)
+
+```
+Commands (User/System Actions) → Domain Events
+─────────────────────────────────────────────
+
+RegisterCustomer() → CustomerRegistered
+CreateCart() → CartCreated
+AddItemToCart(item) → CartItemAdded
+InitiateCheckout() → CheckoutStarted
+AuthorizePayment(amount) → PaymentAuthorized
+ProcessPayment(amount) → PaymentProcessed | PaymentFailed
+CheckFraud(order) → FraudCheckStarted
+ReserveInventory(items) → InventoryReserved | InventoryReservationFailed
+PrepareShipment(order) → ShipmentPrepared
+ShipOrder(order) → ShipmentShipped
+InitiateRefund(order) → RefundInitiated
+ProcessRefund(order) → RefundProcessed
+CancelOrder(order) → OrderCancelled
+```
+
+### Step 5: Identify Aggregates
+
+Aggregates group related events. An aggregate is the consistency boundary.
+
+```
+Order Aggregate:
+  - OrderCreated
+  - CartItemAdded (until checkout)
+  - CheckoutStarted
+  - PaymentProcessed
+  - OrderConfirmed (or OrderFailed)
+
+Payment Aggregate:
+  - PaymentAuthorized
+  - PaymentProcessed
+  - PaymentFailed
+  - RefundProcessed
+
+Shipment Aggregate:
+  - InventoryReserved
+  - ShipmentPrepared
+  - ShipmentShipped
+  - DeliveryArrived
+
+FraudCheck Aggregate:
+  - FraudCheckStarted
+  - FraudCheckPassed
+  - FraudCheckFailed
+```
+
+### Step 6: Identify Bounded Contexts & Subdomains
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    E-Commerce Domain                    │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────────────────┐  ┌────────────────────────┐  │
+│  │  Ordering Context    │  │  Payment Context      │  │
+│  │  ─────────────────   │  │  ──────────────────   │  │
+│  │ - OrderCreated       │  │ - PaymentAuthorized   │  │
+│  │ - OrderConfirmed     │  │ - PaymentProcessed    │  │
+│  │ - OrderCancelled     │  │ - PaymentFailed       │  │
+│  │ - ItemAdded          │  │ - RefundProcessed     │  │
+│  └──────────────────────┘  └────────────────────────┘  │
+│         │                          │                    │
+│         │ subscribes to            │ publishes events   │
+│         │ PaymentProcessed         │                    │
+│         │                          │                    │
+│  ┌──────────────────────┐  ┌────────────────────────┐  │
+│  │  Fulfillment Context │  │  Fraud Context        │  │
+│  │  ──────────────────  │  │  ──────────────────   │  │
+│  │ - InventoryReserved  │  │ - FraudCheckStarted   │  │
+│  │ - ShipmentPrepared   │  │ - FraudCheckPassed    │  │
+│  │ - ShipmentShipped    │  │ - FraudCheckFailed    │  │
+│  │ - DeliveryArrived    │  │                       │  │
+│  └──────────────────────┘  └────────────────────────┘  │
+│         │                          │                    │
+│         │ subscribes to            │ subscribes to     │
+│         │ OrderConfirmed           │ OrderCreated      │
+│         │ (after fraud check)      │                   │
+│         │                          │                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Code Examples: From Workshop to Implementation
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
+from enum import Enum
+
+# Events from workshop
+@dataclass(frozen=True)
+class OrderCreated:
+    """Immutable event from domain"""
+    order_id: str
+    customer_id: str
+    items: List[dict]
+    total_amount: float
+    created_at: datetime
+
+@dataclass(frozen=True)
+class PaymentProcessed:
+    order_id: str
+    amount: float
+    transaction_id: str
+    processed_at: datetime
+
+@dataclass(frozen=True)
+class FraudCheckStarted:
+    order_id: str
+    amount: float
+    customer_id: str
+    started_at: datetime
+
+@dataclass(frozen=True)
+class FraudCheckPassed:
+    order_id: str
+    passed_at: datetime
+
+@dataclass(frozen=True)
+class FraudCheckFailed:
+    order_id: str
+    reason: str
+    failed_at: datetime
+
+@dataclass(frozen=True)
+class ShipmentPrepared:
+    order_id: str
+    warehouse_id: str
+    prepared_at: datetime
+
+@dataclass(frozen=True)
+class ShipmentShipped:
+    order_id: str
+    tracking_number: str
+    shipped_at: datetime
+
+# Event store - captures all events
+class EventStore:
+    def __init__(self):
+        self.events: List = []
+        self.subscribers: dict = {}
+    
+    def append(self, event):
+        """Append event to immutable log"""
+        self.events.append(event)
+        self._notify_subscribers(event)
+    
+    def subscribe(self, event_type, handler):
+        """Subscribe to events"""
+        if event_type not in self.subscribers:
+            self.subscribers[event_type] = []
+        self.subscribers[event_type].append(handler)
+    
+    def _notify_subscribers(self, event):
+        """Notify all handlers for this event type"""
+        event_type = type(event)
+        if event_type in self.subscribers:
+            for handler in self.subscribers[event_type]:
+                handler(event)
+    
+    def get_events_for_aggregate(self, aggregate_id):
+        """Retrieve all events for an aggregate"""
+        return [e for e in self.events if hasattr(e, 'order_id') and e.order_id == aggregate_id]
+
+# Aggregates (from workshop step 5)
+class OrderAggregate:
+    """Order aggregate - consistency boundary"""
+    def __init__(self, order_id):
+        self.order_id = order_id
+        self.events = []
+        self.status = "pending"
+        self.items = []
+        self.amount = 0.0
+    
+    def create_order(self, customer_id, items, total_amount):
+        """Command that creates domain event"""
+        event = OrderCreated(
+            order_id=self.order_id,
+            customer_id=customer_id,
+            items=items,
+            total_amount=total_amount,
+            created_at=datetime.now()
+        )
+        self.events.append(event)
+        self.status = "created"
+        return event
+    
+    def confirm_order(self):
+        """Can only confirm after fraud check passes"""
+        event = OrderConfirmed(order_id=self.order_id, confirmed_at=datetime.now())
+        self.events.append(event)
+        self.status = "confirmed"
+        return event
+
+@dataclass(frozen=True)
+class OrderConfirmed:
+    order_id: str
+    confirmed_at: datetime
+
+# Bounded context: Fraud domain
+class FraudCheckService:
+    """Fraud context - independent consistency boundary"""
+    def __init__(self, event_store):
+        self.event_store = event_store
+        self.pending_checks = {}
+        
+        # Subscribe to relevant events from other contexts
+        event_store.subscribe(OrderCreated, self.on_order_created)
+    
+    def on_order_created(self, event: OrderCreated):
+        """React to OrderCreated event from Ordering context"""
+        print(f"Fraud: Checking order {event.order_id}")
+        
+        fraud_event = FraudCheckStarted(
+            order_id=event.order_id,
+            amount=event.total_amount,
+            customer_id=event.customer_id,
+            started_at=datetime.now()
+        )
+        
+        self.event_store.append(fraud_event)
+        self.pending_checks[event.order_id] = fraud_event
+        
+        # Simulate fraud check logic
+        if event.total_amount > 10000:
+            # High-value orders need manual review
+            result = FraudCheckFailed(
+                order_id=event.order_id,
+                reason="manual_review_required",
+                failed_at=datetime.now()
+            )
+        else:
+            # Low-value orders auto-pass
+            result = FraudCheckPassed(
+                order_id=event.order_id,
+                passed_at=datetime.now()
+            )
+        
+        self.event_store.append(result)
+
+# Bounded context: Fulfillment domain
+class FulfillmentService:
+    """Fulfillment context - owns shipment logic"""
+    def __init__(self, event_store):
+        self.event_store = event_store
+        
+        # Subscribe to events indicating readiness to fulfill
+        event_store.subscribe(FraudCheckPassed, self.on_fraud_check_passed)
+    
+    def on_fraud_check_passed(self, event: FraudCheckPassed):
+        """React to FraudCheckPassed from Fraud context"""
+        print(f"Fulfillment: Preparing shipment for {event.order_id}")
+        
+        # Emit shipment events
+        shipment_event = ShipmentPrepared(
+            order_id=event.order_id,
+            warehouse_id="warehouse-001",
+            prepared_at=datetime.now()
+        )
+        
+        self.event_store.append(shipment_event)
+
+# Workshop output: Saga (cross-context orchestration)
+class OrderFulfillmentSaga:
+    """
+    Saga coordinates multi-context process:
+    Order Created → Fraud Check → Shipment Preparation → Shipment
+    """
+    def __init__(self, event_store):
+        self.event_store = event_store
+        event_store.subscribe(OrderConfirmed, self.on_order_confirmed)
+        event_store.subscribe(FraudCheckFailed, self.on_fraud_check_failed)
+    
+    def on_order_confirmed(self, event: OrderConfirmed):
+        """Compensating transaction: order is ready to fulfill"""
+        print(f"Saga: Order {event.order_id} confirmed, initiating fulfillment")
+        # Orchestrate fulfillment process
+    
+    def on_fraud_check_failed(self, event: FraudCheckFailed):
+        """Compensating transaction: cancel order"""
+        print(f"Saga: Order {event.order_id} failed fraud check ({event.reason}), cancelling")
+        # Emit OrderCancelled event
+
+# Example usage
+event_store = EventStore()
+fraud_service = FraudCheckService(event_store)
+fulfillment_service = FulfillmentService(event_store)
+saga = OrderFulfillmentSaga(event_store)
+
+# Simulate workflow
+order = OrderAggregate("order-123")
+order_created = order.create_order("cust-456", [{"sku": "item-1", "qty": 2}], 5000.0)
+event_store.append(order_created)
+
+# Events cascade through contexts automatically
+print("\nEvents in store:")
+for event in event_store.events:
+    print(f"  - {type(event).__name__}: {event}")
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package ecommerce
+
+import (
+	"fmt"
+	"time"
+)
+
+// Events from workshop
+type Event interface {
+	AggregateID() string
+	EventType() string
+}
+
+type OrderCreated struct {
+	OrderID   string
+	CustomerID string
+	Items     []OrderItem
+	Amount    float64
+	CreatedAt time.Time
+}
+
+func (e OrderCreated) AggregateID() string { return e.OrderID }
+func (e OrderCreated) EventType() string   { return "OrderCreated" }
+
+type OrderItem struct {
+	SKU string
+	Qty int
+}
+
+type PaymentProcessed struct {
+	OrderID     string
+	Amount      float64
+	TransactionID string
+	ProcessedAt time.Time
+}
+
+func (e PaymentProcessed) AggregateID() string { return e.OrderID }
+func (e PaymentProcessed) EventType() string   { return "PaymentProcessed" }
+
+type FraudCheckStarted struct {
+	OrderID   string
+	CustomerID string
+	Amount    float64
+	StartedAt time.Time
+}
+
+func (e FraudCheckStarted) AggregateID() string { return e.OrderID }
+func (e FraudCheckStarted) EventType() string   { return "FraudCheckStarted" }
+
+type FraudCheckPassed struct {
+	OrderID string
+	PassedAt time.Time
+}
+
+func (e FraudCheckPassed) AggregateID() string { return e.OrderID }
+func (e FraudCheckPassed) EventType() string   { return "FraudCheckPassed" }
+
+type FraudCheckFailed struct {
+	OrderID string
+	Reason  string
+	FailedAt time.Time
+}
+
+func (e FraudCheckFailed) AggregateID() string { return e.OrderID }
+func (e FraudCheckFailed) EventType() string   { return "FraudCheckFailed" }
+
+type ShipmentPrepared struct {
+	OrderID   string
+	WarehouseID string
+	PreparedAt time.Time
+}
+
+func (e ShipmentPrepared) AggregateID() string { return e.OrderID }
+func (e ShipmentPrepared) EventType() string   { return "ShipmentPrepared" }
+
+// Event Store
+type EventHandler func(event Event)
+
+type EventStore struct {
+	events      []Event
+	subscribers map[string][]EventHandler
+}
+
+func NewEventStore() *EventStore {
+	return &EventStore{
+		events:      make([]Event, 0),
+		subscribers: make(map[string][]EventHandler),
+	}
+}
+
+func (es *EventStore) Append(event Event) {
+	es.events = append(es.events, event)
+	es.notifySubscribers(event)
+}
+
+func (es *EventStore) Subscribe(eventType string, handler EventHandler) {
+	es.subscribers[eventType] = append(es.subscribers[eventType], handler)
+}
+
+func (es *EventStore) notifySubscribers(event Event) {
+	eventType := event.EventType()
+	if handlers, ok := es.subscribers[eventType]; ok {
+		for _, handler := range handlers {
+			handler(event)
+		}
+	}
+}
+
+func (es *EventStore) GetEventsForAggregate(aggregateID string) []Event {
+	var result []Event
+	for _, event := range es.events {
+		if event.AggregateID() == aggregateID {
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
+// Order Aggregate
+type OrderAggregate struct {
+	OrderID string
+	Events  []Event
+	Status  string
+}
+
+func NewOrderAggregate(orderID string) *OrderAggregate {
+	return &OrderAggregate{
+		OrderID: orderID,
+		Events:  make([]Event, 0),
+		Status:  "pending",
+	}
+}
+
+func (oa *OrderAggregate) CreateOrder(customerID string, items []OrderItem, amount float64) OrderCreated {
+	event := OrderCreated{
+		OrderID:    oa.OrderID,
+		CustomerID: customerID,
+		Items:      items,
+		Amount:     amount,
+		CreatedAt:  time.Now(),
+	}
+	oa.Events = append(oa.Events, event)
+	oa.Status = "created"
+	return event
+}
+
+// Fraud Bounded Context
+type FraudService struct {
+	eventStore *EventStore
+}
+
+func NewFraudService(es *EventStore) *FraudService {
+	fs := &FraudService{eventStore: es}
+	es.Subscribe("OrderCreated", fs.OnOrderCreated)
+	return fs
+}
+
+func (fs *FraudService) OnOrderCreated(event Event) {
+	orderCreated, ok := event.(OrderCreated)
+	if !ok {
+		return
+	}
+
+	fmt.Printf("Fraud: Checking order %s\n", orderCreated.OrderID)
+
+	startEvent := FraudCheckStarted{
+		OrderID:    orderCreated.OrderID,
+		CustomerID: orderCreated.CustomerID,
+		Amount:     orderCreated.Amount,
+		StartedAt:  time.Now(),
+	}
+	fs.eventStore.Append(startEvent)
+
+	// Determine fraud status
+	var resultEvent Event
+	if orderCreated.Amount > 10000 {
+		resultEvent = FraudCheckFailed{
+			OrderID:  orderCreated.OrderID,
+			Reason:   "manual_review_required",
+			FailedAt: time.Now(),
+		}
+	} else {
+		resultEvent = FraudCheckPassed{
+			OrderID:  orderCreated.OrderID,
+			PassedAt: time.Now(),
+		}
+	}
+	fs.eventStore.Append(resultEvent)
+}
+
+// Fulfillment Bounded Context
+type FulfillmentService struct {
+	eventStore *EventStore
+}
+
+func NewFulfillmentService(es *EventStore) *FulfillmentService {
+	fs := &FulfillmentService{eventStore: es}
+	es.Subscribe("FraudCheckPassed", fs.OnFraudCheckPassed)
+	return fs
+}
+
+func (fs *FulfillmentService) OnFraudCheckPassed(event Event) {
+	fraudPassed, ok := event.(FraudCheckPassed)
+	if !ok {
+		return
+	}
+
+	fmt.Printf("Fulfillment: Preparing shipment for %s\n", fraudPassed.OrderID)
+
+	shipmentEvent := ShipmentPrepared{
+		OrderID:     fraudPassed.OrderID,
+		WarehouseID: "warehouse-001",
+		PreparedAt:  time.Now(),
+	}
+	fs.eventStore.Append(shipmentEvent)
+}
+
+// Example usage
+func ExampleWorkshop() {
+	es := NewEventStore()
+	fraud := NewFraudService(es)
+	fulfillment := NewFulfillmentService(es)
+
+	_ = fraud
+	_ = fulfillment
+
+	// Create order
+	order := NewOrderAggregate("order-123")
+	orderEvent := order.CreateOrder("cust-456", []OrderItem{
+		{SKU: "item-1", Qty: 2},
+	}, 5000.0)
+
+	es.Append(orderEvent)
+
+	// Events cascade through contexts
+	fmt.Println("\nEvents in store:")
+	for _, event := range es.events {
+		fmt.Printf("  - %s: %v\n", event.EventType(), event)
+	}
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// Events from workshop
+class OrderCreated {
+  constructor(orderId, customerId, items, amount) {
+    this.orderId = orderId;
+    this.customerId = customerId;
+    this.items = items;
+    this.amount = amount;
+    this.createdAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'OrderCreated'; }
+}
+
+class PaymentProcessed {
+  constructor(orderId, amount, transactionId) {
+    this.orderId = orderId;
+    this.amount = amount;
+    this.transactionId = transactionId;
+    this.processedAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'PaymentProcessed'; }
+}
+
+class FraudCheckStarted {
+  constructor(orderId, customerId, amount) {
+    this.orderId = orderId;
+    this.customerId = customerId;
+    this.amount = amount;
+    this.startedAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'FraudCheckStarted'; }
+}
+
+class FraudCheckPassed {
+  constructor(orderId) {
+    this.orderId = orderId;
+    this.passedAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'FraudCheckPassed'; }
+}
+
+class FraudCheckFailed {
+  constructor(orderId, reason) {
+    this.orderId = orderId;
+    this.reason = reason;
+    this.failedAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'FraudCheckFailed'; }
+}
+
+class ShipmentPrepared {
+  constructor(orderId, warehouseId) {
+    this.orderId = orderId;
+    this.warehouseId = warehouseId;
+    this.preparedAt = new Date();
+  }
+
+  aggregateId() { return this.orderId; }
+  eventType() { return 'ShipmentPrepared'; }
+}
+
+// Event Store
+class EventStore {
+  constructor() {
+    this.events = [];
+    this.subscribers = new Map();
+  }
+
+  append(event) {
+    this.events.push(event);
+    this.notifySubscribers(event);
+  }
+
+  subscribe(eventType, handler) {
+    if (!this.subscribers.has(eventType)) {
+      this.subscribers.set(eventType, []);
+    }
+    this.subscribers.get(eventType).push(handler);
+  }
+
+  notifySubscribers(event) {
+    const eventType = event.eventType();
+    if (this.subscribers.has(eventType)) {
+      const handlers = this.subscribers.get(eventType);
+      handlers.forEach(handler => handler(event));
+    }
+  }
+
+  getEventsForAggregate(aggregateId) {
+    return this.events.filter(e => e.aggregateId() === aggregateId);
+  }
+}
+
+// Order Aggregate
+class OrderAggregate {
+  constructor(orderId) {
+    this.orderId = orderId;
+    this.events = [];
+    this.status = 'pending';
+  }
+
+  createOrder(customerId, items, amount) {
+    const event = new OrderCreated(this.orderId, customerId, items, amount);
+    this.events.push(event);
+    this.status = 'created';
+    return event;
+  }
+}
+
+// Fraud Bounded Context
+class FraudService {
+  constructor(eventStore) {
+    this.eventStore = eventStore;
+    this.pendingChecks = new Map();
+    
+    // Subscribe to relevant events
+    eventStore.subscribe('OrderCreated', (event) => this.onOrderCreated(event));
+  }
+
+  onOrderCreated(event) {
+    console.log(`Fraud: Checking order ${event.orderId}`);
+
+    const startEvent = new FraudCheckStarted(event.orderId, event.customerId, event.amount);
+    this.eventStore.append(startEvent);
+
+    // Determine fraud status
+    let resultEvent;
+    if (event.amount > 10000) {
+      resultEvent = new FraudCheckFailed(event.orderId, 'manual_review_required');
+    } else {
+      resultEvent = new FraudCheckPassed(event.orderId);
+    }
+
+    this.eventStore.append(resultEvent);
+  }
+}
+
+// Fulfillment Bounded Context
+class FulfillmentService {
+  constructor(eventStore) {
+    this.eventStore = eventStore;
+    
+    // Subscribe to completion signals
+    eventStore.subscribe('FraudCheckPassed', (event) => this.onFraudCheckPassed(event));
+  }
+
+  onFraudCheckPassed(event) {
+    console.log(`Fulfillment: Preparing shipment for ${event.orderId}`);
+
+    const shipmentEvent = new ShipmentPrepared(event.orderId, 'warehouse-001');
+    this.eventStore.append(shipmentEvent);
+  }
+}
+
+// Example usage
+const es = new EventStore();
+const fraud = new FraudService(es);
+const fulfillment = new FulfillmentService(es);
+
+// Create order
+const order = new OrderAggregate('order-123');
+const orderEvent = order.createOrder('cust-456', [{sku: 'item-1', qty: 2}], 5000.0);
+
+es.append(orderEvent);
+
+// Events cascade through contexts
+console.log('\nEvents in store:');
+es.events.forEach(event => {
+  console.log(`  - ${event.eventType()}: ${JSON.stringify(event)}`);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Case Study: Payment Processing Domain
+
+A fintech company held an event storming workshop for payment processing. Initial assumption: "payment happens, then we confirm." Reality: 7 sequential processes (KYC, fraud, reserve funds, process, settlement, reconciliation, audit logging). Without event storming, engineers built a linear system; payment failures left the system in inconsistent states. Event storming revealed: each process is independent; failures in one don't block others. They redesigned to emit events: PaymentAuthorized, KYCPassed, FraudCheckPassed, etc. Failures became recoverable via event replay.
+
+### Case Study: Microservices Boundaries
+
+A retail company had 8 engineers but 15 microservices with unclear boundaries. Event storming revealed 3 core bounded contexts: Orders, Inventory, Shipping. 8 microservices were consolidated to 3. Communication patterns became clear: Orders emits OrderConfirmed → Inventory subscribed. No more direct service-to-service calls.
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: Wrong Participants
+
+```
+❌ Only engineers attend
+   - Misses business logic
+   - Requirements hidden in email
+   - Implementation is guesswork
+
+✅ Include:
+   - Product/Business (knows domain logic)
+   - Customer support (knows edge cases)
+   - Engineers (knows constraints)
+   - 1 facilitator (drives conversation)
+```
+
+### Mistake 2: Too Many Events or Commands
+
+```
+❌ WRONG: Mixing too many domains
+   - CustomerLiked (user engagement)
+   - ProductViewed (analytics)
+   - CartAbandoned (marketing)
+   - PaymentProcessed (payment)
+   - [20 more...]
+   Result: Unfocused, no clear bounded contexts
+
+✅ CORRECT: Separate workshops per domain
+   - First workshop: Order domain only
+   - Second workshop: Payment domain only
+   - Third workshop: Shipping domain only
+```
+
+### Mistake 3: Treating Events as Commands
+
+```
+❌ WRONG: "Execute PaymentProcessed" - events aren't commands
+   Events are immutable facts. You don't execute them.
+
+✅ CORRECT:
+   Command: ProcessPayment()
+   Event: PaymentProcessed
+   
+   Commands are imperative (do this)
+   Events are declarative (this happened)
+```
+
+### Mistake 4: No Bounded Contexts
+
+```
+❌ WRONG: All events in one model
+   - No clear ownership
+   - Tight coupling
+   - Hard to scale teams
+
+✅ CORRECT: Define bounded contexts from event clusters
+   - Order context: OrderCreated, OrderConfirmed, OrderCancelled
+   - Payment context: PaymentAuthorized, PaymentProcessed, RefundProcessed
+   - Each context owns its events
+   - Contexts communicate via published events
+```
+
+## Production Considerations
+
+### Scaling Event Storming
+
+For large domains (100+ events):
+
+- **Split by business capability**: Orders, Payments, Shipping, etc.
+- **Multiple 2-hour workshops**: One per subdomain.
+- **Hierarchy of models**: Big picture model, then detailed models per context.
+- **Documentation**: Translate workshop outputs to domain language specification (DLS).
+
+### Translating to Code
+
+After workshop, bridge workshop to codebase:
+
+1. **Create event classes**: OrderCreated, PaymentProcessed, etc.
+2. **Build aggregates**: Order aggregate handles OrderCreated, OrderConfirmed.
+3. **Implement event store**: Persist all events immutably.
+4. **Create event handlers**: FraudService subscribes to OrderCreated.
+5. **Build sagas**: Orchestrate cross-context processes.
+
+### Maintaining Domain Knowledge
+
+- **Workshops are point-in-time**: Revisit annually or when major changes occur.
+- **Document decisions**: Why did you choose this bounded context?
+- **Onboard with events**: New engineers learn domain from event sequences.
+
+## Self-Check
+
+- What is an event vs. a command?
+- Why are bounded contexts important?
+- What should you do if participants disagree on event flow?
+- How do you handle events that could happen out of order?
+- When should you split an event storming session?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "All business events identified?",
+  "Commands mapped to events?",
+  "Aggregates grouped correctly?",
+  "Bounded contexts defined?",
+  "Event sequences form valid timeline?",
+  "No ordering dependencies between unrelated events?",
+  "Integration points identified?",
+  "Compensation flows for failures?",
+  "Hotspots resolved?",
+  "Participants agree on model?",
+  "Output documented (diagram, text)?",
+  "Code structure matches bounded contexts?"
+]} />
+
+## Next Steps
+
+1. **Schedule workshop** — 2-3 hours, 5-10 participants
+2. **Prepare materials** — Index cards, whiteboard/digital board
+3. **Run session** — Explore → Sequence → Map → Identify
+4. **Document model** — Event flow diagram, bounded contexts
+5. **Implement sagas** — Cross-context orchestration
+6. **Create event handlers** — Subscribe to domain events
+
+## References
+
+- <a href="https://www.eventstorming.com/" target="_blank" rel="nofollow noopener noreferrer">Event Storming Official ↗</a>
+- <a href="https://vaughnvernon.com/book-ddd-distilled/" target="_blank" rel="nofollow noopener noreferrer">Domain-Driven Design Distilled ↗</a>
+- <a href="https://martinfowler.com/bliki/EventSourcing.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Event Sourcing ↗</a>

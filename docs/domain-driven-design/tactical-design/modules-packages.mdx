@@ -1,0 +1,362 @@
+---
+sidebar_position: 8
+title: "Modules and Packages"
+description: "Organize code structure to reflect domain concepts"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 11
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [modules, packages, code-organization, domain-structure, package-design, namespace]
+image: /img/archman-social-card.webp
+tags: [ddd, tactical-design, modules, code-organization, structure]
+hide_title: true
+---
+
+<Hero title="Modules and Packages" subtitle="Organize code structure to reflect domain concepts" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Organize packages by domain concepts, not technical layers. Instead of `/controllers`, `/services`, `/models`, structure as `/orders`, `/payments`, `/shipping`. Each package contains related entities, value objects, services, and repositories cohesively grouped around a business concept. This reflects the ubiquitous language directly in your code structure, makes domain boundaries explicit, reduces inter-package dependencies, and enables teams to own distinct business capabilities independently. Package structure is a visible representation of your domain architecture—let it communicate domain intent to everyone reading the code.
+
+## Learning Objectives
+
+- Organize code by domain concepts instead of technical layers
+- Keep cohesive domain logic together in packages
+- Make inter-package dependencies explicit and minimal
+- Reflect bounded contexts in package structure
+- Balance package granularity—not too large, not too fine-grained
+- Use package visibility to control access to domain internals
+- Align packages with team ownership
+
+## Motivating Scenario
+
+You're building an e-commerce platform with multiple business domains: orders, payments, shipping, inventory, and notifications. As the system grows, it becomes harder to find related code. Is `OrderService` in `/services`? Is the `Order` entity in `/models` or `/domain/entities`? Does the shipping logic belong with orders or in its own area? Code organization by technical layer makes it increasingly difficult to understand the domain structure and makes it hard for teams to own clear domain areas.
+
+## Core Concepts
+
+<Figure
+  caption="Package Organization by Domain vs. Technical Layer"
+  diagram={`graph TB
+    subgraph Domain["Domain-Centric (Recommended)"]
+        O["orders/"]
+        OP["orders: Order, OrderItem, OrderRepository, OrderFactory"]
+        P["payments/"]
+        PP["payments: Payment, PaymentMethod, PaymentService"]
+        S["shipping/"]
+        SP["shipping: Shipment, ShippingAddress, ShippingService"]
+        O --> OP
+        P --> PP
+        S --> SP
+    end
+
+    subgraph Tech["Technical Layers (Avoid in DDD)"]
+        M["models/"]
+        Se["services/"]
+        R["repositories/"]
+        C["controllers/"]
+        M --> MM["Order, Payment, Shipment, Inventory..."]
+        Se --> SEM["OrderService, PaymentService, ShippingService..."]
+        R --> RM["OrderRepository, PaymentRepository..."]
+        C --> CM["OrderController, PaymentController..."]
+    end
+
+    style Domain fill:#c8e6c9
+    style Tech fill:#ffccbc`}
+/>
+
+## Organization Patterns
+
+### By Domain Concepts (Preferred)
+
+```
+com.myapp.orders/
+  Order (entity)
+  OrderItem (entity)
+  OrderStatus (enum)
+  OrderRepository (interface)
+  OrderFactory
+  OrderConfirmed (event)
+
+com.myapp.payments/
+  Payment (entity)
+  PaymentMethod (value object)
+  PaymentRepository (interface)
+  PaymentProcessingService
+  PaymentSucceeded (event)
+
+com.myapp.shipping/
+  Shipment (entity)
+  ShippingAddress (value object)
+  ShippingService
+  ShipmentRepository
+```
+
+Each package is a mini-bounded context. Clear dependencies flow between them.
+
+### By Technical Layer (Avoid in DDD)
+
+```
+com.myapp/
+  models/      <- All entities
+  services/    <- All services
+  controllers/ <- All controllers
+  repositories/<- All repositories
+```
+
+This obscures domain structure. Hard to understand relationships.
+
+## Package Rules
+
+1. **Package = Bounded Context or Subdomain**: Each package represents a distinct, cohesive domain area
+2. **Consistency**: Keep all related classes together—entities, value objects, services, repositories
+3. **Dependencies**: Minimize and make explicit; avoid circular dependencies
+4. **Visibility**: Only expose aggregate roots and repository interfaces; keep implementation internal
+5. **Naming**: Use domain terminology, not technical words (e.g., `/orders` not `/order-services`)
+6. **Size**: A team of 3-8 people should be able to own and understand one package
+7. **Coupling**: Low coupling between packages, high cohesion within packages
+
+## Practical Example - Recommended Structure
+
+<Tabs>
+<TabItem value="structure" label="Package Structure">
+
+```
+ecommerce/
+
+  catalog/
+    Product (public entity)
+    ProductId (public value object)
+    ProductRepository (public interface)
+    ProductNotFound (public exception)
+
+    internal/
+      ProductFactory.java
+      ProductValidator.java
+      ProductEvents.java
+      ProductQueryService.java (CQRS read model)
+
+  orders/
+    Order (public entity)
+    OrderItem (public value object - exposed because it's part of Order)
+    OrderStatus (public enum)
+    OrderRepository (public interface)
+    OrderNotFoundException (public exception)
+
+    internal/
+      OrderFactory.java
+      OrderPricingService.java (domain service)
+      OrderConfirmedEvent.java
+      OrderCalculationEngine.java
+
+  payments/
+    Payment (public entity)
+    PaymentMethod (public value object)
+    PaymentStatus (public enum)
+    PaymentGateway (public interface)
+    PaymentFailedException (public exception)
+
+    internal/
+      PaymentProcessor.java (domain service)
+      CardChargeService.java (gateway adapter)
+      PaymentSucceededEvent.java
+      RefundHandler.java
+
+  shipping/
+    Shipment (public entity)
+    ShippingAddress (public value object)
+    ShippingRepository (public interface)
+    TrackingNumber (public value object)
+
+    internal/
+      CarrierIntegration.java
+      ShippingCalculator.java (domain service)
+      ShipmentDispatchedEvent.java
+
+  notifications/
+    NotificationPreference (public value object)
+    NotificationRepository (public interface)
+
+    internal/
+      EmailNotificationService.java
+      SMSNotificationService.java
+      NotificationHandler.java
+
+  shared/
+    (Minimal shared code)
+    DomainException.java
+    Entity.java (base class)
+    ValueObject.java (base class)
+```
+
+</TabItem>
+<TabItem value="dependencies" label="Dependency Flow">
+
+```
+notifications
+  ↑ (listens to events from)
+  |
+orders → payments
+  ↑       ↑
+  └─ catalog
+
+shipping
+  ↑
+  └─ orders (depends on Order IDs)
+     ↑
+     └─ catalog (depends on Product info)
+
+payments (independent, no dependencies)
+```
+
+Key properties:
+- No circular dependencies
+- Dependencies flow in one direction
+- Most packages are independent
+- Coupling is explicit and intentional
+
+</TabItem>
+</Tabs>
+
+### What Goes in Each Package
+
+**Public Classes** (aggregate roots, value objects, repository interfaces):
+- Can be imported and used by other packages
+- Define the package's contract
+- Represent stable, domain-meaningful concepts
+
+**Internal Classes** (factories, services, event handlers):
+- Implementation details
+- Used only within the package
+- Can be refactored without affecting other packages
+
+**Example: Orders Package Public Interface**
+
+```java
+// Orders package can import/use these
+import com.ecommerce.orders.Order;
+import com.ecommerce.orders.OrderRepository;
+import com.ecommerce.orders.OrderStatus;
+
+// Users cannot import these—they're internal
+// (These would be in internal/ or package-private in Java)
+// import com.ecommerce.orders.internal.OrderFactory;  // NOT accessible
+// import com.ecommerce.orders.internal.OrderPricingService;  // NOT accessible
+```
+
+## When to Use / Not Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Organize by Domain (Recommended)",
+    points: [
+      "Each package represents a business capability or bounded context",
+      "Code related to a domain concept is grouped together",
+      "Dependencies between packages are explicit and minimal",
+      "New developers can understand domain structure from package layout",
+      "Teams can own packages independently",
+      "Reflects organizational structure and DDD principles"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Organize by Technical Layer (Anti-Pattern in DDD)",
+    points: [
+      "Separates related code: entities in /models, services in /services, repos in /repositories",
+      "Scatters domain logic across the project",
+      "Makes it hard to understand what's related",
+      "Creates tight coupling across packages",
+      "Difficult for teams to own specific domains",
+      "Doesn't reflect DDD bounded contexts"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  title="Patterns and Pitfalls"
+  sections={[
+    {
+      label: "Pitfall: Technical Layer Organization",
+      body: "Organizing as `/controllers`, `/services`, `/models`, `/repositories`. This scatters code related to a domain concept across multiple directories, making it hard to understand what goes together.\n\n**Fix**: Group by domain concept: `/orders` contains Order entity, OrderRepository, OrderFactory, and order-related services. Related code is cohesive."
+    },
+    {
+      label: "Pitfall: Circular Dependencies Between Packages",
+      body: "Orders package imports from Payments, Payments imports from Orders. Creates tight coupling and makes packages harder to test and evolve independently.\n\n**Fix**: Make dependencies unidirectional. Use domain events for async communication when packages need to react to each other's state changes."
+    },
+    {
+      label: "Pitfall: Everything Public",
+      body: "Every class in a package is public. No distinction between external API and internal implementation. Makes refactoring risky.\n\n**Fix**: Only expose aggregate roots, repository interfaces, and domain exceptions. Keep factories, services, and implementation details package-private or in `internal/` folders."
+    },
+    {
+      label: "Pitfall: Packages Too Large",
+      body: "One package tries to handle too many concepts. Becomes hard to understand and evolve. Too much for one team to own.\n\n**Fix**: If a package grows beyond what one team can own, split it by subdomain. Example: split Orders into Orders (one-time purchases) and Subscriptions (recurring)."
+    },
+    {
+      label: "Pitfall: Packages Too Fine-Grained",
+      body: "Every class gets its own package. Creates excessive directory nesting and requires too many imports. Fragmented domain logic.\n\n**Fix**: Group classes around a cohesive business concept. One package = one bounded context or major subdomain."
+    },
+    {
+      label: "Pattern: Clear Public API Per Package",
+      body: "Each package has a clear set of public classes that define its contract: aggregate roots, repositories, and exceptions. Implementation is hidden.\n\n**How to Use**: Import only from the public API. Test internal classes in isolation. Hide implementation complexity."
+    },
+    {
+      label: "Pattern: Internal Organization",
+      body: "Within a package, further organize into subdirectories: `entity/`, `value/`, `repository/`, `service/`, `event/`, `internal/`. Shows the structure but keeps related code in one package.\n\n**How to Use**: Helps navigate large packages without violating domain-centric organization principle."
+    },
+    {
+      label: "Pattern: Package Ownership",
+      body: "Assign clear ownership: one team owns the orders package, another owns payments. Teams are responsible for evolution and backward compatibility of their package's public API.\n\n**How to Use**: Makes it clear who to talk to about changes. Enables teams to make independent decisions about their domain."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Are packages named after domain concepts?",
+  "Does each package contain cohesive domain logic?",
+  "Are dependencies between packages documented and minimal?",
+  "Are circular dependencies eliminated?",
+  "Is the public API of each package clear?",
+  "Are internal helpers and factories non-public?",
+  "Can you understand domain structure from package layout?",
+  "Do package names use ubiquitous language?",
+  "Are tests co-located with tested code?",
+  "Would a new developer understand structure quickly?"
+]} />
+
+## Self-Check
+
+1. **Should you have separate packages per entity?**
+   No. Group related entities by domain concept. One package per bounded context or significant subdomain. Example: keep Order and OrderItem together in `/orders`, not separate packages.
+
+2. **Where do tests go?**
+   Mirror the package structure in your test directory. `/orders/OrderTest.java` goes in `/test/orders/OrderTest.java`. This co-locates tests with the code they test.
+
+3. **How do you handle shared utilities?**
+   Create minimal shared packages only for truly generic code. Examples: base Entity class, ValueObject base class. Most utilities should belong to the packages that use them. Avoid creating a `/util` package that everything depends on.
+
+4. **Can one team own multiple packages?**
+   Yes, if they're related. A team might own both Orders and Fulfillment if they're tightly coupled. But generally, one clear owner per package works best.
+
+5. **How do you identify package boundaries?**
+   Look at your bounded contexts from DDD analysis. Each context should map to a package. If you don't have a clear context map yet, look at your team structure—teams often form around natural boundaries.
+
+<Callout type="info">
+**One Takeaway**: Package structure is architecture made visible. Organize by domain concepts, not technical layers. Make dependencies explicit and minimal. This makes the codebase naturally express the ubiquitous language and domain structure. A new developer reading your directory structure should understand your domain.
+</Callout>
+
+## Next Steps
+
+1. **Bounded Contexts**: Learn to identify domain boundaries that drive package structure
+2. **Aggregates**: Understand aggregate design within packages
+3. **Dependencies**: Read about dependency management between packages
+4. **Microservices**: See how packages evolve into microservice boundaries
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Martin, R. C. (2017). *Clean Architecture*. Prentice Hall.
+- Vernon, V. (2013). *Implementing Domain-Driven Design*. Addison-Wesley.

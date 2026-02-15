@@ -1,0 +1,975 @@
+---
+sidebar_position: 5
+title: "RED and USE Methodologies"
+description: "Measure system performance using RED (for services) and USE (for resources)."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, sre]
+keywords: [RED, USE, metrics, observability, performance]
+image: /img/archman-social-card.webp
+tags: [observability, metrics, operations]
+hide_title: true
+---
+
+<Hero title="RED and USE Methodologies" subtitle="Measure what matters: request rate, errors, duration (RED) and resource utilization (USE)." size="large" />
+
+## TL;DR
+
+RED: Rate (requests/sec), Errors (failed requests), Duration (latency). For measuring services. USE: Utilization (% busy), Saturation (queue depth), Errors (errors). For measuring resources (CPU, memory, disk). RED tells you if service is healthy; USE tells you why. Use both together. RED alerts on user-visible issues; USE alerts on capacity and bottlenecks. Don't measure everything; focus on the golden signals.
+
+## Learning Objectives
+
+- Implement RED metrics for microservices
+- Implement USE metrics for infrastructure
+- Understand when to alert on each metric
+- Correlate RED and USE to diagnose problems
+- Avoid metric fatigue (measuring too much)
+- Scale metrics to multiple services and resources
+- Build dashboards around RED and USE
+
+## Motivating Scenario
+
+Service is slow. You see: CPU at 50%, memory at 30%, disk at 20% (all green from USE perspective). But RED metrics show: rate 1000 req/s, 10% error rate (red). Problem: high latency despite low resource utilization. Root cause: N+1 query in code, not resource exhaustion. Without RED, you'd optimize infrastructure (wasted). With RED, you find code problem.
+
+## Core Concepts
+
+### RED Methodology (Service Level)
+
+**Rate**: Requests per second
+**Errors**: Failed requests (4xx, 5xx, timeouts)
+**Duration**: Latency (p50, p95, p99)
+
+Measures from the request perspective—what users see.
+
+### USE Methodology (Resource Level)
+
+**Utilization**: Percent time resource is busy
+**Saturation**: Queue depth, tasks waiting
+**Errors**: Resource errors (I/O errors, timeouts)
+
+Measures from the infrastructure perspective—what limits performance.
+
+### RED vs. USE
+
+| Metric | RED | USE |
+|--------|-----|-----|
+| **Scope** | Service behavior | Resource behavior |
+| **Example** | HTTP requests | CPU, disk, memory |
+| **User-visible** | Yes | No (indirect) |
+| **Alerts** | Yes | Yes |
+| **Dashboard** | Service dashboard | Infrastructure dashboard |
+
+## Implementation
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from prometheus_client import Counter, Histogram, Gauge
+import time
+import psutil
+import os
+
+# RED Metrics
+request_rate = Counter(
+    'http_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint']
+)
+
+request_errors = Counter(
+    'http_requests_errors_total',
+    'HTTP request errors',
+    ['method', 'endpoint', 'status_code']
+)
+
+request_duration = Histogram(
+    'http_request_duration_seconds',
+    'HTTP request duration',
+    ['method', 'endpoint'],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+)
+
+# USE Metrics (Resource level)
+cpu_utilization = Gauge(
+    'cpu_utilization_percent',
+    'CPU utilization percentage'
+)
+
+cpu_saturation = Gauge(
+    'cpu_saturation',
+    'CPU saturation (load avg / core count)'
+)
+
+memory_utilization = Gauge(
+    'memory_utilization_percent',
+    'Memory utilization percentage'
+)
+
+memory_saturation = Gauge(
+    'memory_page_faults_per_sec',
+    'Memory page faults per second'
+)
+
+disk_utilization = Gauge(
+    'disk_utilization_percent',
+    'Disk utilization percentage',
+    ['device']
+)
+
+disk_saturation = Gauge(
+    'disk_io_wait_percent',
+    'Disk I/O wait percentage',
+    ['device']
+)
+
+io_errors = Counter(
+    'io_errors_total',
+    'I/O errors',
+    ['device']
+)
+
+# RED Middleware
+class REDMiddleware:
+    def __init__(self):
+        self.request_count = 0
+        self.error_count = 0
+    
+    def handle_request(self, method, endpoint, handler):
+        """Track RED metrics"""
+        start = time.time()
+        
+        try:
+            result = handler()
+            request_rate.labels(method=method, endpoint=endpoint).inc()
+            self.request_count += 1
+            
+            duration = time.time() - start
+            request_duration.labels(method=method, endpoint=endpoint).observe(duration)
+            
+            return result
+        
+        except Exception as e:
+            status_code = getattr(e, 'status_code', 500)
+            request_errors.labels(
+                method=method, 
+                endpoint=endpoint, 
+                status_code=status_code
+            ).inc()
+            self.error_count += 1
+            
+            duration = time.time() - start
+            request_duration.labels(method=method, endpoint=endpoint).observe(duration)
+            
+            raise
+
+# USE Metric Collector
+class USEMetricsCollector:
+    def __init__(self, interval_seconds=10):
+        self.interval = interval_seconds
+        self.cpu_count = os.cpu_count()
+        self.prev_io_counters = None
+    
+    def update_cpu_metrics(self):
+        """Collect CPU metrics"""
+        # Utilization: percent of CPU in use
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_utilization.set(cpu_percent)
+        
+        # Saturation: load average / core count
+        load_avg = os.getloadavg()[0]  # 1-minute average
+        saturation = (load_avg / self.cpu_count) * 100
+        cpu_saturation.set(saturation)
+    
+    def update_memory_metrics(self):
+        """Collect memory metrics"""
+        # Utilization: percent of memory in use
+        mem = psutil.virtual_memory()
+        memory_utilization.set(mem.percent)
+        
+        # Saturation: page faults
+        try:
+            # Major page faults per second
+            # (Major = had to load from disk)
+            swap = psutil.swap_memory()
+            page_faults = swap.sin / self.interval if swap.sin > 0 else 0
+            memory_saturation.set(page_faults)
+        except:
+            pass
+    
+    def update_disk_metrics(self):
+        """Collect disk metrics"""
+        # Utilization: percent of disk space used
+        disk = psutil.disk_usage('/')
+        disk_utilization.labels(device='/').set(disk.percent)
+        
+        # Saturation: I/O wait
+        try:
+            io_counters = psutil.disk_io_counters(perdisk=True)
+            if self.prev_io_counters:
+                for device, counters in io_counters.items():
+                    prev = self.prev_io_counters.get(device)
+                    if prev:
+                        io_time_change = counters.read_time + counters.write_time - \
+                                        (prev.read_time + prev.write_time)
+                        io_wait = (io_time_change / 1000) / self.interval * 100
+                        disk_saturation.labels(device=device).set(io_wait)
+                        
+                        # Track errors
+                        if counters.read_merged_count > prev.read_merged_count:
+                            io_errors.labels(device=device).inc()
+            
+            self.prev_io_counters = io_counters
+        except:
+            pass
+    
+    def collect_all(self):
+        """Collect all USE metrics"""
+        self.update_cpu_metrics()
+        self.update_memory_metrics()
+        self.update_disk_metrics()
+
+# Alerting based on RED and USE
+class MetricsAlerter:
+    @staticmethod
+    def check_red_alert(rate, errors, duration_p99):
+        """Alert on RED metrics"""
+        alerts = []
+        
+        # Error rate > 1%
+        if rate > 0:
+            error_ratio = errors / rate
+            if error_ratio > 0.01:
+                alerts.append({
+                    'type': 'HIGH_ERROR_RATE',
+                    'value': error_ratio,
+                    'threshold': 0.01,
+                    'message': f"Error rate {error_ratio*100:.1f}% is too high"
+                })
+        
+        # p99 latency > 1 second
+        if duration_p99 > 1.0:
+            alerts.append({
+                'type': 'HIGH_LATENCY',
+                'value': duration_p99,
+                'threshold': 1.0,
+                'message': f"p99 latency {duration_p99:.2f}s exceeds 1 second"
+            })
+        
+        # Rate drop (outage)
+        if rate == 0 and rate != 0:  # Rate was > 0, now 0
+            alerts.append({
+                'type': 'OUTAGE',
+                'value': rate,
+                'threshold': 1,
+                'message': "Request rate dropped to zero"
+            })
+        
+        return alerts
+    
+    @staticmethod
+    def check_use_alert(cpu_util, cpu_sat, mem_util, mem_sat, disk_util, disk_sat):
+        """Alert on USE metrics"""
+        alerts = []
+        
+        # CPU utilization > 80%
+        if cpu_util > 80:
+            alerts.append({
+                'type': 'HIGH_CPU',
+                'value': cpu_util,
+                'threshold': 80,
+                'message': f"CPU utilization {cpu_util:.1f}%"
+            })
+        
+        # CPU saturation > 2 (more than 2 waiting per core)
+        if cpu_sat > 200:  # saturation is percent
+            alerts.append({
+                'type': 'CPU_SATURATION',
+                'value': cpu_sat,
+                'threshold': 200,
+                'message': f"CPU saturation {cpu_sat/100:.1f} tasks per core"
+            })
+        
+        # Memory utilization > 85%
+        if mem_util > 85:
+            alerts.append({
+                'type': 'HIGH_MEMORY',
+                'value': mem_util,
+                'threshold': 85,
+                'message': f"Memory utilization {mem_util:.1f}%"
+            })
+        
+        # Memory saturation (page faults)
+        if mem_sat > 100:  # 100 page faults/sec is bad
+            alerts.append({
+                'type': 'MEMORY_SATURATION',
+                'value': mem_sat,
+                'threshold': 100,
+                'message': f"High page fault rate {mem_sat:.0f}/sec"
+            })
+        
+        # Disk full
+        if disk_util > 90:
+            alerts.append({
+                'type': 'DISK_FULL',
+                'value': disk_util,
+                'threshold': 90,
+                'message': f"Disk {disk_util:.1f}% full"
+            })
+        
+        # Disk I/O saturation > 50%
+        if disk_sat > 50:
+            alerts.append({
+                'type': 'DISK_SATURATION',
+                'value': disk_sat,
+                'threshold': 50,
+                'message': f"Disk I/O wait {disk_sat:.1f}%"
+            })
+        
+        return alerts
+
+# Example: Diagnose using RED + USE
+class Diagnosis:
+    @staticmethod
+    def diagnose_slow_service(red_metrics, use_metrics):
+        """
+        Slow service diagnosis:
+        - If RED shows high latency + USE shows high CPU = code problem
+        - If RED shows high latency + USE shows low resources = external dependency
+        - If RED shows high error rate + USE shows high resources = resource exhaustion
+        """
+        
+        high_latency = red_metrics['duration_p99'] > 1.0
+        high_errors = red_metrics['error_rate'] > 0.01
+        high_cpu = use_metrics['cpu_util'] > 80
+        high_memory = use_metrics['mem_util'] > 80
+        
+        if high_latency and high_cpu and not high_errors:
+            return "CPU bottleneck - optimize code or scale CPU"
+        
+        if high_latency and high_memory and not high_errors:
+            return "Memory pressure - optimize memory or scale RAM"
+        
+        if high_latency and not high_cpu and not high_memory:
+            return "External dependency slow (DB, API, network)"
+        
+        if high_errors and high_cpu:
+            return "Service overloaded - scale horizontally"
+        
+        if high_errors and high_memory:
+            return "Memory exhaustion - OOM errors or GC pauses"
+        
+        return "Service nominal"
+
+# Usage
+collector = USEMetricsCollector()
+collector.collect_all()
+
+# Example RED metrics
+red_metrics = {
+    'rate': 1000,  # req/s
+    'errors': 10,  # err/s
+    'duration_p99': 0.5,  # seconds
+    'error_rate': 10 / 1000  # ratio
+}
+
+# Check alerts
+alerter = MetricsAlerter()
+red_alerts = alerter.check_red_alert(
+    red_metrics['rate'],
+    red_metrics['errors'],
+    red_metrics['duration_p99']
+)
+
+use_alerts = alerter.check_use_alert(
+    cpu_utilization._value.get(),
+    cpu_saturation._value.get(),
+    memory_utilization._value.get(),
+    memory_saturation._value.get(),
+    disk_utilization.labels(device='/')._value.get(),
+    disk_saturation.labels(device='/')._value.get()
+)
+
+print("RED Alerts:", red_alerts)
+print("USE Alerts:", use_alerts)
+
+# Diagnose
+diag = Diagnosis.diagnose_slow_service(red_metrics, {
+    'cpu_util': 50,
+    'mem_util': 40
+})
+print("Diagnosis:", diag)
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package main
+
+import (
+	"fmt"
+	"runtime"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/disk"
+)
+
+// RED Metrics
+var (
+	httpRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total HTTP requests",
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	httpRequestErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_errors_total",
+			Help: "HTTP request errors",
+		},
+		[]string{"method", "endpoint", "status_code"},
+	)
+
+	httpRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request duration",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0},
+		},
+		[]string{"method", "endpoint"},
+	)
+)
+
+// USE Metrics
+var (
+	cpuUtilization = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "cpu_utilization_percent",
+			Help: "CPU utilization percentage",
+		},
+	)
+
+	memoryUtilization = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "memory_utilization_percent",
+			Help: "Memory utilization percentage",
+		},
+	)
+
+	diskUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "disk_utilization_percent",
+			Help: "Disk utilization percentage",
+		},
+		[]string{"device"},
+	)
+)
+
+// USE Metrics Collector
+type USEMetricsCollector struct {
+	interval time.Duration
+}
+
+func NewUSEMetricsCollector(interval time.Duration) *USEMetricsCollector {
+	return &USEMetricsCollector{interval: interval}
+}
+
+func (c *USEMetricsCollector) UpdateCPUMetrics() error {
+	percent, err := cpu.Percent(0, false)
+	if err != nil {
+		return err
+	}
+	cpuUtilization.Set(percent[0])
+	return nil
+}
+
+func (c *USEMetricsCollector) UpdateMemoryMetrics() error {
+	vm, err := mem.VirtualMemory()
+	if err != nil {
+		return err
+	}
+	memoryUtilization.Set(vm.UsedPercent)
+	return nil
+}
+
+func (c *USEMetricsCollector) UpdateDiskMetrics() error {
+	usage, err := disk.Usage("/")
+	if err != nil {
+		return err
+	}
+	diskUtilization.WithLabelValues("/").Set(usage.UsedPercent)
+	return nil
+}
+
+func (c *USEMetricsCollector) CollectAll() error {
+	if err := c.UpdateCPUMetrics(); err != nil {
+		return err
+	}
+	if err := c.UpdateMemoryMetrics(); err != nil {
+		return err
+	}
+	if err := c.UpdateDiskMetrics(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RED Metrics Middleware
+type REDMiddleware struct {
+	requestCount int
+	errorCount   int
+}
+
+func (m *REDMiddleware) HandleRequest(method, endpoint string, handler func() (interface{}, error)) (interface{}, error) {
+	start := time.Now()
+
+	result, err := handler()
+
+	duration := time.Since(start).Seconds()
+	httpRequestsTotal.WithLabelValues(method, endpoint).Inc()
+	httpRequestDuration.WithLabelValues(method, endpoint).Observe(duration)
+
+	if err != nil {
+		statusCode := "500"
+		if e, ok := err.(interface{ StatusCode() int }); ok {
+			statusCode = fmt.Sprintf("%d", e.StatusCode())
+		}
+		httpRequestErrors.WithLabelValues(method, endpoint, statusCode).Inc()
+		m.errorCount++
+		return nil, err
+	}
+
+	m.requestCount++
+	return result, nil
+}
+
+// Alerting
+type MetricsAlerter struct{}
+
+type Alert struct {
+	Type      string
+	Value     float64
+	Threshold float64
+	Message   string
+}
+
+func (a *MetricsAlerter) CheckREDAlerts(rate, errors, durationP99 float64) []Alert {
+	var alerts []Alert
+
+	if rate > 0 {
+		errorRatio := errors / rate
+		if errorRatio > 0.01 {
+			alerts = append(alerts, Alert{
+				Type:      "HIGH_ERROR_RATE",
+				Value:     errorRatio,
+				Threshold: 0.01,
+				Message:   fmt.Sprintf("Error rate %.1f%% is too high", errorRatio*100),
+			})
+		}
+	}
+
+	if durationP99 > 1.0 {
+		alerts = append(alerts, Alert{
+			Type:      "HIGH_LATENCY",
+			Value:     durationP99,
+			Threshold: 1.0,
+			Message:   fmt.Sprintf("p99 latency %.2fs exceeds 1 second", durationP99),
+		})
+	}
+
+	return alerts
+}
+
+func (a *MetricsAlerter) CheckUSEAlerts(cpuUtil, memUtil, diskUtil float64) []Alert {
+	var alerts []Alert
+
+	if cpuUtil > 80 {
+		alerts = append(alerts, Alert{
+			Type:      "HIGH_CPU",
+			Value:     cpuUtil,
+			Threshold: 80,
+			Message:   fmt.Sprintf("CPU utilization %.1f%%", cpuUtil),
+		})
+	}
+
+	if memUtil > 85 {
+		alerts = append(alerts, Alert{
+			Type:      "HIGH_MEMORY",
+			Value:     memUtil,
+			Threshold: 85,
+			Message:   fmt.Sprintf("Memory utilization %.1f%%", memUtil),
+		})
+	}
+
+	if diskUtil > 90 {
+		alerts = append(alerts, Alert{
+			Type:      "DISK_FULL",
+			Value:     diskUtil,
+			Threshold: 90,
+			Message:   fmt.Sprintf("Disk %.1f%% full", diskUtil),
+		})
+	}
+
+	return alerts
+}
+
+// Diagnosis
+func DiagnoseSlowService(rate, errors, durationP99, cpuUtil, memUtil float64) string {
+	highLatency := durationP99 > 1.0
+	highErrors := errors > 0 && errors/rate > 0.01
+	highCPU := cpuUtil > 80
+	highMemory := memUtil > 80
+
+	if highLatency && highCPU && !highErrors {
+		return "CPU bottleneck - optimize code or scale CPU"
+	}
+
+	if highLatency && highMemory && !highErrors {
+		return "Memory pressure - optimize memory or scale RAM"
+	}
+
+	if highLatency && !highCPU && !highMemory {
+		return "External dependency slow (DB, API, network)"
+	}
+
+	if highErrors && highCPU {
+		return "Service overloaded - scale horizontally"
+	}
+
+	return "Service nominal"
+}
+
+func main() {
+	collector := NewUSEMetricsCollector(10 * time.Second)
+	collector.CollectAll()
+
+	fmt.Println("USE Metrics collected")
+
+	alerter := &MetricsAlerter{}
+	redAlerts := alerter.CheckREDAlerts(1000, 10, 0.5)
+	useAlerts := alerter.CheckUSEAlerts(50, 60, 70)
+
+	fmt.Printf("RED Alerts: %d\n", len(redAlerts))
+	fmt.Printf("USE Alerts: %d\n", len(useAlerts))
+
+	diagnosis := DiagnoseSlowService(1000, 10, 0.5, 50, 60)
+	fmt.Println("Diagnosis:", diagnosis)
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+const prometheus = require('prom-client');
+const os = require('os');
+
+// RED Metrics
+const httpRequestsTotal = new prometheus.Counter({
+  name: 'http_requests_total',
+  help: 'Total HTTP requests',
+  labelNames: ['method', 'endpoint'],
+});
+
+const httpRequestErrors = new prometheus.Counter({
+  name: 'http_requests_errors_total',
+  help: 'HTTP request errors',
+  labelNames: ['method', 'endpoint', 'status_code'],
+});
+
+const httpRequestDuration = new prometheus.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'HTTP request duration',
+  labelNames: ['method', 'endpoint'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+});
+
+// USE Metrics
+const cpuUtilization = new prometheus.Gauge({
+  name: 'cpu_utilization_percent',
+  help: 'CPU utilization percentage',
+});
+
+const memoryUtilization = new prometheus.Gauge({
+  name: 'memory_utilization_percent',
+  help: 'Memory utilization percentage',
+});
+
+const diskUtilization = new prometheus.Gauge({
+  name: 'disk_utilization_percent',
+  help: 'Disk utilization percentage',
+  labelNames: ['device'],
+});
+
+// USE Metrics Collector
+class USEMetricsCollector {
+  constructor(interval = 10000) {
+    this.interval = interval;
+  }
+
+  updateCPUMetrics() {
+    const cpus = os.cpus();
+    const avgLoad = os.loadavg()[0];
+    const cpuCount = cpus.length;
+    
+    // Approximate CPU utilization (load-based)
+    const loadPercent = (avgLoad / cpuCount) * 100;
+    cpuUtilization.set(Math.min(loadPercent, 100));
+  }
+
+  updateMemoryMetrics() {
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+    
+    const memPercent = (usedMemory / totalMemory) * 100;
+    memoryUtilization.set(memPercent);
+  }
+
+  collectAll() {
+    this.updateCPUMetrics();
+    this.updateMemoryMetrics();
+  }
+
+  startCollecting() {
+    this.collectAll();
+    setInterval(() => this.collectAll(), this.interval);
+  }
+}
+
+// RED Middleware
+class REDMiddleware {
+  handleRequest(method, endpoint, handler) {
+    const start = Date.now();
+
+    try {
+      const result = handler();
+      httpRequestsTotal.labels(method, endpoint).inc();
+
+      const duration = (Date.now() - start) / 1000;
+      httpRequestDuration.labels(method, endpoint).observe(duration);
+
+      return result;
+    } catch (error) {
+      const statusCode = error.statusCode || '500';
+      httpRequestErrors.labels(method, endpoint, statusCode).inc();
+
+      const duration = (Date.now() - start) / 1000;
+      httpRequestDuration.labels(method, endpoint).observe(duration);
+
+      throw error;
+    }
+  }
+}
+
+// Alerting
+class MetricsAlerter {
+  checkREDAlerts(rate, errors, durationP99) {
+    const alerts = [];
+
+    if (rate > 0) {
+      const errorRatio = errors / rate;
+      if (errorRatio > 0.01) {
+        alerts.push({
+          type: 'HIGH_ERROR_RATE',
+          value: errorRatio,
+          threshold: 0.01,
+          message: `Error rate ${(errorRatio * 100).toFixed(1)}% is too high`,
+        });
+      }
+    }
+
+    if (durationP99 > 1.0) {
+      alerts.push({
+        type: 'HIGH_LATENCY',
+        value: durationP99,
+        threshold: 1.0,
+        message: `p99 latency ${durationP99.toFixed(2)}s exceeds 1 second`,
+      });
+    }
+
+    return alerts;
+  }
+
+  checkUSEAlerts(cpuUtil, memUtil, diskUtil) {
+    const alerts = [];
+
+    if (cpuUtil > 80) {
+      alerts.push({
+        type: 'HIGH_CPU',
+        value: cpuUtil,
+        threshold: 80,
+        message: `CPU utilization ${cpuUtil.toFixed(1)}%`,
+      });
+    }
+
+    if (memUtil > 85) {
+      alerts.push({
+        type: 'HIGH_MEMORY',
+        value: memUtil,
+        threshold: 85,
+        message: `Memory utilization ${memUtil.toFixed(1)}%`,
+      });
+    }
+
+    if (diskUtil > 90) {
+      alerts.push({
+        type: 'DISK_FULL',
+        value: diskUtil,
+        threshold: 90,
+        message: `Disk ${diskUtil.toFixed(1)}% full`,
+      });
+    }
+
+    return alerts;
+  }
+}
+
+// Diagnosis
+function diagnoseSlowService(rate, errors, durationP99, cpuUtil, memUtil) {
+  const highLatency = durationP99 > 1.0;
+  const highErrors = rate > 0 && errors / rate > 0.01;
+  const highCPU = cpuUtil > 80;
+  const highMemory = memUtil > 80;
+
+  if (highLatency && highCPU && !highErrors) {
+    return 'CPU bottleneck - optimize code or scale CPU';
+  }
+
+  if (highLatency && highMemory && !highErrors) {
+    return 'Memory pressure - optimize memory or scale RAM';
+  }
+
+  if (highLatency && !highCPU && !highMemory) {
+    return 'External dependency slow (DB, API, network)';
+  }
+
+  if (highErrors && highCPU) {
+    return 'Service overloaded - scale horizontally';
+  }
+
+  return 'Service nominal';
+}
+
+// Example usage
+const collector = new USEMetricsCollector(10000);
+collector.collectAll();
+
+const alerter = new MetricsAlerter();
+const redAlerts = alerter.checkREDAlerts(1000, 10, 0.5);
+const useAlerts = alerter.checkUSEAlerts(50, 60, 70);
+
+console.log('RED Alerts:', redAlerts);
+console.log('USE Alerts:', useAlerts);
+
+const diagnosis = diagnoseSlowService(1000, 10, 0.5, 50, 60);
+console.log('Diagnosis:', diagnosis);
+
+module.exports = { USEMetricsCollector, REDMiddleware, MetricsAlerter, diagnoseSlowService };
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Example: Diagnose Slow Checkout
+
+RED shows:
+- Rate: 500 req/s
+- Errors: 0
+- Duration p99: 2 seconds
+
+USE shows:
+- CPU: 25%
+- Memory: 30%
+- Disk: 40%
+
+**Analysis**: High latency with low resource usage = external dependency. Likely: Payment service slow.
+
+### Example: CPU Bottleneck
+
+RED shows:
+- Rate: 1000 req/s
+- Errors: 5% (100 req/s)
+- Duration p99: 5 seconds
+
+USE shows:
+- CPU: 95%
+- Memory: 40%
+- Disk: 20%
+
+**Analysis**: High latency + high errors + high CPU = CPU bottleneck. Solution: optimize code or scale CPU.
+
+## Common Mistakes
+
+### Mistake 1: Measuring Everything
+
+```
+❌ WRONG: 1000+ metrics per service
+- Information overload
+- Hard to know what's important
+- Dashboards are useless
+
+✅ CORRECT: RED + USE only
+- ~10 metrics total
+- Clear actionable insights
+- Easy to alert on
+```
+
+### Mistake 2: Not Correlating RED and USE
+
+```
+❌ WRONG: Alert on high CPU without RED context
+- Maybe CPU is high but requests are fast
+
+✅ CORRECT: Correlate
+- High CPU + high latency = optimize code
+- High CPU + low latency = not a problem
+```
+
+## Self-Check
+
+- What's the difference between RED and USE?
+- When should you alert on RED vs. USE?
+- How do you diagnose slow service using both?
+- What's an example of high USE with low RED impact?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "RED metrics (rate, errors, duration) implemented?",
+  "USE metrics (utilization, saturation, errors) implemented?",
+  "Histograms for latency percentiles?",
+  "Alerts on RED thresholds?",
+  "Alerts on USE thresholds?",
+  "Dashboards show RED and USE together?",
+  "Error codes tracked and categorized?",
+  "Resource saturation monitored?",
+  "Historical data retained (30 days+)?",
+  "No metric fatigue (< 20 per service)?"
+]} />
+
+## Next Steps
+
+1. Implement RED metrics for all services
+2. Implement USE metrics for infrastructure
+3. Create dashboards combining RED and USE
+4. Set alerts on RED thresholds
+5. Set alerts on USE thresholds
+6. Document diagnosis playbooks
+
+## References
+
+- <a href="https://www.brendangregg.com/usemethod.html" target="_blank" rel="nofollow noopener noreferrer">Brendan Gregg: USE Method ↗</a>
+- <a href="https://thenewstack.io/the-red-method-key-metrics-for-microservices-architecture/" target="_blank" rel="nofollow noopener noreferrer">The New Stack: RED Method ↗</a>
+- <a href="https://www.prometheus.io/" target="_blank" rel="nofollow noopener noreferrer">Prometheus Documentation ↗</a>
+

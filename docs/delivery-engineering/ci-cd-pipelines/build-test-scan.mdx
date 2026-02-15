@@ -1,0 +1,566 @@
+---
+sidebar_position: 1
+title: "Build, Test, and Scan"
+description: "Automate compilation, testing, and security scanning to catch issues before production."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [ci-cd, build, test, scan, security, quality-gates, automation, pipelines]
+image: /img/archman-social-card.webp
+tags: [ci-cd, build, testing, security-scanning, quality-gates, automation, best-practices, reliability]
+hide_title: true
+---
+
+<Hero title="Build, Test, and Scan" subtitle="Automate compilation, testing, and security scanning to catch issues before production." imageAlt="Build pipeline illustration" size="large" />
+
+## TL;DR
+
+CI pipeline: code push → compile → unit tests → integration tests → security scans → artifact build → pass/fail. Fail fast, fail often. If any gate fails, the commit is rejected and developer gets feedback immediately. Automated gates force quality: you can't merge broken code. Tests catch bugs seconds after coding; code review catches them hours later. Flaky tests destroy trust. Fix them immediately or remove them. Fast feedback loops (tests in &lt;10 minutes) keep developers in flow state.
+
+## Learning Objectives
+
+- Design multi-stage CI/CD pipelines with clear gates
+- Implement test strategies (unit, integration, e2e) with appropriate coverage
+- Integrate security scanning at multiple pipeline stages
+- Optimize pipeline speed without sacrificing quality
+- Identify and eliminate flaky tests
+- Monitor pipeline reliability and performance metrics
+
+## Motivating Scenario
+
+Team A: Manual quality checks. Developers push code, someone manually runs tests later, security scans happen once a month. Result: A bug slips through code review, reaches staging, then production, causing data corruption. Fix takes 16 hours.
+
+Team B: Automated CI pipeline. Every PR push: tests run (2 min), security scans run (1 min), linting checks run (30 sec). Total: &lt;5 minutes from push to feedback. Bug is caught before merge. Total impact: 0 downtime.
+
+Team B's developers stay in flow state during the day. When they push, they get feedback before finishing their next task. Team A's developers wait hours or days for feedback.
+
+Team B's pipeline caught 847 bugs last year before production. Team A had 23 production incidents.
+
+## Core Concepts
+
+### CI/CD Pipeline Stages
+
+<Figure>
+  {`flowchart LR
+    Code["Code Pushed<br/>Feature Branch"] --> Trigger["GitHub/GitLab<br/>Webhook"]
+    Trigger --> Checkout["Checkout Code<br/>& Deps"]
+    Checkout --> Build["Build<br/>Compile, Link"]
+    Build --> UnitTests["Unit Tests<br/>Functions & Classes"]
+    UnitTests --> Lint["Linting<br/>Code Style"]
+    Lint --> SAST["SAST Scan<br/>Code Vulnerabilities"]
+    SAST --> DepScan["Dependency Scan<br/>3rd Party Vulns"]
+    DepScan --> SecretScan["Secret Scan<br/>Hardcoded Creds"]
+    SecretScan --> IntTests["Integration Tests<br/>Services Together"]
+    IntTests --> Coverage["Coverage Check<br/>Tests > 80%?"]
+    Coverage --> Build2["Build Artifact<br/>Docker Image"]
+    Build2 --> Gate{"All Checks<br/>Passed?"}
+    Gate -->|No| Fail["PR Blocked<br/>Fix & Retry"]
+    Gate -->|Yes| Success["PR Approved<br/>Ready to Merge"]`}
+</Figure>
+
+### Test Pyramid Strategy
+
+**Unit Tests** (70% of tests):
+- Fast: milliseconds
+- Isolated: no dependencies
+- Coverage: functions, classes, logic paths
+- Frequency: run every build
+
+**Integration Tests** (20% of tests):
+- Medium speed: seconds
+- Multiple components
+- Real databases, APIs
+- Frequency: run every build
+
+**End-to-End Tests** (10% of tests):
+- Slow: minutes per test
+- Full user journeys
+- Staging environment
+- Frequency: selective, critical paths only
+
+**Load/Performance Tests** (special):
+- Run on schedule, not every build
+- Staging environment
+- Identify regressions in latency, throughput
+- Frequency: pre-release, after major changes
+
+### Quality Gates Definition
+
+| Gate | Metric | Threshold | Behavior if Failed |
+|------|--------|-----------|-------------------|
+| Compilation | Build succeeds | Always | Reject PR |
+| Unit Tests | All pass | 100% | Reject PR |
+| Coverage | Code coverage | >80% | Reject PR |
+| Lint | No violations | Zero high | Reject PR |
+| SAST | Security issues | Zero critical/high | Reject PR |
+| Dependencies | Vulnerabilities | Zero critical | Reject PR |
+| Secrets | Hardcoded creds | Zero | Reject PR |
+| Integration | Tests pass | 100% | Reject PR |
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="github-actions" label="GitHub Actions Complete Pipeline" default>
+    ```yaml
+    # .github/workflows/ci-pipeline.yml
+
+    name: CI Pipeline
+
+    on:
+      push:
+        branches: [main, develop]
+      pull_request:
+        branches: [main, develop]
+
+    env:
+      REGISTRY: ghcr.io
+      NODE_VERSION: '18'
+
+    jobs:
+      # Stage 1: Build and dependencies
+      build:
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+        outputs:
+          artifact-path: ${{ steps.build.outputs.path }}
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Set up Node.js
+            uses: actions/setup-node@v4
+            with:
+              node-version: ${{ env.NODE_VERSION }}
+              cache: 'npm'
+
+          - name: Install dependencies
+            run: npm ci
+
+          - name: Build
+            id: build
+            run: |
+              npm run build
+              echo "path=./dist" >> $GITHUB_OUTPUT
+
+          - name: Upload build artifact
+            uses: actions/upload-artifact@v3
+            with:
+              name: build-artifact
+              path: ./dist
+              retention-days: 1
+
+      # Stage 2: Unit tests and coverage
+      unit-tests:
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+          checks: write
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Set up Node.js
+            uses: actions/setup-node@v4
+            with:
+              node-version: ${{ env.NODE_VERSION }}
+              cache: 'npm'
+
+          - name: Install dependencies
+            run: npm ci
+
+          - name: Run unit tests
+            run: npm run test:unit -- --coverage
+
+          - name: Check coverage thresholds
+            run: |
+              COVERAGE=$(cat coverage/coverage-summary.json | grep -o '"lines":[^}]*' | grep -o '[0-9.]*' | head -1)
+              if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+                echo "Coverage below 80%: $COVERAGE%"
+                exit 1
+              fi
+
+          - name: Upload coverage reports
+            uses: codecov/codecov-action@v3
+            with:
+              files: ./coverage/coverage-final.json
+              flags: unittests
+
+      # Stage 3: Linting and code quality
+      lint-quality:
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Set up Node.js
+            uses: actions/setup-node@v4
+            with:
+              node-version: ${{ env.NODE_VERSION }}
+              cache: 'npm'
+
+          - name: Install dependencies
+            run: npm ci
+
+          - name: ESLint
+            run: npm run lint -- --format json --output-file eslint-report.json || true
+
+          - name: Check for lint violations
+            run: |
+              VIOLATIONS=$(jq '. | length' eslint-report.json)
+              if [ "$VIOLATIONS" -gt "0" ]; then
+                jq '.[].messages[] | select(.severity > 1)' eslint-report.json
+                exit 1
+              fi
+
+          - name: Type check (TypeScript)
+            run: npm run type-check
+
+      # Stage 4: Security scanning (SAST)
+      security-scan:
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+          security-events: write
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Initialize CodeQL
+            uses: github/codeql-action/init@v2
+            with:
+              languages: 'javascript'
+
+          - name: Autobuild
+            uses: github/codeql-action/autobuild@v2
+
+          - name: Perform CodeQL Analysis
+            uses: github/codeql-action/analyze@v2
+
+          - name: Check for critical vulnerabilities
+            run: |
+              if grep -q '"level": "HIGH"' trivy-results.sarif || grep -q '"level": "CRITICAL"' trivy-results.sarif; then
+                echo "Critical vulnerabilities found!"
+                exit 1
+              fi
+
+      # Stage 5: Dependency security
+      dependency-scan:
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Run npm audit
+            run: npm audit --audit-level=moderate || true
+
+          - name: Check npm audit results
+            run: |
+              AUDIT=$(npm audit --json)
+              CRITICAL=$(echo "$AUDIT" | jq '[.vulnerabilities[] | select(.severity == "critical")] | length')
+
+              if [ "$CRITICAL" -gt "0" ]; then
+                echo "Critical vulnerabilities: $CRITICAL"
+                exit 1
+              fi
+
+      # Stage 6: Secret scanning
+      secret-scan:
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: TruffleHog secret detection
+            uses: trufflesecurity/trufflehog@main
+            with:
+              path: ./
+              base: ${{ github.event.repository.default_branch }}
+              head: HEAD
+
+      # Stage 7: Integration tests
+      integration-tests:
+        needs: [build, unit-tests]
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+
+        services:
+          postgres:
+            image: postgres:15-alpine
+            env:
+              POSTGRES_PASSWORD: postgres
+            options: >-
+              --health-cmd pg_isready
+              --health-interval 10s
+              --health-timeout 5s
+              --health-retries 5
+            ports:
+              - 5432:5432
+
+          redis:
+            image: redis:7-alpine
+            options: >-
+              --health-cmd "redis-cli ping"
+              --health-interval 10s
+              --health-timeout 5s
+              --health-retries 5
+            ports:
+              - 6379:6379
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Set up Node.js
+            uses: actions/setup-node@v4
+            with:
+              node-version: ${{ env.NODE_VERSION }}
+              cache: 'npm'
+
+          - name: Install dependencies
+            run: npm ci
+
+          - name: Migrate database
+            env:
+              DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+            run: npm run migrate
+
+          - name: Run integration tests
+            env:
+              DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+              REDIS_URL: redis://localhost:6379
+            run: npm run test:integration
+
+      # Stage 8: Build and push container
+      build-container:
+        needs: [build, unit-tests, security-scan, integration-tests]
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+          packages: write
+
+        if: success()
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Set up Docker Buildx
+            uses: docker/setup-buildx-action@v2
+
+          - name: Log in to Container Registry
+            uses: docker/login-action@v2
+            with:
+              registry: ${{ env.REGISTRY }}
+              username: ${{ github.actor }}
+              password: ${{ secrets.GITHUB_TOKEN }}
+
+          - name: Build and push image
+            uses: docker/build-push-action@v4
+            with:
+              context: .
+              push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+              tags: |
+                ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+                ${{ env.REGISTRY }}/${{ github.repository }}:latest
+              cache-from: type=gha
+              cache-to: type=gha,mode=max
+    ```
+  </TabItem>
+
+  <TabItem value="flaky-tests" label="Detecting and Fixing Flaky Tests">
+    ```python
+    # flaky_test_detector.py - Identify unreliable tests
+
+    import json
+    from collections import defaultdict
+
+    class FlakyTestDetector:
+        def __init__(self, results_file: str):
+            self.results = json.load(open(results_file))
+            self.test_results = defaultdict(list)
+
+        def analyze(self):
+            """Find tests that sometimes pass, sometimes fail"""
+            for result in self.results:
+                test_name = result['name']
+                passed = result['passed']
+                self.test_results[test_name].append(passed)
+
+            flaky_tests = {}
+            for test_name, results in self.test_results.items():
+                pass_rate = sum(results) / len(results)
+                is_flaky = 0 < pass_rate < 1.0
+
+                if is_flaky:
+                    flaky_tests[test_name] = {
+                        'pass_rate': pass_rate,
+                        'runs': len(results),
+                        'failures': sum(1 for r in results if not r)
+                    }
+
+            return flaky_tests
+
+        def generate_report(self):
+            """Create report of flaky tests and severity"""
+            flaky = self.analyze()
+            sorted_flaky = sorted(
+                flaky.items(),
+                key=lambda x: abs(x[1]['pass_rate'] - 0.5)
+            )
+
+            report = {
+                'total_flaky': len(flaky),
+                'tests': [
+                    {
+                        'name': name,
+                        'pass_rate': stats['pass_rate'],
+                        'severity': self._severity(stats['pass_rate']),
+                        'action': self._recommended_action(stats['pass_rate'])
+                    }
+                    for name, stats in sorted_flaky
+                ]
+            }
+
+            return report
+
+        def _severity(self, pass_rate: float) -> str:
+            if pass_rate < 0.5:
+                return "CRITICAL"
+            elif pass_rate < 0.8:
+                return "HIGH"
+            else:
+                return "MEDIUM"
+
+        def _recommended_action(self, pass_rate: float) -> str:
+            if pass_rate < 0.5:
+                return "Delete or rewrite"
+            elif pass_rate < 0.8:
+                return "Fix root cause"
+            else:
+                return "Monitor closely"
+    ```
+  </TabItem>
+
+  <TabItem value="metrics" label="CI/CD Metrics Dashboard">
+    ```yaml
+    # prometheus-rules.yml - CI/CD pipeline metrics
+
+    groups:
+      - name: cicd_metrics
+        interval: 1m
+        rules:
+          - record: cicd:build_success_rate_5m
+            expr: |
+              rate(github_actions_workflow_success_total[5m]) /
+              (rate(github_actions_workflow_success_total[5m]) +
+               rate(github_actions_workflow_failure_total[5m]))
+
+          - record: cicd:pipeline_duration_p95_seconds
+            expr: histogram_quantile(0.95, rate(github_actions_workflow_duration_seconds_bucket[5m]))
+
+          - record: cicd:code_coverage_percent
+            expr: code_coverage_lines_covered / code_coverage_lines_total * 100
+
+          - record: cicd:sast_critical_issues
+            expr: sast_findings{severity="CRITICAL"}
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Run Tests
+
+<Vs title="Test Execution Strategy" items={[
+{label: "Run Every Build (Required)", points: [
+      "Unit tests (fast, &lt;2 min)",
+      "Linting (style, format)",
+      "Type checking (TypeScript)",
+      "Security scanning (SAST)",
+      "Dependency checks",
+      "Secret detection"
+    ]},
+{label: "Run on Schedule (Selective)", points: [
+      "Integration tests (slower)",
+      "E2E tests (slow, flaky)",
+      "Load/performance tests",
+      "Chaos testing",
+      "Security audit (monthly)",
+      "Dependency audit (weekly)"
+    ]}
+]} highlight={[0, 1]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Fast Feedback Loop",
+      body: "Organize tests by speed: lint (seconds) → unit tests (2 min) → integration (5 min) → E2E (optional, slow). Fail fast. Developers see failures quickly, stay in flow state."
+    },
+    {
+      label: "Pattern: Quarantine Flaky Tests",
+      body: "Identify flaky tests and move to separate pipeline. They don't block merge. Fix them separately. Once 100% reliable for 2 weeks, re-enable in main pipeline."
+    },
+    {
+      label: "Pitfall: Test Infrastructure Flakiness",
+      body: "Tests are flaky because databases/services are slow, not code is broken. Solution: Isolate tests (use in-memory DB, mock external APIs), ensure infrastructure is deterministic."
+    },
+    {
+      label: "Pitfall: Too Many E2E Tests",
+      body: "E2E tests are slow (minutes). If 50% of pipeline is E2E, developers wait 10+ minutes for feedback. Solution: Limit E2E to critical paths; use unit/integration for coverage."
+    },
+    {
+      label: "Pitfall: Coverage Theater",
+      body: "80% code coverage but tests don't actually verify behavior (assertions are fake). Solution: Review tests for meaningful assertions, not just line coverage."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Every PR automatically runs through complete build, test, scan pipeline",
+    "Pipeline duration is less than 10 minutes (fast feedback)",
+    "Failed tests block PR merge (gated by branch protection)",
+    "Code coverage is tracked and trending upward (target >80%)",
+    "No high/critical security vulnerabilities allowed (automated gate)",
+    "Flaky tests are identified, quarantined, and tracked for fixing",
+    "Tests are organized by speed (unit < integration < e2e)",
+    "Linting and formatting are automated (no style discussions in code review)",
+    "Secrets are detected before merge (no hardcoded credentials)",
+    "Test results are reported with clear pass/fail for each stage"
+  ]}
+/>
+
+## Self-Check
+
+- How long does your CI pipeline take? Is it less than 10 minutes?
+- What percentage of PR failures are due to flaky tests vs real bugs?
+- Is code coverage trending up or down?
+- Have you had a production incident caused by a test that should have caught it?
+- Do developers have to wait for slow E2E tests on every PR, or only on deploy?
+
+## Next Steps
+
+1. **Week 1**: Measure current pipeline duration and pass rate
+2. **Week 2**: Identify and quarantine flaky tests
+3. **Week 3**: Set up coverage tracking and goal (80%+)
+4. **Week 4**: Implement automated security scanning (SAST, dependency scan)
+5. **Ongoing**: Monitor pipeline metrics, optimize bottlenecks
+
+## References
+
+1. Humble, J., & Farley, D. (2010). Continuous Delivery. Addison-Wesley.
+2. Forsgren, N., et al. (2018). Accelerate. IT Revolution Press.
+3. Google. (2023). Testing Best Practices. <a href="https://testing.googleblog.com/" target="_blank" rel="nofollow noopener noreferrer">testing.googleblog.com ↗️</a>

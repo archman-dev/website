@@ -1,0 +1,220 @@
+---
+sidebar_position: 2
+title: "Architecture Patterns & Concepts"
+description: "Reference guide for common architecture patterns including bounded contexts, sagas, outbox pattern, circuit breakers, bulkheads, sidecars, and service mesh."
+keywords:
+  - patterns
+  - bounded context
+  - saga
+  - outbox
+  - circuit breaker
+  - bulkhead
+  - sidecar
+  - service mesh
+  - resilience
+image: /img/archman-social-card.webp
+tags:
+  - glossary
+  - patterns
+  - concepts
+  - design
+  - distributed systems
+  - resilience
+hide_title: true
+---
+
+<Hero
+  title="Architecture Patterns & Concepts"
+  subtitle="Reference guide for common architecture patterns including bounded contexts, sagas, outbox pattern, circuit breakers, bulkheads, sidecars, and service mesh."
+  imageAlt="Architecture Patterns & Concepts illustration"
+  size="large"
+/>
+
+## Domain-Driven Design Concepts
+
+**Bounded Context**
+Boundary within which a domain model applies. Different bounded contexts can have different representations of the same entity. Communication between contexts happens through defined interfaces. Example: "Order" means different things in Sales context vs. Shipping context.
+
+**Entity**
+Domain object with persistent identity. Entities are mutable and tracked through their lifetime. Example: `Customer` with unique customer ID remains the same customer even if name or address changes.
+
+**Value Object**
+Domain object with no identity, defined by its attributes. Immutable and interchangeable with other value objects having same attributes. Example: `Money(amount=100, currency="USD")` is same as another `Money` with same values.
+
+**Aggregate**
+Cluster of entities and value objects forming a unit of consistency. All changes to aggregate go through aggregate root. Protects invariants and consistency within aggregate. Example: `Order` aggregate contains `OrderItems`, `Shipping Address`, enforcing that order must have at least one item.
+
+**Aggregate Root**
+Entity within aggregate responsible for maintaining consistency. External references point to aggregate root, not internal entities. Example: `Order` is aggregate root; external code references orders by order ID, not individual item IDs.
+
+**Domain Event**
+Event representing something significant that occurred in domain. Example: `OrderPlaced`, `PaymentProcessed`, `ShipmentDispatched`. Enable different parts of system to react to state changes.
+---
+
+## Distributed Systems Patterns
+
+**Saga Pattern**
+Pattern managing distributed transactions across multiple services. Coordinates sequence of local transactions with compensating transactions for rollback. Two variants: choreography (event-driven) and orchestration (central coordinator).
+
+*Example:* Order saga: Reserve Inventory → Process Payment → Create Shipment. If Payment fails, compensate by releasing reserved inventory.
+
+**Outbox Pattern**
+Pattern ensuring reliable event publishing in distributed systems. Changes and events written to same database transaction: change written to business table, event written to outbox table. Message handler processes outbox and publishes events.
+
+*Benefits:* Guarantees events published for all state changes; no risk of state change without event or event without state change.
+
+**Idempotency**
+Property of operation that produces same result when called multiple times as when called once. Critical in distributed systems for handling retries safely. Operations should be idempotent to prevent duplicate side effects.
+
+*Example:* `POST /orders/123/pay?idempotency_key=abc` always produces same result regardless of retry count.
+
+**Two-Phase Commit (2PC)**
+Protocol coordinating distributed transaction across multiple databases. Coordinator asks participants to prepare, then commit/rollback. Works but creates blocking and reduced availability. Generally avoided in modern systems.
+
+**Consensus Algorithms**
+Algorithms allowing distributed systems to agree on values despite failures. Examples: Raft, Paxos. Used in databases and systems requiring strong consistency across replicas.
+---
+
+## Resilience Patterns
+
+**Circuit Breaker**
+Pattern preventing cascading failures by stopping requests to failing service. States: Closed (normal), Open (failing, block requests), Half-Open (testing recovery). Fails fast instead of waiting for timeout.
+
+*Example:* If payment service fails, circuit breaker opens and immediately rejects new payment requests for 30 seconds, then tries half-open state to test recovery.
+
+**Bulkhead Pattern**
+Pattern isolating resources and failures. Separates system into compartments so failure in one doesn't affect others. Each service gets dedicated thread pool, connection pool, preventing one slow service from starving others.
+
+*Example:* Payment service has 50 threads; if all consumed by slow requests, other services can still use their own threads to serve requests.
+
+**Retry**
+Pattern automatically re-attempting failed operations. Useful for transient failures. Exponential backoff prevents overwhelming system during recovery. Requires idempotent operations.
+
+*Parameters:* max retries (e.g., 3), base delay (e.g., 100ms), exponential backoff multiplier (e.g., 2x).
+
+**Rate Limiting**
+Pattern controlling request rate to prevent overload. Token bucket and sliding window are common algorithms. Essential for preventing cascading failures and DoS protection.
+
+**Timeout**
+Pattern canceling operations that exceed time limit. Prevents hanging requests and enables graceful degradation. Every external call should have timeout to avoid infinite waits.
+---
+
+## Deployment Patterns
+
+**Blue-Green Deployment**
+Two production environments (blue and green). Deploy to inactive environment, test, then switch traffic. Enables instant rollback if issues detected. Requires duplicate infrastructure.
+
+**Canary Deployment**
+Roll out change to small subset of users (canary), monitor for issues, then gradually increase to all users. Detects problems in production with minimal impact.
+
+*Example:* Deploy to 5% of users, monitor metrics, if healthy increase to 25%, then 50%, finally 100%.
+
+**Rolling Deployment**
+Update instances incrementally, one or few at a time. Maintains capacity during deployment. Takes longer than blue-green but requires less infrastructure.
+
+**Feature Flags**
+Runtime configuration enabling/disabling features without deployment. Decouples deployment from activation. Enables A/B testing and gradual rollout.
+---
+
+## Communication Patterns
+
+**Sidecar Pattern**
+Separate container/process deployed alongside application to handle cross-cutting concerns: logging, monitoring, configuration, secrets. Separates infrastructure concerns from application code. Common in Kubernetes with service mesh.
+
+*Example:* Request goes through sidecar first, which adds tracing headers, rate limits, then forwards to application.
+
+**Service Mesh**
+Infrastructure layer managing service-to-service communication. Sidecars (or kernel proxies) handle retries, circuit breaking, rate limiting, tracing transparently. Examples: Istio, Linkerd.
+
+*Benefits:* Consistent policies across services without code changes; observability of service communication; advanced traffic management.
+
+**API Gateway**
+Central entry point for client requests. Handles cross-cutting concerns: authentication, rate limiting, request routing, response transformation. Simplifies client code and centralizes policies.
+
+**Message Queue**
+Asynchronous communication pattern using queues (e.g., RabbitMQ, Kafka). Producers publish messages; consumers process independently. Enables loose coupling and scalability.
+---
+
+## Data Patterns
+
+**Cache**
+Storing frequently accessed data in fast storage to reduce latency and load on primary source. Patterns: write-through, write-back. Cache invalidation is hard; must manage consistency.
+
+**Database Replication**
+Copying data across multiple database replicas. Master-slave: writes go to master, slaves read only. Enables read scaling and disaster recovery.
+
+**Read Replica**
+Separate database replica for read-heavy queries. Reduces load on primary database. May be out of sync if replication is asynchronous.
+
+**Connection Pool**
+Pre-created pool of reusable database connections. Avoids expensive connection creation per request. Configured with minimum and maximum connection counts.
+---
+
+## Consistency Patterns
+
+**Eventual Consistency**
+Guarantee that system reaches consistent state eventually, though not immediately. Used in distributed systems to trade immediate consistency for availability. Example: user profile update might not be visible immediately across all regions.
+
+**Strong Consistency**
+Guarantee that all reads see latest write. Harder to achieve in distributed systems; requires synchronous replication or 2PC. Traditional databases provide strong consistency.
+
+**Linearizability**
+Consistency model ensuring operations appear to execute in real-time order. Strongest consistency guarantee. Harder to achieve than strong consistency; requires total ordering of operations.
+
+**Monotonic Consistency**
+Guarantee that process sees progressively newer versions of data. Once you see version X, you never see earlier versions. Weaker than strong consistency but prevents time-travel issues.
+---
+
+## Organizational Patterns
+
+**Microservices**
+Architectural style building system as collection of loosely coupled, independently deployable services. Each service owns its data. Enables independent scaling and technology choices. Trade-off: distributed system complexity.
+
+**Monolithic Architecture**
+Single codebase for entire application. Simpler to develop initially; becomes difficult to scale and change as complexity grows. Suitable for early-stage products.
+
+**Strangler Pattern**
+Incrementally replacing monolithic system with microservices. New features implemented as microservices; old features gradually migrated or wrapped. Enables low-risk modernization.
+
+**CQRS (Command Query Responsibility Segregation)**
+Separating read and write models. Commands (writes) and queries (reads) handled by different code paths and potentially different databases. Enables optimization for each pattern.
+---
+
+## Error Handling Patterns
+
+**Fallback**
+Providing alternative behavior when primary path fails. Example: if user service unavailable, use cached user data.
+
+**Graceful Degradation**
+Reducing functionality instead of failing completely. Example: if recommendations unavailable, show products without recommendations rather than error.
+
+**Bulkhead**
+Isolating failures in one compartment from affecting others. Resource pools isolated per service, preventing one slow service from consuming all resources.
+---
+
+## Observability Concepts
+
+**Instrumentation**
+Adding code to capture operational metrics, logs, and traces. Must be done thoughtfully to avoid performance impact and over-instrumentation.
+
+**Distributed Tracing**
+Following single request through multiple services using trace IDs. Enables understanding request flow and identifying bottlenecks. Tools: Jaeger, Zipkin, Datadog.
+
+**Metric**
+Quantitative measurement (latency, error rate, throughput). Aggregated over time periods. Used for dashboards, alerts, and capacity planning.
+
+**Log**
+Detailed event record with full context. Should be structured (JSON) for easy parsing and querying. Useful for debugging and understanding system behavior.
+
+**Alert**
+Notification triggered when metric exceeds threshold or anomaly detected. Should alert on symptoms (SLI impact), not causes (resource utilization).
+---
+
+## Useful References
+
+For detailed implementation guidance, see:
+- [Domain-Driven Design](/docs/domain-driven-design) section
+- [Distributed Systems & Microservices](/docs/distributed-systems-and-microservices) section
+- [Design Patterns](/docs/design-patterns) section
+- [Resilience & Performance Engineering](/docs/reliability-resilience-and-performance-engineering) section
+- [Observability & Operations](/docs/observability-and-operations) section

@@ -1,0 +1,698 @@
+---
+sidebar_position: 2
+title: Multi-Region Active-Active vs Active-Passive
+description: Geographic redundancy patterns, consistency trade-offs, and traffic routing
+docType: deep-dive
+difficulty: advanced
+estimatedTime: 35
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["multi-region","active-active","active-passive","geo-routing","consistency","replication","failover"]
+image: /img/archman-social-card.webp
+tags: ["topology","architecture","resilience","global-scale"]
+hide_title: true
+---
+
+<Hero
+  title="Multi-Region Active-Active vs Active-Passive"
+  description="Design geographic redundancy with trade-offs between simplicity, latency, and consistency"
+  size="large"
+/>
+
+## TL;DR
+
+**Active-Passive**: One region serves traffic; standby regions replicate data asynchronously. On primary failure, traffic fails over to standby (RTO ~5-15 minutes). Simpler consistency model; lower cost. **Active-Active**: All regions serve traffic simultaneously. Lower latency globally; requires eventual consistency. More complex: split-brain handling, conflict resolution, higher replication overhead. Choose active-passive for simplicity, cost, and strong consistency. Migrate to active-active only if regional latency is a business requirement and you can manage complexity.
+
+## Learning Objectives
+
+- Understand geographic failover architectures and their trade-offs
+- Design eventual consistency models for active-active deployments
+- Implement conflict resolution strategies for multi-region writes
+- Manage RPO/RTO targets across regional topologies
+- Route global traffic based on geography and health
+- Plan capacity and cost for each topology
+
+## Motivating Scenario
+
+A global SaaS company runs in AWS us-east-1 (primary) with users in Europe (high latency). Users complain: "The app feels sluggish, takes 200ms to save data." Adding a European region (eu-west-1) reduces latency to 20ms. But now the company must choose:
+
+- **Active-Passive**: Europe reads from us-east-1 (still slow) or EU reads from local replica (async, eventual consistency). Simpler, cheaper, but latency problem remains for writes.
+- **Active-Active**: EU region accepts writes, replicates back to US. Writes are fast (20ms), but now data can diverge across regions. Conflict resolution complexity increases.
+
+## Core Concepts
+
+### Active-Passive (Simpler)
+
+**One active region, others on standby.**
+
+Architecture:
+- Primary region (us-east-1): serves all traffic, handles writes
+- Standby region (eu-west-1): replicas data asynchronously, read-only
+- On primary failure: traffic fails over to standby (data lag acceptable)
+
+Characteristics:
+- RPO: 5-15 minutes (depend on replication lag)
+- RTO: 5-15 minutes (detect failure + promote standby)
+- Consistency: Strong (single writer, read-after-write consistent)
+- Cost: Lower (standby doesn't process traffic)
+- Complexity: Low (single source of truth)
+
+### Active-Active (Faster, More Complex)
+
+**All regions serve traffic, eventually consistent.**
+
+Architecture:
+- Region A (us-east-1): accepts writes, replicates to B
+- Region B (eu-west-1): accepts writes, replicates to A
+- Conflict resolution: last-write-wins, application-specific logic, or CRDTs
+
+Characteristics:
+- RPO: Seconds (continuous replication)
+- RTO: Immediate (traffic continues in all regions)
+- Consistency: Eventual (data may diverge temporarily)
+- Cost: Higher (both regions fully operational)
+- Complexity: High (conflict resolution, split-brain scenarios)
+
+### Consistency Challenges
+
+When two regions accept writes, conflicts occur:
+
+```
+Time    us-east-1                eu-west-1
+-----   -----------              -----------
+T0      User A writes Name="Bob"
+T1                               User A writes Name="Charlie"
+T2      Replicate: Name="Bob"
+T3                               Replicate: Name="Charlie"
+T4      Conflict! Bob vs Charlie?
+```
+
+**Resolution strategies:**
+1. **Last-Write-Wins**: Keep whichever update arrived last (simple, loses data)
+2. **Vector Clocks**: Track causality, detect true conflicts (complex)
+3. **CRDTs**: Commutative data structures that converge (e.g., sets)
+4. **Application Logic**: Business rules (e.g., "newer timestamp wins")
+5. **Manual Resolution**: Ask user to resolve (bad UX)
+
+### Traffic Routing
+
+**Global Load Balancer**: Routes users to nearest/healthiest region
+
+- GeoDNS: DNS returns different IPs based on client location
+- Anycast: Same IP from multiple locations, BGP routes to closest
+- Application-layer routing: API gateway in each region
+
+## Practical Example
+
+<Tabs>
+<TabItem value="active-passive" label="Active-Passive Setup">
+
+```yaml
+# Active-Passive: us-east-1 (primary) + eu-west-1 (standby)
+
+# Primary Region (us-east-1): Multi-AZ PostgreSQL cluster
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-us-primary
+  namespace: data-layer
+spec:
+  instances: 3
+  postgresql:
+    parameters:
+      wal_level: replica
+      max_wal_senders: 10
+---
+# Standby Region (eu-west-1): Read-only replica of primary
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-eu-standby
+  namespace: data-layer
+spec:
+  instances: 1
+  primaryUpdateStrategy: unsupervised
+  postgresql:
+    parameters:
+      hot_standby: on
+      # This cluster replicates from us-east-1
+      # primary_conninfo: "host=postgres-us-primary.us-east-1 port=5432"
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://backups/postgres-eu
+      s3Credentials:
+        accessKeyId:
+          name: aws-credentials
+          key: access_key
+        secretAccessKey:
+          name: aws-credentials
+          key: secret_key
+      retention:
+        recoverWindowDays: 30
+---
+# Application in primary region (accepts writes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: default
+spec:
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                - us-east-1
+      containers:
+      - name: app
+        image: myapp:1.0.0
+        env:
+        - name: DATABASE_HOST
+          value: "postgres-us-primary.data-layer"
+        - name: DATABASE_WRITE_HOST
+          value: "postgres-us-primary.data-layer"
+        - name: DATABASE_READ_HOST
+          value: "postgres-us-primary.data-layer"  # Primary for strong consistency
+---
+# Application in standby region (read-only)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-eu-read-only
+  namespace: default
+spec:
+  replicas: 2
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                - eu-west-1
+      containers:
+      - name: app
+        image: myapp:1.0.0
+        env:
+        - name: DATABASE_HOST
+          value: "postgres-eu-standby.data-layer"
+        - name: DATABASE_WRITE_HOST
+          value: "postgres-us-primary.data-layer"  # Writes still go to primary
+        - name: DATABASE_READ_HOST
+          value: "postgres-eu-standby.data-layer"  # Reads from local replica
+        - name: READ_ONLY_MODE
+          value: "true"
+---
+# Global Load Balancer: Route to primary (or standby if primary down)
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-global
+spec:
+  type: LoadBalancer
+  selector:
+    app: myapp
+  ports:
+  - protocol: TCP
+    port: 443
+    targetPort: 8080
+  # In reality, use AWS Route53/CloudFront + GeoDNS
+  # CloudFront: cache at edge, route to nearest region
+  # Route53: health check primary, failover to standby on failure
+```
+
+**Traffic Flow (Active-Passive):**
+1. US user → Route53 (us-east-1 healthy) → myapp in us-east-1
+2. EU user → Route53 (us-east-1 healthy) → myapp in us-east-1 (cross-region, higher latency)
+3. US primary fails → Route53 (health check fails) → failover to eu-west-1
+4. All users → myapp in eu-west-1 (temporary high latency for US users)
+
+**RPO/RTO:**
+- RPO: 5 minutes (replication lag)
+- RTO: 2-3 minutes (health check + failover)
+
+</TabItem>
+
+<TabItem value="active-active" label="Active-Active Setup">
+
+```yaml
+# Active-Active: Both regions accept writes, eventual consistency
+
+# US Region (us-east-1): Primary database
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-us
+  namespace: data-layer
+spec:
+  instances: 3
+  postgresql:
+    parameters:
+      wal_level: logical  # Logical replication for bi-directional sync
+      max_wal_senders: 10
+---
+# EU Region (eu-west-1): Second primary (bi-directional replication)
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-eu
+  namespace: data-layer
+spec:
+  instances: 3
+  postgresql:
+    parameters:
+      wal_level: logical
+      max_wal_senders: 10
+  # This cluster <--> replicates with us-east-1 cluster
+---
+# Application in US region: accepts writes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-us
+spec:
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                - us-east-1
+      containers:
+      - name: app
+        image: myapp:1.0.0
+        env:
+        - name: DATABASE_HOST
+          value: "postgres-us.data-layer"
+        - name: ACTIVE_REGION
+          value: "us-east-1"
+        - name: REPLICATION_REGIONS
+          value: "eu-west-1"
+---
+# Application in EU region: also accepts writes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-eu
+spec:
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                - eu-west-1
+      containers:
+      - name: app
+        image: myapp:1.0.0
+        env:
+        - name: DATABASE_HOST
+          value: "postgres-eu.data-layer"
+        - name: ACTIVE_REGION
+          value: "eu-west-1"
+        - name: REPLICATION_REGIONS
+          value: "us-east-1"
+---
+# Global load balancer: GeoDNS-based routing
+# US users → us-east-1, EU users → eu-west-1
+# CloudFront/Route53 with health checks
+```
+
+**Traffic Flow (Active-Active):**
+1. US user → Route53 (geolocation) → myapp in us-east-1
+2. EU user → Route53 (geolocation) → myapp in eu-west-1
+3. Write in us-east-1: "Update product price = $100"
+4. Replication lag: ~100-500ms → EU region sees same price
+5. Write in eu-west-1 (nearly same time): "Update product price = $110"
+6. Conflict: Which price is correct? Resolution: last-write-wins OR application logic
+
+</TabItem>
+
+<TabItem value="conflict-resolution" label="Conflict Resolution Example">
+
+```python
+# Example: Last-Write-Wins (LWW) conflict resolution
+
+from datetime import datetime
+from typing import Any, Dict
+
+class MultiRegionValue:
+    """A value that can be written in multiple regions with timestamp."""
+
+    def __init__(self, value: Any, timestamp: float, region: str):
+        self.value = value
+        self.timestamp = timestamp
+        self.region = region
+
+    def merge(self, other: 'MultiRegionValue') -> 'MultiRegionValue':
+        """Resolve conflict: keep value with latest timestamp."""
+        if other.timestamp > self.timestamp:
+            return other
+        return self
+
+# Example: Two writes to same field, different regions
+us_write = MultiRegionValue(
+    value="Product name = Widget (US update)",
+    timestamp=1707900100.0,
+    region="us-east-1"
+)
+
+eu_write = MultiRegionValue(
+    value="Product name = Gadget (EU update)",
+    timestamp=1707900150.0,
+    region="eu-west-1"
+)
+
+# Conflict detected during replication
+winning_value = us_write.merge(eu_write)
+print(f"Resolved to: {winning_value.value}")
+# Output: Resolved to: Product name = Gadget (EU update)
+# (EU write has later timestamp, so it wins)
+---
+
+# Vector Clock approach: causality-aware conflicts
+from collections import defaultdict
+
+class VectorClock:
+    """Track causality with vector clocks."""
+
+    def __init__(self):
+        self.clock = defaultdict(int)  # {region: counter}
+
+    def increment(self, region: str):
+        """Increment counter for this region."""
+        self.clock[region] += 1
+
+    def happens_before(self, other: 'VectorClock') -> bool:
+        """Check if this clock happened before other."""
+        less = False
+        for region in set(self.clock.keys()) | set(other.clock.keys()):
+            if self.clock[region] > other.clock[region]:
+                return False
+            if self.clock[region] < other.clock[region]:
+                less = True
+        return less
+
+    def concurrent(self, other: 'VectorClock') -> bool:
+        """Check if clocks are concurrent (neither happened before)."""
+        return not self.happens_before(other) and not other.happens_before(self)
+
+# Example: Concurrent writes (true conflict)
+write1 = VectorClock()
+write1.clock = {"us-east-1": 1, "eu-west-1": 1}
+
+write2 = VectorClock()
+write2.clock = {"us-east-1": 1, "eu-west-1": 2}
+
+if write1.concurrent(write2):
+    print("Concurrent writes detected - true conflict, needs resolution")
+else:
+    print("Causality preserved - no conflict")
+---
+
+# CRDT approach: Conflict-free Replicated Data Type
+# Example: Add-wins set (Set CRDT)
+
+class AddWinsSet:
+    """Set where add operations always win over removes."""
+
+    def __init__(self, region: str):
+        self.region = region
+        self.adds = set()    # (value, unique_id)
+        self.removes = set()
+
+    def add(self, value: str):
+        """Add value with unique ID."""
+        unique_id = f"{self.region}:{len(self.adds)}"
+        self.adds.add((value, unique_id))
+
+    def remove(self, value: str):
+        """Remove all instances of value."""
+        self.removes.add(value)
+
+    def get_value(self) -> set:
+        """Current value (removes don't persist after replicate)."""
+        return {v for v, _ in self.adds if v not in self.removes}
+
+    def merge(self, other: 'AddWinsSet') -> 'AddWinsSet':
+        """Merge two sets: union of adds."""
+        merged = AddWinsSet(self.region)
+        merged.adds = self.adds | other.adds
+        merged.removes = self.removes & other.removes  # Intersection of removes
+        return merged
+
+# Usage: Global to-do list with users in multiple regions
+todos_us = AddWinsSet("us-east-1")
+todos_us.add("Buy groceries")
+todos_us.add("Call mom")
+
+todos_eu = AddWinsSet("eu-west-1")
+todos_eu.add("Reply to emails")
+
+# Merge: US and EU lists converge
+merged = todos_us.merge(todos_eu)
+print(f"Merged todos: {merged.get_value()}")
+# Output: Merged todos: {'Buy groceries', 'Call mom', 'Reply to emails'}
+# No conflicts - CRDT ensures convergence
+```
+
+**Conflict Resolution Strategies:**
+- **LWW (simple, loses data)**: Keep latest write
+- **Vector Clocks (complex, preserves causality)**: Detect true conflicts
+- **CRDTs (elegant, auto-converge)**: Data structures that merge safely
+- **Application Logic (business rules)**: "Newer timestamp wins" or domain rules
+- **Manual Resolution (bad)**: Ask user to choose
+
+</TabItem>
+
+<TabItem value="geo-routing" label="GeoDNS & Traffic Routing">
+
+```bash
+#!/bin/bash
+# Example: AWS Route53 GeoDNS routing for active-active
+
+# Setup 1: Simple GeoDNS (route by location)
+aws route53 create-hosted-zone-instance \
+  --name myapp.example.com \
+  --hosted-zone-id Z1234567890
+
+# Create record sets for different regions
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z1234567890 \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "myapp.example.com",
+          "Type": "A",
+          "SetIdentifier": "US",
+          "GeoLocation": {
+            "CountryCode": "US"
+          },
+          "AliasTarget": {
+            "HostedZoneId": "Z35SXDOTRQ7X7K",
+            "DNSName": "myapp-us.us-east-1.elb.amazonaws.com",
+            "EvaluateTargetHealth": true
+          }
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "myapp.example.com",
+          "Type": "A",
+          "SetIdentifier": "EU",
+          "GeoLocation": {
+            "CountryCode": "IE",
+            "ContinentCode": "EU"
+          },
+          "AliasTarget": {
+            "HostedZoneId": "Z32O12XQLNTSW2",
+            "DNSName": "myapp-eu.eu-west-1.elb.amazonaws.com",
+            "EvaluateTargetHealth": true
+          }
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "myapp.example.com",
+          "Type": "A",
+          "SetIdentifier": "Default",
+          "GeoLocation": {
+            "CountryCode": "*"
+          },
+          "AliasTarget": {
+            "HostedZoneId": "Z35SXDOTRQ7X7K",
+            "DNSName": "myapp-us.us-east-1.elb.amazonaws.com",
+            "EvaluateTargetHealth": true
+          }
+        }
+      }
+    ]
+  }'
+
+# Result:
+# User in US → myapp-us.us-east-1.elb.amazonaws.com (20ms latency)
+# User in EU → myapp-eu.eu-west-1.elb.amazonaws.com (20ms latency)
+# User elsewhere → myapp-us (default)
+
+# Setup 2: Health-aware failover
+# If US region is down, EU users get routed to US
+aws route53 create-health-check \
+  --health-check-config '{
+    "Type": "HTTPS",
+    "ResourcePath": "/health",
+    "FullyQualifiedDomainName": "myapp-us.us-east-1.elb.amazonaws.com",
+    "Port": 443,
+    "RequestInterval": 30,
+    "FailureThreshold": 3
+  }'
+
+# Failover policy: if US health check fails, EU serves all traffic
+```
+
+**Traffic Routing Options:**
+- **GeoDNS**: DNS returns regional IP based on client location (simple, 300ms TTL lag)
+- **Anycast**: Multiple regions use same IP, BGP routes to nearest (fast, complex)
+- **CDN (CloudFront)**: Cache at edge, origin per region (latency + bandwidth)
+- **App-layer**: API gateway detects region, redirects (flexible, adds hop)
+
+</TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Active-Passive vs Active-Active: Trade-Offs"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**Choose ACTIVE-PASSIVE When:**: Users are primarily in one region (US-based SaaS). Strong consistency is critical (financial data). Cost and operational simplicity matter. RTO of 10-15 minutes is acceptable.",
+      "**Choose ACTIVE-ACTIVE When:**: Global user base and latency matters (every ms counts). You can manage eventual consistency (chat, notifications, less critical data). You have ops expertise for conflict resolution. Regional autonomy/sovereignty required.",
+      "**DO: Route by Geography (GeoDNS)**: US users → us-east-1, EU users → eu-west-1. Each region optimized for local latency.",
+      "**DO: Detect and Handle Conflicts**: Last-write-wins with timestamps. Or application-specific conflict resolution. Or CRDT data structures.",
+      "**DO: Monitor Replication Lag**: Active-active: track lag between regions (100-500ms). Alert if lag exceeds SLA (e.g., >1s).",
+      "**DO: Test Cross-Region Failover**: Quarterly: simulate region failure. Verify failover time, data integrity, user impact."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**Choose ACTIVE-PASSIVE When:**: Users are spread globally and latency is critical. You have resources for active-active complexity. You need zero-downtime failover.",
+      "**Choose ACTIVE-ACTIVE When:**: Data must be strongly consistent (banking). Conflicts are unacceptable (inventory counts). Cost is constrained. Team is small.",
+      "**DO: Route by Geography (GeoDNS)**: Random routing. Or always routing to single region. Users suffer cross-region latency.",
+      "**DO: Detect and Handle Conflicts**: Ignore conflicts. Duplicate/corrupt data spreads silently.",
+      "**DO: Monitor Replication Lag**: Assume replication is instant. Users read stale data without warning.",
+      "**DO: Test Cross-Region Failover**: Assume failover will work. Discover bugs during real outage."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: Single-Region Everything",
+    body: "All infrastructure in us-east-1. Regional outage = total downtime. EU users suffer 100ms+ latency. No geographic redundancy.",
+  },
+  {
+    label: "Anti-Pattern: Active-Passive Without Testing",
+    body: "Setup replication, never test failover. During real failure, promotion fails (wrong DNS records, stale config). Downtime extends.",
+  },
+  {
+    label: "Anti-Pattern: Active-Active Without Conflict Resolution",
+    body: "Two regions accept writes, but no strategy for conflicts. Data corruption, lost updates, customer confusion.",
+  },
+  {
+    label: "Pattern: Active-Passive for Simplicity",
+    body: "Primary in us-east-1, warm standby in eu-west-1. Replication lag acceptable (5-15 min RPO). On failure, promote and update DNS. Simple, proven.",
+  },
+  {
+    label: "Pattern: Active-Active with CRDT Data Structures",
+    body: "Use conflict-free replicated data types (sets, maps, counters). Writes in any region auto-converge. No manual conflict resolution needed.",
+  },
+  {
+    label: "Pattern: Gradual Migration",
+    body: "Start: single region + backup (active-passive). Phase 1: add standby region. Phase 2: local caching (CDN). Phase 3: active-active for subset of data.",
+  },
+  {
+    label: "Anti-Pattern: Replication Lag Ignored",
+    body: "Active-active, EU and US write same record. Lag of 2 seconds causes user to see stale data. App doesn't warn user.",
+  },
+  {
+    label: "Pattern: Separate Read/Write Paths",
+    body: "Writes go to primary (strong consistency). Reads can use local replica (lower latency, eventual consistency). Best of both worlds.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is single-region SPOF eliminated (backup region exists)?",
+  "Is the choice of active-passive vs active-active justified by business needs?",
+  "Are RTO/RPO targets defined and achievable with chosen topology?",
+  "Is replication automated and monitored (lag tracking, alerts)?",
+  "If active-active: is conflict resolution strategy defined and tested?",
+  "Is geographic routing (GeoDNS) configured and latency-optimized?",
+  "Are region failures tested quarterly (failover drills)?",
+  "Is data consistency verified post-failover?",
+  "Are costs justified by resilience benefits (active-active is expensive)?",
+  "Is asynchronous replication lag transparent to users?",
+  "Are critical/consistent data replicated synchronously?",
+  "Is cross-region bandwidth cost understood and budgeted?",
+  "Can users continue operating in degraded mode (1 region down)?",
+  "Are split-brain scenarios detected and resolved automatically?",
+  "Is operational runbook for regional failover documented and practiced?",
+]} />
+
+## Self-Check
+
+1. **Right now**, what happens if your primary region fails? Do you have a runbook?
+2. **What's your RTO?** If "we don't know," that's a problem. Ask business.
+3. **Are your users global?** If latency matters to them, active-active may be justified.
+4. **Can you tolerate eventual consistency?** If not, active-passive only.
+5. **Have you tested failover?** If not, do it this month in staging.
+
+## Next Steps
+
+1. **Define RTO/RPO** — Interview business, document targets
+2. **Start active-passive** — Primary + warm standby. Simpler, proven
+3. **Add geographic routing** — GeoDNS to local regions
+4. **Test failover quarterly** — Automate DR drills
+5. **If needed, migrate to active-active** — Add conflict resolution, CRDTs
+6. **Monitor replication lag** — Alert if lag exceeds SLA
+7. **Document runbooks** — Who decides to failover? What's the procedure?
+
+## References
+
+1. <a href="https://aws.amazon.com/blogs/architecture/building-multi-region-active-active-architectures/" target="_blank" rel="nofollow noopener noreferrer">AWS: Multi-Region Active-Active Architectures ↗️</a>
+2. <a href="https://www.postgresql.org/docs/current/warm-standby.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL: Warm Standby Servers ↗️</a>
+3. <a href="https://crdt.tech/" target="_blank" rel="nofollow noopener noreferrer">CRDT: Conflict-free Replicated Data Types ↗️</a>
+4. <a href="https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf" target="_blank" rel="nofollow noopener noreferrer">Amazon Dynamo: Eventual Consistency Paper ↗️</a>
+5. <a href="https://cloud.google.com/architecture/designing-a-global-load-balancing-solution" target="_blank" rel="nofollow noopener noreferrer">Google Cloud: Global Load Balancing ↗️</a>
+---

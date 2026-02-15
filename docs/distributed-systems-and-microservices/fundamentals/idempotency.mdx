@@ -1,0 +1,448 @@
+---
+sidebar_position: 5
+title: "Idempotency"
+description: "Master idempotent operations to enable safe retries and deliver reliable message processing without duplicates or missing data."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [idempotency, retries, duplicate detection, exactly-once, at-least-once, idempotent keys, message deduplication]
+image: /img/archman-social-card.webp
+tags: [idempotency, retries, reliability, duplication, exactly-once, at-least-once, message-deduplication, safe-retries]
+hide_title: true
+---
+
+<Hero title="Idempotency" subtitle="Enable safe retries that don't create duplicates, enabling reliable message processing in distributed systems" imageAlt="Idempotency illustration" size="large" />
+
+## TL;DR
+
+An idempotent operation produces the same result whether executed once or multiple times. In distributed systems, retries are essential for reliability, but they risk duplicate side effects unless operations are idempotent. Implement idempotency with idempotent keys: send a unique identifier with each request. The server tracks which requests have been processed and ignores duplicates. This enables safe retries and reliable message delivery.
+
+## Learning Objectives
+
+- Understand idempotency and why it matters for retries
+- Distinguish idempotent and non-idempotent operations
+- Implement idempotent request handling with keys
+- Apply deduplication strategies for message processing
+- Understand trade-offs between exactly-once and at-least-once semantics
+
+## Motivating Scenario
+
+A payment API receives a $100 transfer request. The server processes it and sends a success response. But the network drops the response. The client times out and retries. The server processes the request again, charging $200 total instead of $100. The customer is overcharged.
+
+With idempotency: The client sends the same request again with the same idempotent key. The server recognizes it, skips processing, and returns the cached response. Customer charged once.
+
+## Understanding Idempotency
+
+<Figure
+  caption="Idempotent vs Non-Idempotent Operations"
+  content={`
+graph TB
+    A["Operation"]
+    A --> B{"Idempotent?<br/>Same result<br/>whether 1x or Nx"}
+
+    B -->|Yes| C["GET /api/user<br/>database.get<br/>object.toString<br/>account_balance"]
+    B -->|Yes| D["Read-only operations<br/>Lookups<br/>Queries"]
+
+    B -->|No| E["POST /api/transfer<br/>list.append<br/>counter.increment<br/>email.send"]
+    B -->|No| F["State-changing operations<br/>Collections modifications<br/>Side effects"]
+
+    style C fill:#c8e6c9
+    style D fill:#c8e6c9
+    style E fill:#ffcccc
+    style F fill:#ffcccc
+  `}
+/>
+
+### Idempotent Operations
+
+Executing the same operation multiple times with the same parameters produces the same result. Side effects happen only once.
+
+**Examples:**
+- Reading data (GET requests)
+- Setting a value (idempotent PUT, not incremental POST)
+- Deleting a resource (DELETE is idempotent: second delete returns 404 but state is unchanged)
+- Conditional operations ("set X to Y if current value is Z")
+
+<Tabs>
+<TabItem value="example-idempotent" label="Example">
+```python
+# GET is idempotent
+get('/users/123')  # Returns User 123
+get('/users/123')  # Returns User 123 again
+# Running it 100 times doesn't change the result or side effects
+
+# PUT is idempotent
+put('/users/123', {'name': 'Alice'})    # Sets name to Alice
+put('/users/123', {'name': 'Alice'})    # Sets name to Alice again
+# Running it 100 times doesn't change the result or side effects
+
+# DELETE is idempotent
+delete('/users/123')  # User deleted, returns 204
+delete('/users/123')  # User already deleted, returns 404
+# But both calls have same effect: user is gone
+```
+</TabItem>
+</Tabs>
+
+### Non-Idempotent Operations
+
+Executing the same operation multiple times produces different results or multiple side effects.
+
+**Examples:**
+- Posting data (POST requests, usually)
+- Incrementing a counter
+- Appending to a collection
+- Sending an email
+- Recording a payment
+
+<Tabs>
+<TabItem value="example-non-idempotent" label="Example">
+```python
+# POST usually creates duplicates
+post('/api/transfer', {'amount': 100, 'to': 'bob'})
+# First call: $100 transferred, response sent
+# Network drops response
+# Retry: $100 transferred again!
+# Result: $200 transferred
+
+# Incrementing is non-idempotent
+counter = 0
+increment(counter)  # counter = 1
+increment(counter)  # counter = 2 (different result!)
+```
+</TabItem>
+</Tabs>
+
+## Idempotent Keys
+
+The practical solution: make non-idempotent operations idempotent using **idempotent keys** (also called request IDs, correlation IDs, or de-duplication keys).
+
+<Figure
+  caption="Idempotent Key Processing"
+  content={`
+graph TB
+    A["Client sends<br/>POST with key 'req-123'<br/>amount: $100"]
+    B["Server receives request"]
+    C{"Key 'req-123'<br/>processed before?"}
+
+    C -->|No| D["Process request<br/>Transfer $100<br/>Store result with key"]
+    C -->|Yes| E["Return cached result<br/>Skip processing"]
+
+    D --> F["Return success"]
+    E --> F
+    F --> G["Client retries with<br/>same key 'req-123'"]
+    G --> H["Server returns<br/>cached result<br/>No duplicate transfer!"]
+
+    style A fill:#e3f2fd
+    style B fill:#e3f2fd
+    style C fill:#fff9c4
+    style D fill:#c8e6c9
+    style E fill:#c8e6c9
+    style F fill:#c8e6c9
+    style G fill:#e3f2fd
+    style H fill:#c8e6c9
+  `}
+/>
+
+### Implementation
+
+<Tabs>
+<TabItem value="node" label="Node.js">
+```javascript
+// Client: Send idempotent key with request
+const transactionId = crypto.randomUUID();
+const response = await fetch('/api/transfer', {
+    method: 'POST',
+    headers: {
+        'Idempotency-Key': transactionId
+    },
+    body: JSON.stringify({
+        amount: 100,
+        to: 'bob'
+    })
+});
+
+// Server: Track processed keys
+const processedRequests = new Map();
+
+app.post('/api/transfer', (req, res) => {
+    const key = req.headers['idempotency-key'];
+
+    // Check if already processed
+    if (processedRequests.has(key)) {
+        const cachedResult = processedRequests.get(key);
+        return res.json(cachedResult);
+    }
+
+    // Process request
+    const result = transfer(req.body.amount, req.body.to);
+
+    // Cache result with key
+    processedRequests.set(key, result);
+    res.json(result);
+});
+```
+</TabItem>
+<TabItem value="python" label="Python">
+```python
+from flask import Flask, request, jsonify
+import uuid
+
+app = Flask(__name__)
+processed_requests = {}
+
+@app.route('/api/transfer', methods=['POST'])
+def transfer():
+    idempotency_key = request.headers.get('Idempotency-Key')
+
+    # Check if already processed
+    if idempotency_key in processed_requests:
+        return jsonify(processed_requests[idempotency_key]), 200
+
+    # Process request
+    data = request.json
+    result = {
+        'id': str(uuid.uuid4()),
+        'status': 'success',
+        'amount': data['amount'],
+        'to': data['to']
+    }
+
+    # Cache result
+    processed_requests[idempotency_key] = result
+
+    return jsonify(result), 200
+
+# Client usage
+import requests
+transaction_id = str(uuid.uuid4())
+response = requests.post(
+    'http://localhost/api/transfer',
+    headers={'Idempotency-Key': transaction_id},
+    json={'amount': 100, 'to': 'bob'}
+)
+```
+</TabItem>
+</Tabs>
+
+## Message Processing Semantics
+
+Different systems provide different guarantees:
+
+<Vs items={[
+{
+    label: "At-Least-Once",
+    points: [
+      "Most message queues (RabbitMQ, Kafka)",
+      "HTTP with retries",
+      "Most distributed systems"
+    ]
+  },
+{
+    label: "Exactly-Once (Idempotent)",
+    points: [
+      "Idempotent HTTP endpoints",
+      "Systems with deduplication",
+      "Kafka with transactions"
+    ]
+  }
+]} />
+
+## Practical Deduplication Strategies
+
+### 1. In-Memory Deduplication (Short-lived)
+
+Cache recent keys in memory. Works for short-lived caches but not persistent storage.
+
+**Pro:** Fast, simple
+**Con:** Doesn't survive restarts
+
+### 2. Database-Backed Deduplication
+
+Store processed keys in a database. Query the database to check if a key was already processed.
+
+```sql
+CREATE TABLE processed_requests (
+    idempotency_key VARCHAR(255) PRIMARY KEY,
+    result JSON,
+    created_at TIMESTAMP
+);
+
+-- Before processing
+SELECT result FROM processed_requests
+WHERE idempotency_key = ?;
+
+-- After processing
+INSERT INTO processed_requests (idempotency_key, result, created_at)
+VALUES (?, ?, NOW())
+ON DUPLICATE KEY UPDATE created_at = NOW();
+```
+
+**Pro:** Persists across restarts
+**Con:** Database query overhead
+
+### 3. Distributed Cache (Redis)
+
+Store processed keys in a distributed cache with TTL. Trades durability for speed.
+
+```python
+import redis
+
+cache = redis.Redis(host='localhost', port=6379)
+
+# Check if processed
+cached_result = cache.get(f'idempotency:{key}')
+if cached_result:
+    return json.loads(cached_result)
+
+# Process and cache with TTL
+result = process(request)
+cache.setex(f'idempotency:{key}', 3600, json.dumps(result))
+```
+
+**Pro:** Very fast, distributed
+**Con:** May lose keys if cache cleared
+
+### 4. Event Sourcing
+
+Store all events with their IDs. Replay to reconstruct state. Duplicates are idempotent because replaying the same event twice doesn't change state.
+
+**Pro:** Full audit trail, natural deduplication
+**Con:** Complex to implement
+
+## Handling Deduplication Storage
+
+Keys accumulate over time. Implement cleanup strategies:
+
+- **TTL-Based:** Automatically expire old keys (suitable for short windows)
+- **Age-Based:** Delete keys older than X days
+- **Size-Based:** Keep only the N most recent keys
+- **Composite:** Expire keys, but keep immutable audit log
+
+<Tabs>
+<TabItem value="ttl" label="TTL Example">
+```python
+# Auto-expire keys after 24 hours
+IDEMPOTENCY_TTL = 24 * 3600  # 24 hours
+
+cache.setex(
+    f'idempotency:{key}',
+    IDEMPOTENCY_TTL,
+    json.dumps(result)
+)
+```
+</TabItem>
+</Tabs>
+
+## When to Use Idempotency
+
+**Always use idempotency when:**
+- The operation is state-changing (POST, PUT, DELETE)
+- The operation will be retried
+- Duplicates would cause problems
+- Financial or critical operations
+
+**Safe to skip for:**
+- Read-only operations (GET)
+- Operations that naturally can't duplicate (unique constraint)
+- Operations where duplicates are harmless
+
+## Self-Check
+
+1. Which of your APIs are idempotent? Which should be?
+2. How would your system handle a duplicate payment?
+3. What happens if an idempotency key is lost (cache cleared)?
+
+:::info One Takeaway
+Idempotency turns unreliable networks (at-least-once) into reliable systems (effectively exactly-once). It's the key to safe retries.
+
+:::
+
+## Next Steps
+
+1. **Implement Retries:** Read [Timeouts and Retries](/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/timeouts-retries-exponential-backoff-jitter)
+2. **Design APIs:** Learn [API Styles](/docs/distributed-systems-and-microservices/communication/api-styles)
+3. **Ensure Reliability:** Explore [Sync vs Async Communication](/docs/distributed-systems-and-microservices/communication/sync-vs-async)
+
+## Stripe's Idempotency Model (Real-World)
+
+```javascript
+// Stripe API: Every payment request includes idempotent key
+async function chargeCard(customerId, amount) {
+    const idempotencyKey = crypto.randomUUID();
+
+    // First request
+    let response = await stripe.charges.create({
+        customer: customerId,
+        amount: amount,
+        idempotency_key: idempotencyKey
+    });
+    console.log(response.charge_id);  // "ch_123"
+
+    // Network fails here, client retries...
+
+    // Second request (same idempotency key)
+    response = await stripe.charges.create({
+        customer: customerId,
+        amount: amount,
+        idempotency_key: idempotencyKey  // Same key!
+    });
+    console.log(response.charge_id);  // Still "ch_123" (no duplicate charge)
+
+    // Stripe: "I've seen this key before, here's the cached result"
+    // Customer charged once, not twice
+}
+```
+
+### Exactly-Once Semantics in Message Queues
+
+```python
+# Kafka: Built-in idempotency with transactions
+# Idempotent producer: automatic deduplication
+
+producer = KafkaProducer(
+    bootstrap_servers=['localhost:9092'],
+    enable_idempotence=True  # Exact once enabled
+)
+
+# Within a transaction: atomic multi-topic publish
+with producer.transaction():
+    producer.send('payments', value=payment_event)
+    producer.send('analytics', value=analytics_event)
+    # Both publish or neither (no halfway)
+
+# Consumer: Process message idempotently
+for message in consumer:
+    idempotency_key = message.key
+    payload = message.value
+
+    # Database: insert with unique constraint on key
+    try:
+        db.insert_with_unique_key(idempotency_key, payload)
+        process(payload)
+    except UniqueViolationError:
+        # Key already processed, skip
+        print(f"Already processed {idempotency_key}, skipping")
+```
+
+### Cost of Idempotency
+
+| Method | Storage | Query Cost | TTL Management |
+|--------|---------|-----------|-----------------|
+| In-Memory | High RAM | O(1) lookup | Manual cleanup |
+| Database | Cheap | O(1) if indexed | Automatic with TTL column |
+| Distributed Cache (Redis) | Moderate | O(1) network | Automatic expiration |
+| Event Sourcing | Very High | O(n) replay | Natural (all events kept) |
+
+**Recommendation**: Start with database for < 1M transactions/day, migrate to Redis if becomes bottleneck.
+
+## References
+
+- Kleppmann, M. (2017). "Designing Data-Intensive Applications". O'Reilly Media.
+- Vogels, W. (2008). "Eventually Consistent". Communications of the ACM.
+- Amazon Web Services (2021). "Implementing Distributed Idempotency". AWS Architecture Blog.
+- Stripe. (n.d.). "Idempotent Requests". Stripe API Documentation.
+- Kafka documentation on idempotent producers and transactions
+

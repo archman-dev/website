@@ -1,0 +1,485 @@
+---
+sidebar_position: 2
+title: "GraphQL"
+description: "Design flexible, client-driven APIs with GraphQL schemas and resolvers"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [GraphQL, schema design, resolvers, queries, mutations, subscriptions, batching, N+1 problem, performance]
+image: /img/archman-social-card.webp
+tags: [GraphQL, API-design, schema-design, resolvers, queries, mutations, subscriptions, query-language, performance, flexibility]
+hide_title: true
+---
+
+<Hero title="GraphQL" subtitle="Design flexible, client-driven APIs with precise data fetching" imageAlt="GraphQL illustration" size="large" />
+
+## TL;DR
+
+GraphQL is a query language for APIs that lets clients request exactly what data they need. Unlike REST's fixed representations, GraphQL clients specify shape and depth. A single query fetches users and their recent orders in one roundtrip. The server defines a schema (types, fields, rules). Resolvers handle fetching data for each field. The N+1 problem and batching complexity are real concerns, but design patterns like DataLoader mitigate them. GraphQL excels for flexible APIs; REST excels for simple, stable ones. Choose based on your client diversity and evolution pace.
+
+## Learning Objectives
+
+- Design GraphQL schemas for clarity and performance
+- Distinguish queries, mutations, and subscriptions
+- Understand resolver patterns and N+1 problems
+- Implement batching and caching strategies
+- Decide when GraphQL makes sense vs REST
+
+## Motivating Scenario
+
+A mobile app needs a user profile: name, email, recent orders (with order totals). A REST approach requires three calls: `/users/{id}`, `/users/{id}/orders`, `/orders/{id}/products` (to calculate totals). A web app also needs this but adds an address endpoint. A partner portal doesn't need orders at all. Each client has different data requirements.
+
+GraphQL lets each client request exactly what it needs in one query. The app fetches user, orders, and product data in one roundtrip. The website queries the same fields. The partner portal queries only name and email. The server doesn't bloat responses with unused data.
+
+## Core Concepts
+
+### Schema, Types, and Fields
+
+A GraphQL schema defines the shape of data clients can query. Types are objects with fields, scalars are primitives, enums define allowed values.
+
+```graphql
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  orders: [Order!]!
+}
+
+type Order {
+  id: ID!
+  total: Float!
+  status: OrderStatus!
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+type Query {
+  user(id: ID!): User
+  users(limit: Int = 20, offset: Int = 0): [User!]!
+}
+```
+
+### Resolvers
+
+Resolvers are functions that fetch data for each field. The `user` field resolver queries the database. The `orders` field resolver fetches orders for that user.
+
+### The N+1 Problem
+
+Naive resolvers cause N+1 queries: fetch user (1 query), then for each order, fetch product details (N queries). With 100 orders, that's 101 queries.
+
+### Batching and DataLoader
+
+Batching collects multiple field requests and fetches data efficiently. DataLoader caches requests within a query execution, preventing duplicate database hits.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="schema" label="Schema Design">
+
+```graphql
+# ✅ Clear, well-structured schema
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  createdAt: DateTime!
+  orders(limit: Int = 10, offset: Int = 0): [Order!]!
+}
+
+type Order {
+  id: ID!
+  total: Float!
+  status: OrderStatus!
+  items: [OrderItem!]!
+}
+
+type OrderItem {
+  product: Product!
+  quantity: Int!
+  price: Float!
+}
+
+type Product {
+  id: ID!
+  name: String!
+  sku: String!
+}
+
+enum OrderStatus {
+  PENDING
+  SHIPPED
+  DELIVERED
+}
+
+type Query {
+  user(id: ID!): User
+  users(limit: Int = 20): [User!]!
+}
+
+type Mutation {
+  createOrder(userId: ID!, items: [OrderItemInput!]!): Order
+}
+```
+
+</TabItem>
+<TabItem value="query" label="Client Query">
+
+```graphql
+# Client requests exactly what it needs
+query GetUserOrders {
+  user(id: "123") {
+    name
+    email
+    orders(limit: 5) {
+      id
+      total
+      status
+      items {
+        product {
+          name
+        }
+        quantity
+        price
+      }
+    }
+  }
+}
+
+# Response: Only requested fields
+{
+  "data": {
+    "user": {
+      "name": "Alice",
+      "email": "alice@example.com",
+      "orders": [
+        {
+          "id": "order-1",
+          "total": 99.99,
+          "status": "DELIVERED",
+          "items": [
+            {
+              "product": { "name": "Widget" },
+              "quantity": 2,
+              "price": 49.99
+            }
+        }
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem value="resolver" label="N+1 Problem & Solution">
+
+```javascript
+// ❌ NAIVE RESOLVER - N+1 queries
+const resolvers = {
+  User: {
+    orders: async (user) => {
+      // Fetches orders for this user
+      return db.query('SELECT * FROM orders WHERE user_id = ?', user.id);
+    }
+  },
+  Order: {
+    items: async (order) => {
+      // Each order fetches its items - N additional queries if N orders
+      return db.query('SELECT * FROM order_items WHERE order_id = ?', order.id);
+    },
+    product: async (item) => {
+      // Each item fetches product - another N queries
+      return db.query('SELECT * FROM products WHERE id = ?', item.product_id);
+    }
+  }
+};
+
+// ✅ BATCHED RESOLVER - Efficient
+
+const productLoader = new DataLoader(async (productIds) => {
+  // Fetch all products in one query instead of one per item
+  const products = await db.query(
+    'SELECT * FROM products WHERE id IN (?)',
+    [productIds]
+  );
+  // Return in same order as input
+  return productIds.map(id => products.find(p => p.id === id));
+});
+
+const resolvers = {
+  User: {
+    orders: async (user) => {
+      return db.query('SELECT * FROM orders WHERE user_id = ?', user.id);
+    }
+  },
+  Order: {
+    items: async (order) => {
+      return db.query('SELECT * FROM order_items WHERE order_id = ?', order.id);
+    }
+  },
+  OrderItem: {
+    product: async (item) => {
+      // DataLoader batches these requests
+      return productLoader.load(item.product_id);
+    }
+  }
+};
+```
+
+</TabItem>
+</Tabs>
+
+## REST vs GraphQL
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use REST When",
+    points: [
+      "Simple, stable resources",
+      "Caching infrastructure important",
+      "Clients have similar data needs",
+      "HTTP semantics matter (PUT, DELETE)",
+      "Team familiar with HTTP conventions"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use GraphQL When",
+    points: [
+      "Diverse clients with different needs",
+      "Frequent API evolution",
+      "Over-fetching is costly (mobile)",
+      "Complex data relationships",
+      "Single endpoint preferred"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Performance Considerations
+
+### Depth Limiting
+
+Prevent deeply nested queries:
+
+```graphql
+# This query digs 10 levels deep - wasteful and dangerous
+query {
+  user {
+    orders {
+      items {
+        product {
+          supplier {
+            contacts {
+              company {
+                employees {
+                  manager {
+                    department {
+                      budget
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+# Solution: set max depth to 4-5
+```
+
+### Query Complexity Scoring
+
+Assign costs to fields:
+
+```graphql
+type User {
+  id: String! # Cost: 1
+  name: String! # Cost: 1
+  orders(limit: Int): [Order!]! # Cost: limit (can return 1000 items)
+}
+
+type Order {
+  id: String! # Cost: 1
+  items: [OrderItem!]! # Cost: 1 per item × count
+}
+
+# Query complexity: user(1) + orders(limit:10, cost=10) + items(per order, cost=5) = 1 + 10 + (10×5) = 61
+# Set threshold: reject > 100 to prevent DOS
+```
+
+### Caching Strategies
+
+**Problem**: GraphQL doesn't use HTTP caching (single endpoint for all queries).
+
+**Solutions**:
+
+1. **Field-level caching**: Cache resolver results
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=1000)
+def get_product(product_id):
+    return db.query("SELECT * FROM products WHERE id = ?", product_id)
+```
+
+2. **Persisted queries**: Pre-define queries, send query ID instead of full query
+```graphql
+# Client sends: { "id": "GetUserOrders", "variables": { "userId": "123" } }
+# Server executes pre-defined query
+```
+
+3. **HTTP caching with persisted queries**: Use GET requests, set Cache-Control headers
+
+### Subscriptions: Real-time Updates
+
+Real-time data via WebSocket:
+
+```graphql
+subscription OnOrderCreated {
+  orderCreated {
+    id
+    status
+    total
+  }
+}
+```
+
+Implementation complexity:
+- WebSocket connection management
+- Broadcasting to subscribed clients
+- Unsubscription cleanup
+- Backpressure handling (what if updates come faster than client can process?)
+
+### Monitoring and Observability
+
+Track GraphQL-specific metrics:
+- Query execution time (median, p99)
+- N+1 query occurrences
+- Cache hit rate
+- Resolver performance
+- Query complexity distribution
+
+## Design Review Checklist
+
+- [ ] Schema types are clear and named meaningfully
+- [ ] Fields are nullable appropriately (! for required)
+- [ ] Resolvers batched to avoid N+1 queries
+- [ ] DataLoader or equivalent caching implemented
+- [ ] Query depth limits enforced
+- [ ] Query complexity scoring prevents DOS
+- [ ] Mutations clearly express side effects
+- [ ] Error handling consistent across resolvers
+- [ ] Schema documented with descriptions
+- [ ] Testing covers resolver edge cases
+
+## Common Pitfalls
+
+### Pitfall: Poorly Designed Mutations
+
+Mutations should clearly express side effects:
+
+```graphql
+# Bad: vague return type
+type Mutation {
+  updateUser(id: ID!, data: JSON): String  # returns what? error message? success message?
+}
+
+# Good: explicit return type with errors
+type Mutation {
+  updateUser(id: ID!, input: UpdateUserInput!): UpdateUserPayload!
+}
+
+type UpdateUserPayload {
+  success: Boolean!
+  user: User  # null if failed
+  errors: [UserError!]!
+}
+
+type UserError {
+  field: String!
+  message: String!
+}
+```
+
+### Pitfall: Unvalidated Input
+
+```graphql
+# Bad: no validation
+input CreateUserInput {
+  email: String
+  age: Int
+}
+
+# Good: validation in schema
+input CreateUserInput {
+  email: String! @validate(format: "email")
+  age: Int! @validate(min: 13, max: 150)
+  name: String! @validate(minLength: 2, maxLength: 100)
+}
+```
+
+### Pitfall: Breaking Schema Changes
+
+GraphQL schema is a contract. Changes break clients.
+
+```graphql
+# BAD: removing field breaks existing queries
+type User {
+  id: ID!
+  name: String!
+  # removed: email String!
+}
+
+# GOOD: deprecate, then remove later
+type User {
+  id: ID!
+  name: String!
+  email: String @deprecated(reason: "Use contactEmail instead")
+  contactEmail: String
+}
+
+# After clients migrate: remove email
+```
+
+## Self-Check
+
+- What problem does DataLoader solve in GraphQL resolvers?
+  - Answer: Batching requests. Instead of 1 query per item (N+1), collect all items and fetch in one query (1).
+
+- Why is query complexity scoring important?
+  - Answer: Prevents DOS attacks. Without it, a client could request 1 million nested items, overwhelming the server.
+
+- When might REST be preferable to GraphQL?
+  - Answer: Simple, stable resources (CRUD), caching critical (HTTP caching works well), team unfamiliar with GraphQL, client needs are homogeneous.
+
+- How do you handle errors in GraphQL (no HTTP status codes)?
+  - Answer: Return errors in response with error codes and messages. Client checks `errors` array and `data` values.
+
+- What's the difference between query and mutation?
+  - Answer: Query is idempotent (fetches data), Mutation modifies state (has side effects). Use mutations for writes.
+
+:::info One Takeaway
+GraphQL empowers clients with precise data fetching, but resolvers require careful design to avoid N+1 performance cliffs. Use DataLoader, complexity scoring, and depth limiting to build performant APIs.
+
+:::
+
+## Next Steps
+
+- Read **API Security** for GraphQL-specific auth patterns
+- Study **Error Formats** for GraphQL error responses
+- Explore **Versioning Strategies** for GraphQL schema evolution
+
+## References
+
+- GraphQL Official Specification (graphql.org)
+- GraphQL Best Practices (How to GraphQL)
+- DataLoader Pattern (facebook/dataloader)
+- GraphQL Performance (Apollo Docs)

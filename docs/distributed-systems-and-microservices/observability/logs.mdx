@@ -1,0 +1,433 @@
+---
+sidebar_position: 1
+title: "Logs and Structured Logging"
+description: "Collect and analyze logs with structure and correlation IDs to understand system behavior."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 11
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [logging, structured-logging, logs, correlation-ids, trace-ids, log-aggregation, debugging, observability]
+image: /img/archman-social-card.webp
+tags: [observability, logging, debugging, distributed-systems, operational-excellence, reliability, monitoring, troubleshooting, best-practices, patterns]
+hide_title: true
+---
+
+<Hero title="Logs and Structured Logging" subtitle="Collect and analyze logs with structure and correlation IDs to understand system behavior." imageAlt="Structured logging illustration" size="large" />
+
+## TL;DR
+
+Logs are your first window into what happened. Unstructured logs are hard to parse and analyze at scale. Use structured logging: emit logs as JSON or key-value pairs so log aggregation systems can parse and query them. Include correlation IDs—unique identifiers that follow requests across services—so you can reconstruct the full request flow across service boundaries. Log at appropriate levels: DEBUG for development, INFO for important events, WARN for unusual but non-fatal conditions, ERROR for failures. Ship logs to a centralized system (ELK, Datadog, etc.). This enables searching, aggregating, and alerting across all services simultaneously.
+
+## Learning Objectives
+
+- Design structured log formats for programmatic parsing
+- Implement correlation IDs for request tracing
+- Choose appropriate log levels
+- Ship logs to centralized aggregation systems
+- Query and analyze logs across services
+- Set up alerts based on log patterns
+
+## Motivating Scenario
+
+A user reports that their order didn't ship. The order service logs "Order created", the inventory service logs "Reserved", and the shipping service logs nothing. Where did the request fail? With correlation IDs, you can search all logs for a single trace ID and see the complete request flow: which services handled it, which succeeded, which failed, and why.
+
+## Core Concepts
+
+### Structured Logging
+
+Emit logs as JSON or key-value pairs instead of free-form text. Structured logs enable log aggregation systems to parse, index, and query logs programmatically. A query like "show all orders from region=US with status=failed" becomes possible.
+
+### Correlation IDs
+
+Assign a unique ID to each user request. Pass this ID through all service-to-service calls. Log the correlation ID in every log entry. When debugging, search for the correlation ID and get the complete request journey across all services.
+
+### Log Levels
+
+DEBUG: verbose information for development. INFO: important events (user logged in, order created). WARN: unusual but non-fatal (high latency, missing optional data). ERROR: failures (invalid input, service unavailable). Use appropriate levels so you can filter logs by severity.
+
+### Centralized Log Aggregation
+
+Collect logs from all services into a central system. This enables cross-service analysis, retention policies, and alerting. Tools like ELK (Elasticsearch, Logstash, Kibana) or Datadog make this accessible.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Unstructured logging
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def create_order(user_id, items):
+    logger.info(f"Creating order for user {user_id}")
+    # ... later ...
+    logger.info(f"Order {order_id} created successfully")
+    # Can't easily search or filter these logs
+
+# ✅ EXCELLENT - Structured logging with correlation IDs
+import json
+import logging
+import uuid
+from contextvars import ContextVar
+
+# Correlation ID in context
+correlation_id_var: ContextVar[str] = ContextVar('correlation_id')
+
+class StructuredFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            'timestamp': self.formatTime(record),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': record.getMessage(),
+            'correlation_id': correlation_id_var.get(None),
+        }
+        # Add extra fields from record
+        if hasattr(record, 'extra_fields'):
+            log_entry.update(record.extra_fields)
+
+        return json.dumps(log_entry)
+
+# Configure logger
+handler = logging.StreamHandler()
+handler.setFormatter(StructuredFormatter())
+logger = logging.getLogger(__name__)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+def set_correlation_id(request_id=None):
+    """Set correlation ID for this request context"""
+    correlation_id = request_id or str(uuid.uuid4())
+    correlation_id_var.set(correlation_id)
+    return correlation_id
+
+def create_order(user_id, items):
+    correlation_id = set_correlation_id()
+
+    logger.info("Order creation started", extra={
+        'extra_fields': {
+            'user_id': user_id,
+            'item_count': len(items),
+            'event': 'order_creation_started'
+        }
+    })
+
+    order = Order(user_id=user_id, items=items)
+    db.insert(order)
+
+    logger.info("Order creation completed", extra={
+        'extra_fields': {
+            'user_id': user_id,
+            'order_id': order.id,
+            'total': order.total,
+            'event': 'order_creation_completed'
+        }
+    })
+
+    return order
+
+# Usage in request handler
+def handle_order_request(request):
+    correlation_id = request.headers.get('X-Correlation-ID') or str(uuid.uuid4())
+    set_correlation_id(correlation_id)
+
+    try:
+        order = create_order(request.user_id, request.items)
+        return {'order_id': order.id}
+    except Exception as e:
+        logger.error("Order creation failed", extra={
+            'extra_fields': {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'user_id': request.user_id,
+                'event': 'order_creation_failed'
+            }
+        })
+        raise
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Unstructured logs
+log.Printf("Creating order for user %s", userID)
+log.Printf("Order %s created successfully", orderID)
+
+// ✅ EXCELLENT - Structured logging with correlation IDs
+import (
+    "encoding/json"
+    "context"
+    "log"
+)
+
+type LogEntry struct {
+    Timestamp     string                 `json:"timestamp"`
+    Level         string                 `json:"level"`
+    Message       string                 `json:"message"`
+    CorrelationID string                 `json:"correlation_id"`
+    Fields        map[string]interface{} `json:"fields,omitempty"`
+}
+
+type ContextKey string
+
+const CorrelationIDKey ContextKey = "correlation_id"
+
+func LogInfo(ctx context.Context, message string, fields map[string]interface{}) {
+    correlationID := ctx.Value(CorrelationIDKey)
+    if correlationID == nil {
+        correlationID = ""
+    }
+
+    entry := LogEntry{
+        Timestamp:     time.Now().Format(time.RFC3339),
+        Level:         "INFO",
+        Message:       message,
+        CorrelationID: correlationID.(string),
+        Fields:        fields,
+    }
+
+    data, _ := json.Marshal(entry)
+    log.Println(string(data))
+}
+
+func LogError(ctx context.Context, message string, err error, fields map[string]interface{}) {
+    if fields == nil {
+        fields = make(map[string]interface{})
+    }
+    fields["error"] = err.Error()
+
+    correlationID := ctx.Value(CorrelationIDKey)
+    if correlationID == nil {
+        correlationID = ""
+    }
+
+    entry := LogEntry{
+        Timestamp:     time.Now().Format(time.RFC3339),
+        Level:         "ERROR",
+        Message:       message,
+        CorrelationID: correlationID.(string),
+        Fields:        fields,
+    }
+
+    data, _ := json.Marshal(entry)
+    log.Println(string(data))
+}
+
+func CreateOrder(ctx context.Context, userID string, items []Item) (*Order, error) {
+    LogInfo(ctx, "Order creation started", map[string]interface{}{
+        "user_id":    userID,
+        "item_count": len(items),
+        "event":      "order_creation_started",
+    })
+
+    order := &Order{UserID: userID, Items: items}
+    if err := db.Insert(ctx, order); err != nil {
+        LogError(ctx, "Order creation failed", err, map[string]interface{}{
+            "user_id": userID,
+            "event":   "order_creation_failed",
+        })
+        return nil, err
+    }
+
+    LogInfo(ctx, "Order creation completed", map[string]interface{}{
+        "user_id":  userID,
+        "order_id": order.ID,
+        "total":    order.Total(),
+        "event":    "order_creation_completed",
+    })
+
+    return order, nil
+}
+
+func HandleOrderRequest(w http.ResponseWriter, r *http.Request) {
+    correlationID := r.Header.Get("X-Correlation-ID")
+    if correlationID == "" {
+        correlationID = uuid.New().String()
+    }
+
+    ctx := context.WithValue(r.Context(), CorrelationIDKey, correlationID)
+    w.Header().Set("X-Correlation-ID", correlationID)
+
+    order, err := CreateOrder(ctx, getUserID(r), getItems(r))
+    if err != nil {
+        w.WriteHeader(http.StatusInternalServerError)
+        return
+    }
+
+    json.NewEncoder(w).Encode(order)
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Unstructured console.log
+console.log(`Creating order for user ${userId}`);
+console.log(`Order ${orderId} created successfully`);
+
+// ✅ EXCELLENT - Structured logging with correlation IDs
+const winston = require('winston');
+const { v4: uuidv4 } = require('uuid');
+
+const correlationIdVar = new Map();
+
+const logger = winston.createLogger({
+    format: winston.format.json(),
+    transports: [
+        new winston.transports.Console()
+    ]
+});
+
+class CorrelationIdMiddleware {
+    static setId(id) {
+        correlationIdVar.set('id', id);
+    }
+
+    static getId() {
+        return correlationIdVar.get('id');
+    }
+
+    static middleware() {
+        return (req, res, next) => {
+            const correlationId = req.headers['x-correlation-id'] || uuidv4();
+            CorrelationIdMiddleware.setId(correlationId);
+            res.setHeader('X-Correlation-ID', correlationId);
+            next();
+        };
+    }
+}
+
+function logInfo(message, fields = {}) {
+    logger.info(message, {
+        correlation_id: CorrelationIdMiddleware.getId(),
+        ...fields
+    });
+}
+
+function logError(message, error, fields = {}) {
+    logger.error(message, {
+        correlation_id: CorrelationIdMiddleware.getId(),
+        error: error.message,
+        error_type: error.constructor.name,
+        ...fields
+    });
+}
+
+async function createOrder(userId, items) {
+    logInfo('Order creation started', {
+        user_id: userId,
+        item_count: items.length,
+        event: 'order_creation_started'
+    });
+
+    try {
+        const order = new Order({ userId, items });
+        await db.insert('orders', order);
+
+        logInfo('Order creation completed', {
+            user_id: userId,
+            order_id: order.id,
+            total: order.total,
+            event: 'order_creation_completed'
+        });
+
+        return order;
+    } catch (error) {
+        logError('Order creation failed', error, {
+            user_id: userId,
+            event: 'order_creation_failed'
+        });
+        throw error;
+    }
+}
+
+// Express usage
+app.use(CorrelationIdMiddleware.middleware());
+
+app.post('/orders', async (req, res) => {
+    try {
+        const order = await createOrder(req.user.id, req.body.items);
+        res.json(order);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create order' });
+    }
+});
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "When to Use Structured Logging",
+    points: ["Distributed systems with multiple services", "Systems requiring debugging across services", "High-volume logging where analysis is essential", "Regulatory/compliance systems requiring detailed audit trails", "Production systems where operational insight is critical"],
+    highlightTone: "positive"
+  },
+{
+    label: "When Simple Logging is Fine",
+    points: ["Development and local testing", "Small applications with single service", "Scripts and one-off tools", "Systems where logs aren"]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Unstructured Log Spam",
+      description: "Too many logs with too much information create noise. Choose log levels carefully and log meaningful events, not every operation.",
+      icon: "⚠️"
+    }, {
+      title: "Missing Correlation IDs",
+      description: "Without correlation IDs, tracking requests across services is nearly impossible. Always propagate them.",
+      icon: "⚠️"
+    }, {
+      title: "Structured JSON Logs",
+      description: "Emit all logs as JSON or structured key-value pairs. This enables programmatic parsing and querying.",
+      icon: "✓"
+    }, {
+      title: "Correlation ID Propagation",
+      description: "Pass correlation IDs through all service boundaries: HTTP headers, message queues, database context.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "All logs are structured (JSON or key-value pairs, not free-form text)",
+    "Correlation IDs are included in every log entry",
+    "Correlation IDs are propagated across service boundaries",
+    "Appropriate log levels are used (DEBUG, INFO, WARN, ERROR)",
+    "Sensitive data (passwords, tokens) is never logged",
+    "Logs are shipped to centralized aggregation system",
+    "Log retention policies are defined and enforced"
+  ]}
+/>
+
+## Self-Check
+
+- How would you trace a request across multiple services using logs?
+- What information should be included in a structured log entry?
+- How do you prevent log spam while maintaining visibility?
+
+:::info One Takeaway
+Structured logging with correlation IDs transforms logs from write-only archives into queryable assets. Invest in this infrastructure early—debugging distributed systems without it is nearly impossible.
+
+:::
+
+## Next Steps
+
+- Implement structured logging in all services
+- Add correlation ID middleware to all entry points
+- Set up centralized log aggregation (ELK, Datadog, etc.)
+- Create dashboards and alerts based on log patterns
+
+## References
+
+- Google Cloud Logging: Structured Logging
+- ELK Stack Documentation
+- Datadog Logging Documentation

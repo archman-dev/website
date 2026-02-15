@@ -1,0 +1,467 @@
+---
+sidebar_position: 4
+title: "Complete Mediation and Fail Securely"
+description: "Check every access request and break secure, not open"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [complete mediation, fail securely, access control, authorization, security enforcement, error handling, graceful degradation]
+image: /img/archman-social-card.webp
+tags: [security-principles, complete-mediation, fail-securely, access-control, enforcement, error-handling, reliability]
+hide_title: true
+---
+
+<Hero title="Complete Mediation and Fail Securely" subtitle="Check every access and break closed, not open" imageAlt="Access mediation illustration" size="large" />
+
+## TL;DR
+
+**Complete Mediation**: Check every access request, every time, against security policy. Don't cache authorization or assume permissions. A user with write permission yesterday might not have it today (permission revoked). **Fail Securely**: When failures occur, deny access (fail closed) rather than allow (fail open). Auth service down? Deny new logins (deny). Don't grant temporary access (allow). Encryption key corrupted? Deny data access. Don't serve plaintext fallback. Security assumptions should never silently degrade.
+
+## Learning Objectives
+
+- Implement complete mediation in authorization checks
+- Avoid common caching and optimization pitfalls
+- Design fail-secure failure modes
+- Handle security failures without cascading
+- Balance availability and security
+
+## Motivating Scenario
+
+Alice's access is revoked at 10:00 AM. Authorization server caches "Alice:allowed" until 10:30 AM. At 10:05 AM, Alice uses cached permission to access customer data. The authorization check passed without consulting the auth server. Damage occurred during the 5-minute window.
+
+With complete mediation: Every request checks, "Is Alice still allowed?" Auth service consulted immediately. Revocation takes effect instantly.
+
+## Core Concepts
+
+### Complete Mediation
+
+**Concept**: Guard every access. No shortcuts, caching, or assumptions. "Alice checked out; she's allowed for the day" violates complete mediation.
+
+**Examples of violations**:
+- Caching permissions; don't re-check until cache expires
+- Checking permission once; assuming subsequent calls are allowed
+- Removing access to old data but not archival copies
+- Client-side auth checks (can be bypassed)
+
+### Fail Securely vs Fail Open
+
+**Fail Open** (insecure): When auth fails, grant access. "User couldn't reach auth server, so assume they're allowed."
+
+**Fail Closed** (secure): When auth fails, deny access. "User couldn't reach auth server, so deny until we can verify."
+
+Fail closed is harder operationally (system down blocks everyone), but prevents breach exploitation.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="mediation_poor" label="❌ Incomplete Mediation">
+
+```javascript
+// Check permission once, cache result
+let userPermissions = {};
+
+app.get('/api/documents/:id', (req, res) => {
+  const userId = req.user.id;
+
+  // Check cache first; if present, don't re-check
+  if (userPermissions[userId]) {
+    const perms = userPermissions[userId];
+    if (perms.read) {
+      return res.json(documents[id]);
+    }
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  // If not cached, check auth server
+  authServer.getPermissions(userId, (perms) => {
+    userPermissions[userId] = perms;  // Cache indefinitely
+    if (perms.read) {
+      res.json(documents[id]);
+    } else {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  });
+});
+
+// Problem: Admin revokes Alice's access at 10:00.
+// If Alice accessed before 10:00, userPermissions[alice] cached.
+// Alice accesses at 10:30, cache still valid, access granted.
+// Revocation never took effect.
+```
+
+</TabItem>
+<TabItem value="mediation_good" label="✅ Complete Mediation">
+
+```javascript
+app.get('/api/documents/:id', async (req, res) => {
+  const userId = req.user.id;
+  const documentId = req.params.id;
+
+  // Check permission every time (no caching)
+  const perms = await authServer.getPermissions(userId);
+
+  if (!perms.includes('documents:read')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  // Also check: Is this specific document accessible to this user?
+  const doc = await db.getDocument(documentId);
+  if (doc.owner !== userId && !perms.includes('documents:read:all')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  res.json(doc);
+});
+
+// Every request checks permissions freshly.
+// Revocation takes effect immediately.
+// Owner check and role check both enforced.
+```
+
+</TabItem>
+<TabItem value="fail_modes" label="Fail Secure Modes">
+
+```javascript
+// Scenario: Password auth service crashes
+
+// ❌ FAIL OPEN
+app.post('/login', async (req, res) => {
+  try {
+    const user = await authService.authenticate(req.body);
+    req.session.userId = user.id;
+    res.json({ success: true });
+  } catch (error) {
+    // If auth service down, issue temp token anyway
+    // "Better to let users in than lock them out"
+    const token = jwt.sign({ userId: req.body.username }, 'secret', { expiresIn: '1d' });
+    res.json({ success: true, token });  // BREACH!
+  }
+});
+
+// ❌ FAIL OPEN (Encryption example)
+app.get('/sensitive-data', async (req, res) => {
+  try {
+    const data = await db.getEncryptedData();
+    const decrypted = await kms.decrypt(data);
+    res.json(decrypted);
+  } catch (error) {
+    // If KMS down, serve unencrypted
+    const data = await db.getSensitiveData();
+    res.json(data);  // Serves plaintext; defeats encryption purpose
+  }
+});
+
+// ✅ FAIL SECURE
+app.post('/login', async (req, res) => {
+  try {
+    const user = await authService.authenticate(req.body);
+    req.session.userId = user.id;
+    res.json({ success: true });
+  } catch (error) {
+    // Auth service unavailable; deny login
+    // Log incident; alert ops
+    logger.error('Auth service down');
+    monitoring.alert('Critical: Auth service unavailable');
+    res.status(503).json({ error: 'Service temporarily unavailable' });
+  }
+});
+
+// ✅ FAIL SECURE (Encryption example)
+app.get('/sensitive-data', async (req, res) => {
+  try {
+    const data = await db.getEncryptedData();
+    const decrypted = await kms.decrypt(data);
+    res.json(decrypted);
+  } catch (error) {
+    // KMS unavailable; deny access
+    // Don't serve plaintext; that defeats encryption
+    logger.error('KMS unavailable');
+    res.status(503).json({ error: 'Unable to decrypt data' });
+  }
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Caching and Complete Mediation
+
+Sometimes caching is necessary (auth server latency). Balance with security:
+
+- **Short-lived cache (seconds)**: Reasonable. Revocations take effect quickly.
+- **Long-lived cache (hours)**: Risky. Revocations delayed indefinitely.
+- **No cache, always check**: Ideal security, worse performance.
+
+```javascript
+// Caching with short TTL
+const permissionCache = new Map();
+const CACHE_TTL = 60000; // 60 seconds
+
+async function getPermissions(userId) {
+  const cached = permissionCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.perms;  // Still valid
+  }
+
+  // Cache expired or miss; fetch fresh
+  const perms = await authServer.getPermissions(userId);
+  permissionCache.set(userId, { perms, timestamp: Date.now() });
+  return perms;
+}
+```
+
+## Handling Failures Gracefully
+
+Don't let security failures cascade:
+
+```javascript
+// Circuit breaker pattern for auth service
+const authClient = new CircuitBreaker(async () => {
+  return await authServer.getPermissions(userId);
+}, {
+  timeout: 5000,        // 5 second timeout
+  fallback: () => null, // Fail-secure: null = no permissions
+  on_failure: () => {
+    // If auth service unreliable, fail closed for new requests
+    // Existing sessions continue (safe), new auth denied
+    new_auth_allowed = false;
+  }
+});
+```
+
+## Complete Mediation in Distributed Systems
+
+Modern systems often have multiple authorization points:
+
+```
+Client → API Gateway (auth) → Service A (auth) → Database (auth)
+```
+
+Each layer must enforce complete mediation:
+
+```javascript
+// API Gateway: first gate
+app.use(authMiddleware);  // Check JWT signature, exp
+
+app.get('/api/documents/:id', async (req, res) => {
+  // Service A: mediate again (don't trust gateway)
+  const perms = await authService.getPermissions(req.user.id);
+
+  if (!perms.includes('documents:read')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  // Service B (via RPC): mediate at boundary
+  const docService = getRpcClient('document-service');
+  const doc = await docService.getDocument(id, {
+    auth_token: generateServiceToken(req.user.id)
+  });
+
+  // Database: even database should check user context
+  // Some databases support row-level security (RLS)
+  // SELECT * FROM documents WHERE owner = current_user
+
+  res.json(doc);
+});
+```
+
+**Principle**: Check at every layer, don't assume lower layers checked.
+
+## Fail Secure in Real-World Scenarios
+
+### Scenario 1: Credentials Database Corruption
+
+```javascript
+// ❌ FAIL OPEN
+async function authenticate(username, password) {
+  try {
+    const user = await credentialsDB.query(
+      'SELECT * FROM users WHERE username = ?',
+      username
+    );
+    return verify(password, user.password_hash);
+  } catch (error) {
+    // DB is corrupted; grant access anyway
+    return true;  // BREACH!
+  }
+}
+
+// ✅ FAIL SECURE
+async function authenticate(username, password) {
+  try {
+    const user = await credentialsDB.query(
+      'SELECT * FROM users WHERE username = ?',
+      username
+    );
+    return verify(password, user.password_hash);
+  } catch (error) {
+    // Log error, alert ops, deny all new auth
+    logger.error('Credentials database error', error);
+    monitoring.alert('CRITICAL: Credentials DB offline');
+
+    // Deny: let existing sessions continue
+    // New logins blocked until DB recovers
+    throw new AuthenticationError('Service temporarily unavailable');
+  }
+}
+```
+
+### Scenario 2: Permission Service Slow
+
+```javascript
+// ❌ FAIL OPEN
+async function checkPermission(userId, resource) {
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('timeout')), 100)
+  );
+
+  try {
+    return await Promise.race([
+      permissionService.check(userId, resource),
+      timeoutPromise
+    ]);
+  } catch (error) {
+    // Timeout; grant access to unblock
+    return true;  // BREACH!
+  }
+}
+
+// ✅ FAIL SECURE
+async function checkPermission(userId, resource) {
+  const timeoutMs = 5000;
+
+  try {
+    const result = await Promise.race([
+      permissionService.check(userId, resource),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), timeoutMs)
+      )
+    ]);
+    return result;
+  } catch (error) {
+    // Service slow or down; deny
+    logger.error('Permission check failed', error);
+    monitoring.alert('Permission service latency high');
+    throw new AuthorizationError('Cannot verify permissions');
+  }
+}
+```
+
+### Scenario 3: Encryption Key Unavailable
+
+```javascript
+// ❌ FAIL OPEN
+function decryptUserData(userId, encryptedData) {
+  try {
+    const key = kms.getKey('user-data-key');
+    return kms.decrypt(key, encryptedData);
+  } catch (error) {
+    // KMS down; serve plaintext instead
+    console.log(`Serving unencrypted data for ${userId}`);
+    return encryptedData;  // Defeats encryption!
+  }
+}
+
+// ✅ FAIL SECURE
+function decryptUserData(userId, encryptedData) {
+  try {
+    const key = kms.getKey('user-data-key');
+    return kms.decrypt(key, encryptedData);
+  } catch (error) {
+    // KMS down; deny all access to encrypted data
+    logger.error('KMS unavailable', error);
+    monitoring.alert('CRITICAL: KMS unavailable');
+    throw new DataAccessError(
+      'Cannot decrypt data. Service temporarily unavailable.'
+    );
+  }
+}
+```
+
+## Mediation and Performance Trade-offs
+
+Complete mediation (check every request) is slower than caching. Design trade-offs:
+
+| Strategy | Latency | Security | Complexity |
+|----------|---------|----------|------------|
+| Check every request (no cache) | High (100-200ms) | Perfect | Low |
+| Cache 1 minute | Low (1-5ms cached) | Good (1min lag) | Medium |
+| Cache 1 hour | Very low | Poor (1hr lag) | Medium |
+| Pessimistic lock | Very high (lock acquisition) | Perfect | High |
+| Risk: assume allowed | Very low | Terrible | Low |
+
+**Best practice**: Cache short (30-60 sec), monitor for latency issues, alert on auth service degradation.
+
+```javascript
+// Balanced approach: cache with monitoring
+const permissionCache = new Map();
+const CACHE_TTL_MS = 30000;  // 30 seconds
+const LATENCY_THRESHOLD_MS = 100;
+
+async function getPermissions(userId) {
+  const cacheKey = userId;
+  const cached = permissionCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.perms;
+  }
+
+  const startTime = Date.now();
+  const perms = await authService.getPermissions(userId);
+  const latency = Date.now() - startTime;
+
+  // Monitor latency creep
+  if (latency > LATENCY_THRESHOLD_MS) {
+    monitoring.warn('Auth latency high', { latency, userId });
+  }
+
+  permissionCache.set(cacheKey, {
+    perms,
+    timestamp: Date.now()
+  });
+
+  return perms;
+}
+```
+
+## Design Review Checklist
+
+- [ ] All access requests checked (no shortcuts)
+- [ ] Authorization checked per-request, not cached long
+- [ ] Cache TTL short (seconds, not hours)
+- [ ] Revocations take effect quickly (minutes, not hours)
+- [ ] Failures default to deny, not allow
+- [ ] Security assumptions don't silently degrade
+- [ ] Error messages don't leak sensitive info
+- [ ] Fallback modes maintain security (not disable checks)
+- [ ] Circuit breakers prevent cascading failures
+- [ ] Monitoring alerts on auth service degradation
+- [ ] Timeout budgets reasonable (not too tight to succeed)
+- [ ] Existing sessions continue; only new auth denied when service down
+
+## Self-Check
+
+- Why should authorization be checked every request, not just once?
+- What's the difference between fail-open and fail-closed?
+- If auth service is down, should you grant temporary access? Why or why not?
+- How would you balance security (check every request) with performance (latency budget)?
+
+:::info One Takeaway
+Check everything, every time, and break secure when uncertain. The security principle that protects systems from cascading breaches is simple: assume nothing, verify everything, and default to denial.
+
+:::
+
+## Next Steps
+
+- Read **Least Privilege** for minimal permission checks
+- Study **Defense in Depth** for backup defenses
+- Explore **Monitoring & Alerting** for detecting policy violations
+
+## References
+
+- Complete Mediation (Saltzer & Schroeder, 1975)
+- Fail Securely Principle (OWASP)
+- Authorization Caching (security.stackexchange.com)
+- Circuit Breaker Pattern (Istio, Resilience4j)

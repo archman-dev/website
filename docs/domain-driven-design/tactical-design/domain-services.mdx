@@ -1,0 +1,568 @@
+---
+title: "Domain Services"
+sidebar_position: 4
+label: "Domain Services"
+body: "Stateless operations on domain concepts that don't belong to entities or value objects"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 11
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [domain-service, stateless, operation, service, cross-cutting, orchestration]
+image: /img/archman-social-card.webp
+tags: [ddd, tactical-design, domain-services, stateless, operations]
+hide_title: true
+---
+
+<Hero title="Domain Services" subtitle="Stateless operations on domain concepts that don't belong to entities or value objects" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Domain Services are stateless operations on domain concepts that don't naturally fit entities or value objects. They coordinate multiple aggregates, perform domain logic that spans boundaries, or encapsulate algorithms. Domain Services express behavior expressed in the ubiquitous language. Distinguish them from Application Services which orchestrate use cases.
+
+## Learning Objectives
+
+- Identify operations that need domain services
+- Design stateless, domain-centric services
+- Distinguish domain services from application services
+- Use domain services for cross-aggregate logic
+- Avoid overusing services
+
+## Motivating Scenario
+
+An Order needs to be calculated with tax, shipping, and discounts:
+
+```python
+# Bad: Where does this logic go?
+order.total = order.subtotal + calculate_tax(...) + calculate_shipping(...) - apply_discount(...)
+
+# Better: Use a domain service
+order_calculator = OrderCalculationService()
+total = order_calculator.calculate_total(order)
+```
+
+The calculation is domain logic (tax, shipping, discounts are business concepts) but doesn't belong to Order. It requires repositories, pricing rules, and other dependencies.
+
+## Core Concepts
+
+### Domain Service
+A stateless object expressing domain logic that doesn't fit naturally on an entity or value object. It coordinates aggregates or implements algorithms.
+
+### When to Use Services
+
+1. **Cross-Aggregate Logic**: Logic spanning multiple aggregates (e.g., Transfer between accounts)
+2. **Stateless Algorithms**: Complex calculations (tax, shipping, pricing)
+3. **Coordination**: Orchestrating changes across entities
+4. **External Integration**: Using external services while expressing domain logic
+
+### Stateless
+Domain services have no state. All data comes from parameters or injected repositories. No mutable fields.
+
+## Practical Example
+
+```python
+class TransferService:
+    """Domain service: transfer money between accounts."""
+    def __init__(self, account_repo: AccountRepository):
+        self.account_repo = account_repo
+
+    def transfer(self, from_id: str, to_id: str, amount: Money):
+        """Coordinate transfer between two accounts."""
+        from_account = self.account_repo.get(from_id)
+        to_account = self.account_repo.get(to_id)
+
+        # Domain logic: transfer is atomic
+        if from_account.balance < amount:
+            raise InsufficientFundsError()
+
+        from_account.withdraw(amount)
+        to_account.deposit(amount)
+
+        # Persist both atomically
+        self.account_repo.save(from_account)
+        self.account_repo.save(to_account)
+
+class PricingService:
+    """Domain service: calculate final price."""
+    def __init__(self, tax_repo: TaxRuleRepository):
+        self.tax_repo = tax_repo
+
+    def calculate_final_price(self, item: OrderItem, location: Address) -> Money:
+        """Calculate price with tax based on location."""
+        base_price = item.price.multiply(item.quantity)
+        tax_rate = self.tax_repo.get_rate(location)
+        tax = base_price.multiply(tax_rate)
+        return base_price.add(tax)
+```
+
+## Domain Service vs. Application Service
+
+| Aspect | Domain Service | Application Service |
+|--------|---|---|
+| **Language** | Domain terminology | Use case flow |
+| **State** | Stateless | Stateless |
+| **Dependencies** | Repositories, other services | Repositories, domain services |
+| **Complexity** | Complex domain logic | Thin orchestration |
+| **Example** | TransferService | TransferMoneyUseCase |
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Use Domain Services When:",
+    points: [
+      "Logic spans multiple aggregates",
+      "Algorithm is complex domain logic",
+      "Doesn't fit naturally on an entity",
+      "Requires external dependencies",
+      "Expressed in ubiquitous language"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Put Logic on Entities When:",
+    points: [
+      "Affects single aggregate only",
+      "Natural behavior of the entity",
+      "No external dependencies",
+      "Stateful logic"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase title="Patterns and Pitfalls" sections={[
+  {
+    label: "Pitfall: Service as Dumping Ground",
+    body: "Any logic that doesn't fit goes into a service. Services become bloated. First, try to put logic on entities. Use services only when necessary."
+  },
+  {
+    label: "Pitfall: Stateful Services",
+    body: "Service has fields that store state. Becomes hard to reason about. Domain services are stateless. All state comes from parameters or repo."
+  },
+  {
+    label: "Pitfall: Business Logic in Controllers",
+    body: "Application layer directly implements domain logic. Extract to domain services. Controllers call domain services."
+  },
+  {
+    label: "Pattern: Service Composition",
+    body: "Services call other services to express complex workflows. Compose services. Keep each focused on one concern."
+  },
+  {
+    label: "Pattern: Domain Language in Method Names",
+    body: "Service methods use ubiquitous language (transfer, process, calculate). Name services and methods using domain terminology."
+  ,
+    body: "Service methods use ubiquitous language (transfer, process, calculate). Name services and methods using domain terminology."
+  ,
+    highlightTone: "positive"
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is the service stateless?",
+  "Does the service have a clear, single responsibility?",
+  "Is the service name a domain term (not TransferHelper)?",
+  "Could the logic fit on an entity instead?",
+  "Are external dependencies injected?",
+  "Does the service coordinate aggregates properly?",
+  "Is the service testable without a database?",
+  "Is the service used by application layer, not by entities?",
+  "Does the service enforce domain invariants?",
+  "Could the logic be split into multiple, focused services?"
+]} />
+
+## Self-Check
+
+1. **What's the difference between domain and application services?** Domain services express domain logic in the ubiquitous language. Application services orchestrate use cases, calling domain services and repositories.
+
+2. **Where should a domain service live in the code?** In the domain layer, alongside aggregates and value objects. Not in the application or infrastructure layers.
+
+3. **Can domain services call other domain services?** Yes. Compose them to express complex workflows. But keep the call chain shallow.
+
+:::info
+**One Takeaway**: Domain Services are for logic that spans aggregates or doesn't fit naturally on entities. Keep them stateless, domain-focused, and expressed in the ubiquitous language. Use sparingly; prefer putting logic on entities when possible.
+
+:::
+
+## Next Steps
+
+- **Aggregates**: Understand where entity logic belongs
+- **Application Services**: Orchestrate use cases using domain services
+- **Repositories**: Inject repository dependencies into services
+- **Domain Events**: Emit events from services to trigger other processes
+
+## Advanced Examples and Scenarios
+
+### Example 1: Complex Pricing Service
+
+In an e-commerce system, calculating the final price involves multiple factors that don't naturally belong to any single entity:
+
+```python
+class ComprehensivePricingService:
+    """Complex pricing with multiple factors."""
+    def __init__(self, tax_repo: TaxRuleRepository,
+                 discount_repo: DiscountRepository,
+                 shipping_repo: ShippingRepository,
+                 currency_repo: CurrencyRepository):
+        self.tax_repo = tax_repo
+        self.discount_repo = discount_repo
+        self.shipping_repo = shipping_repo
+        self.currency_repo = currency_repo
+
+    def calculate_order_total(self, order: Order, customer: Customer) -> OrderPricing:
+        """Calculate complete order pricing."""
+        # Subtotal from line items
+        subtotal = sum(item.price.multiply(item.quantity) for item in order.items)
+
+        # Apply customer-specific discounts
+        discount = self.discount_repo.get_applicable_discount(
+            customer.segment, order.total_items, subtotal
+        )
+        after_discount = subtotal.subtract(discount)
+
+        # Apply tax based on destination
+        tax_rate = self.tax_repo.get_rate(order.shipping_address, order.items)
+        tax = after_discount.multiply(tax_rate)
+
+        # Calculate shipping cost
+        shipping = self.shipping_repo.calculate_cost(
+            order.shipping_address, order.total_weight, order.item_count
+        )
+
+        # Apply shipping discount if applicable
+        shipping_discount = self.discount_repo.get_shipping_discount(customer.segment)
+        final_shipping = shipping.subtract(shipping_discount)
+
+        # Handle currency conversion if needed
+        currency = self.currency_repo.get_currency(customer.region)
+        final_total = after_discount.add(tax).add(final_shipping)
+        converted = self.currency_repo.convert(final_total, currency)
+
+        return OrderPricing(
+            subtotal=subtotal,
+            discount=discount,
+            after_discount=after_discount,
+            tax=tax,
+            shipping=final_shipping,
+            total=converted,
+            currency=currency,
+            breakdown=self._create_breakdown(order, discount, tax, shipping)
+        )
+
+    def _create_breakdown(self, order, discount, tax, shipping):
+        """Create detailed pricing breakdown for invoice."""
+        return {
+            'items': [
+                {'name': item.name, 'qty': item.quantity, 'price': item.price}
+                for item in order.items
+            ],
+            'discount_applied': discount,
+            'tax_details': tax,
+            'shipping_cost': shipping
+        }
+```
+
+This service coordinates pricing logic across multiple aggregates (orders, customers, tax rules, shipping). It's not an entity method because it requires external dependencies and spans multiple domains.
+
+### Example 2: Inventory Allocation Service
+
+Allocating inventory to orders is a cross-aggregate concern:
+
+```python
+class InventoryAllocationService:
+    """Domain service: allocate inventory across warehouses."""
+    def __init__(self, warehouse_repo: WarehouseRepository,
+                 allocation_repo: AllocationRepository):
+        self.warehouse_repo = warehouse_repo
+        self.allocation_repo = allocation_repo
+
+    def allocate_order(self, order: Order) -> Allocation:
+        """Allocate order to warehouses optimally."""
+        allocation = Allocation(order_id=order.id)
+
+        for item in order.items:
+            # Find best warehouse for this item
+            warehouse = self.warehouse_repo.find_best_for_sku(
+                item.sku, item.quantity, order.destination
+            )
+
+            if not warehouse:
+                raise OutOfStockError(f"{item.sku} unavailable")
+
+            # Reserve inventory
+            allocation.add_allocation(warehouse.id, item.sku, item.quantity)
+            warehouse.reserve(item.sku, item.quantity)
+
+        self.allocation_repo.save(allocation)
+        return allocation
+
+    def rebalance_inventory(self, sku: str, target_distribution: Dict[str, int]):
+        """Rebalance inventory across warehouses."""
+        warehouses = self.warehouse_repo.find_all_with_sku(sku)
+        current = {w.id: w.get_quantity(sku) for w in warehouses}
+
+        # Calculate transfers needed
+        transfers = self._calculate_transfers(current, target_distribution)
+
+        # Execute transfers
+        for source_id, dest_id, qty in transfers:
+            source = self.warehouse_repo.get(source_id)
+            dest = self.warehouse_repo.get(dest_id)
+
+            source.transfer(sku, qty, dest)
+
+        return len(transfers)
+
+    def _calculate_transfers(self, current, target):
+        """Calculate optimal transfer sequence."""
+        # Complex algorithm to find minimal transfers
+        pass
+```
+
+### Example 3: Fund Transfer Service in Banking
+
+A classic domain service: transferring funds between accounts with invariant checking:
+
+```python
+class MoneyTransferService:
+    """Domain service: safely transfer money between accounts."""
+    def __init__(self, account_repo: AccountRepository,
+                 exchange_repo: ExchangeRateRepository,
+                 audit_repo: AuditRepository):
+        self.account_repo = account_repo
+        self.exchange_repo = exchange_repo
+        self.audit_repo = audit_repo
+
+    def transfer(self, from_id: str, to_id: str, amount: Money) -> Transfer:
+        """Transfer money atomically."""
+        from_account = self.account_repo.get(from_id)
+        to_account = self.account_repo.get(to_id)
+
+        # Domain invariants
+        if from_account.is_frozen:
+            raise FrozenAccountError(f"Account {from_id} is frozen")
+
+        if from_account.balance < amount:
+            raise InsufficientFundsError(f"Balance {from_account.balance} < {amount}")
+
+        if to_account.is_closed:
+            raise ClosedAccountError(f"Account {to_id} is closed")
+
+        # Execute transfer
+        from_account.withdraw(amount)
+        to_account.deposit(amount)
+
+        transfer_record = Transfer(
+            from_account_id=from_id,
+            to_account_id=to_id,
+            amount=amount,
+            timestamp=datetime.now(),
+            status='completed'
+        )
+
+        # Persist atomically
+        self.account_repo.save(from_account)
+        self.account_repo.save(to_account)
+        self.audit_repo.record_transfer(transfer_record)
+
+        return transfer_record
+
+    def cross_currency_transfer(self, from_id: str, to_id: str,
+                               amount: Money, target_currency: str) -> Transfer:
+        """Transfer between accounts in different currencies."""
+        from_account = self.account_repo.get(from_id)
+        to_account = self.account_repo.get(to_id)
+
+        # Get exchange rate
+        rate = self.exchange_repo.get_rate(
+            from_account.currency, target_currency
+        )
+        converted_amount = amount.multiply(rate)
+
+        # Validate and execute
+        if from_account.balance < amount:
+            raise InsufficientFundsError()
+
+        from_account.withdraw(amount)
+        to_account.deposit(converted_amount)
+
+        transfer = Transfer(
+            from_account_id=from_id,
+            to_account_id=to_id,
+            original_amount=amount,
+            converted_amount=converted_amount,
+            exchange_rate=rate,
+            timestamp=datetime.now()
+        )
+
+        self.account_repo.save(from_account)
+        self.account_repo.save(to_account)
+        self.audit_repo.record_transfer(transfer)
+
+        return transfer
+```
+
+## Real-World Anti-Patterns and How to Avoid Them
+
+### Anti-Pattern 1: God Service
+
+The "God Service" anti-pattern occurs when a single service grows to handle all domain logic:
+
+```python
+# WRONG: God Service doing everything
+class AllPurposeService:
+    def calculate_price(...): pass
+    def allocate_inventory(...): pass
+    def process_payment(...): pass
+    def send_notification(...): pass
+    def validate_address(...): pass
+    def apply_promotions(...): pass
+    def handle_refunds(...): pass
+    # ... 50 more methods
+```
+
+**Problem**: Single responsibility principle violated, hard to test, hard to change.
+
+**Solution**: Split into focused services:
+
+```python
+# RIGHT: Focused services
+class PricingService:
+    def calculate_final_price(...): pass
+
+class InventoryService:
+    def allocate_order(...): pass
+
+class PaymentService:
+    def process_payment(...): pass
+
+class NotificationService:
+    def send_order_confirmation(...): pass
+```
+
+### Anti-Pattern 2: Service with Hidden Dependencies
+
+```python
+# WRONG: Dependencies hidden in constructor
+class OrderService:
+    def __init__(self):
+        self.db = Database()  # Hard to test
+        self.cache = Cache()  # Hard to replace
+        self.payment_api = PaymentAPI()  # Hard to mock
+```
+
+**Solution**: Inject dependencies, make them testable:
+
+```python
+# RIGHT: Explicit dependencies
+class OrderService:
+    def __init__(self, payment_service: PaymentService,
+                 inventory_service: InventoryService,
+                 notification_service: NotificationService):
+        self.payment = payment_service
+        self.inventory = inventory_service
+        self.notifications = notification_service
+```
+
+### Anti-Pattern 3: Domain Service in Wrong Layer
+
+```python
+# WRONG: Domain logic in application layer
+class CreateOrderController:
+    def post(self, request):
+        # Business logic scattered in controller
+        order = Order(...)
+        for item in items:
+            if item.promotional and item.discount > 50:  # Domain logic!
+                apply_special_discount()
+```
+
+**Solution**: Keep domain logic in domain layer:
+
+```python
+# RIGHT: Domain logic in service
+class PromotionService:
+    def apply_promotional_discount(self, item):
+        if item.promotional and item.discount > 50:
+            return item.price * (1 - item.discount)
+        return item.price
+
+# Application layer uses it
+class CreateOrderController:
+    def post(self, request):
+        order = Order(...)
+        for item in items:
+            price = self.promotion_service.apply_promotional_discount(item)
+```
+
+## Testing Domain Services
+
+Domain services should be testable without databases:
+
+```python
+import unittest
+from unittest.mock import Mock, patch
+
+class TestPricingService(unittest.TestCase):
+    def setUp(self):
+        self.tax_repo = Mock(spec=TaxRuleRepository)
+        self.discount_repo = Mock(spec=DiscountRepository)
+        self.shipping_repo = Mock(spec=ShippingRepository)
+
+        self.service = PricingService(
+            self.tax_repo, self.discount_repo, self.shipping_repo
+        )
+
+    def test_calculate_price_with_tax(self):
+        # Arrange
+        order = Order(items=[OrderItem(price=Money(100), quantity=2)])
+        self.tax_repo.get_rate.return_value = 0.1  # 10%
+
+        # Act
+        total = self.service.calculate_final_price(order, Address())
+
+        # Assert
+        self.assertEqual(total, Money(220))  # 200 + 20 tax
+        self.tax_repo.get_rate.assert_called_once()
+
+    def test_insufficient_inventory_raises_error(self):
+        # Arrange
+        order = Order(items=[OrderItem(sku='SKU123', quantity=100)])
+        self.inventory_repo.get_available.return_value = 10
+
+        # Act & Assert
+        with self.assertRaises(OutOfStockError):
+            self.service.allocate_order(order)
+```
+
+## Domain Services vs Value Objects
+
+Sometimes the line between domain service and value object is blurry:
+
+```python
+# Value Object: Immutable, no identity, focuses on calculation
+class Money:
+    def __init__(self, amount, currency):
+        self.amount = amount
+        self.currency = currency
+
+    def add(self, other):
+        return Money(self.amount + other.amount, self.currency)
+
+# Domain Service: Stateless, uses repositories, coordinates multiple aggregates
+class MoneyTransferService:
+    def transfer(self, from_account, to_account, amount):
+        # Needs repositories, enforces invariants across aggregates
+        pass
+```
+
+**Rule of thumb**: Use a value object if it can be created from constructor parameters. Use a domain service if it needs repositories or coordinates multiple aggregates.
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Vernon, V. (2013). *Implementing Domain-Driven Design*. Addison-Wesley.
+- Fowler, M. (2002). "Domain-Driven Design: Tackling Complexity in the Heart of Software". martinfowler.com

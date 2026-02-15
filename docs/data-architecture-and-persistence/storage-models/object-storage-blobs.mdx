@@ -1,0 +1,500 @@
+---
+sidebar_position: 9
+title: "Object Storage & Blob Storage"
+description: "Petabyte-scale unstructured data storage for files, images, backups, and archives"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [object storage, S3, GCS, Azure Blob, unstructured data, blobs, files, archives, CDN]
+image: /img/archman-social-card.webp
+tags: [storage, object-storage, S3, unstructured-data, cloud-storage, CDN, archives, backup]
+hide_title: true
+---
+
+<Hero title="Object Storage & Blob Storage" subtitle="Petabyte-scale unstructured data with durability, availability, and CDN integration" size="large" />
+
+## TL;DR
+
+Object storage (S3, GCS, Azure Blob) stores unstructured data (files, images, backups) at petabyte scale with high durability and availability. Cost-effective, serverless, integrates with CDN. Trade-off: eventual consistency, different access patterns than databases, network latency, not suitable for random access within files.
+
+## Learning Objectives
+
+- Understand object storage design (buckets, keys, versioning)
+- Design key hierarchies for organizational and performance benefit
+- Recognize storage classes and lifecycle policies
+- Plan for durability, availability, and cost optimization
+
+## Motivating Scenario
+
+Photo sharing app: 1M users, 1000 photos each = 1B images. RDBMS would need exabytes. S3: terabytes with 11 nines durability. Users in US, EU, Asia: CloudFront CDN serves 95% requests with &lt;100ms latency. Old photos auto-archive to Glacier: 10x cost savings.
+
+## Core Concepts
+
+<Figure
+  title="Object Storage Architecture"
+  description="Flat namespace with hierarchical organization through key naming"
+  diagram={`
+graph TB
+    Bucket["S3 Bucket<br/>us-west-2"]
+    
+    subgraph Hot["Hot Objects<br/>Standard"]
+      Obj1["user-123/profile.jpg"]
+      Obj2["user-456/photo-2025.jpg"]
+    end
+    
+    subgraph Warm["Warm Objects<br/>Intelligent-Tiering"]
+      Obj3["user-789/archived-2024.jpg"]
+    end
+    
+    subgraph Cold["Cold Objects<br/>Glacier"]
+      Obj4["backups/2023/full-db.tar"]
+    end
+    
+    Bucket --> Hot
+    Bucket --> Warm
+    Bucket --> Cold
+    
+    CDN["CloudFront<br/>Cache Layer"]
+    CDN -.->|Fetch| Hot
+    
+    style Hot fill:#00cc00
+    style Warm fill:#ffff00
+    style Cold fill:#0066cc
+  `}
+/>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="aws-s3" label="AWS S3 (Python)">
+
+```python
+import boto3
+from botocore.config import Config
+import os
+
+# Create S3 client
+s3_client = boto3.client('s3', region_name='us-west-2')
+s3_resource = boto3.resource('s3')
+
+# Upload file
+def upload_file(bucket, key, file_path):
+    s3_client.upload_file(
+        file_path,
+        bucket,
+        key,
+        ExtraArgs={
+            'ContentType': 'image/jpeg',
+            'ServerSideEncryption': 'AES256',
+            'Metadata': {'user-id': '123', 'upload-date': '2025-02-14'}
+        }
+    )
+
+# Upload with progress callback
+def upload_file_with_progress(bucket, key, file_path):
+    s3_resource.meta.client.upload_file(
+        file_path, bucket, key,
+        Callback=ProgressPercentage(file_path)
+    )
+
+# Download file
+def download_file(bucket, key, local_path):
+    s3_client.download_file(bucket, key, local_path)
+
+# List objects
+def list_objects(bucket, prefix='', max_keys=100):
+    response = s3_client.list_objects_v2(
+        Bucket=bucket,
+        Prefix=prefix,
+        MaxKeys=max_keys
+    )
+    
+    objects = []
+    for obj in response.get('Contents', []):
+        objects.append({
+            'key': obj['Key'],
+            'size': obj['Size'],
+            'last_modified': obj['LastModified'],
+            'storage_class': obj.get('StorageClass', 'STANDARD')
+        })
+    
+    return objects
+
+# Generate presigned URL (temporary access)
+def get_presigned_url(bucket, key, expiration_seconds=3600):
+    url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket, 'Key': key},
+        ExpiresIn=expiration_seconds
+    )
+    return url
+
+# Multipart upload for large files
+def upload_large_file(bucket, key, file_path):
+    file_size = os.path.getsize(file_path)
+    part_size = 5 * 1024 * 1024  # 5 MB
+    
+    multipart = s3_client.create_multipart_upload(Bucket=bucket, Key=key)
+    upload_id = multipart['UploadId']
+    
+    parts = []
+    with open(file_path, 'rb') as f:
+        part_num = 1
+        while True:
+            data = f.read(part_size)
+            if not data:
+                break
+            
+            response = s3_client.upload_part(
+                Bucket=bucket,
+                Key=key,
+                PartNumber=part_num,
+                UploadId=upload_id,
+                Body=data
+            )
+            
+            parts.append({
+                'ETag': response['ETag'],
+                'PartNumber': part_num
+            })
+            part_num += 1
+    
+    s3_client.complete_multipart_upload(
+        Bucket=bucket,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={'Parts': parts}
+    )
+
+# Lifecycle policy (auto-archive)
+def set_lifecycle_policy(bucket):
+    s3_client.put_bucket_lifecycle_configuration(
+        Bucket=bucket,
+        LifecycleConfiguration={
+            'Rules': [
+                {
+                    'Id': 'archive-old-photos',
+                    'Filter': {'Prefix': 'photos/'},
+                    'Status': 'Enabled',
+                    'Transitions': [
+                        {
+                            'Days': 30,
+                            'StorageClass': 'INTELLIGENT_TIERING'
+                        },
+                        {
+                            'Days': 90,
+                            'StorageClass': 'GLACIER'
+                        },
+  ],
+                    'Expiration': {'Days': 2555}  # 7 years
+                }
+        }
+    )
+
+# Versioning
+def enable_versioning(bucket):
+    s3_client.put_bucket_versioning(
+        Bucket=bucket,
+        VersioningConfiguration={'Status': 'Enabled'}
+    )
+
+# Server-side replication
+def setup_replication(source_bucket, dest_bucket):
+    s3_client.put_bucket_replication(
+        Bucket=source_bucket,
+        ReplicationConfiguration={
+            'Role': 'arn:aws:iam::ACCOUNT:role/s3-replication',
+            'Rules': [
+                {
+                    'ID': 'replicate-all',
+                    'Status': 'Enabled',
+                    'Priority': 1,
+                    'Filter': {'Prefix': ''},
+                    'Destination': {
+                        'Bucket': f'arn:aws:s3:::{dest_bucket}',
+                        'ReplicationTime': {'Status': 'Enabled', 'Time': {'Minutes': 15}}
+                    }
+                }
+        }
+    )
+```
+
+</TabItem>
+<TabItem value="gcs" label="Google Cloud Storage">
+
+```python
+from google.cloud import storage
+from google.cloud.storage import Bucket
+
+# Create client
+storage_client = storage.Client()
+bucket = storage_client.bucket('my-bucket')
+
+# Upload blob
+def upload_blob(bucket_name, source_file, destination_blob):
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob)
+    
+    blob.upload_from_filename(source_file)
+    print(f"File {source_file} uploaded to {destination_blob}")
+
+# Stream upload
+def upload_blob_stream(bucket_name, source_file, destination_blob):
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob)
+    
+    with open(source_file, 'rb') as f:
+        blob.upload_from_file(f)
+
+# Download blob
+def download_blob(bucket_name, source_blob, destination_file):
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(source_blob)
+    
+    blob.download_to_filename(destination_file)
+
+# List blobs with prefix
+def list_blobs(bucket_name, prefix=''):
+    blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
+    
+    for blob in blobs:
+        print(f"{blob.name} - {blob.size} bytes - {blob.updated}")
+
+# Generate signed URL
+def generate_signed_url(bucket_name, blob_name, version_seconds=3600):
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    
+    url = blob.generate_signed_url(version=4, expiration=version_seconds)
+    return url
+
+# Set lifecycle policy
+def set_lifecycle(bucket_name):
+    bucket = storage_client.bucket(bucket_name)
+    
+    rule = storage.Bucket.LifecycleRuleDelete(
+        age_days=365
+    )
+    
+    archive_rule = storage.Bucket.LifecycleRuleSetStorageClass(
+        storage_class='COLDLINE',
+        age_days=30
+    )
+    
+    bucket.lifecycle_rules = [archive_rule, rule]
+    bucket.patch()
+
+# Object composition (merge multiple objects)
+def compose_objects(bucket_name, source_blobs, destination_blob):
+    bucket = storage_client.bucket(bucket_name)
+    destination = bucket.blob(destination_blob)
+    
+    sources = [bucket.blob(name) for name in source_blobs]
+    
+    destination.compose(sources)
+    print(f"Composed {len(sources)} objects into {destination_blob}")
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js + AWS S3">
+
+```javascript
+const AWS = require('aws-sdk');
+const fs = require('fs');
+
+const s3 = new AWS.S3({
+  region: 'us-west-2'
+});
+
+// Upload file
+async function uploadFile(bucket, key, filePath) {
+  const fileStream = fs.createReadStream(filePath);
+  
+  const params = {
+    Bucket: bucket,
+    Key: key,
+    Body: fileStream,
+    ContentType: 'image/jpeg',
+    ServerSideEncryption: 'AES256'
+  };
+  
+  try {
+    const result = await s3.upload(params).promise();
+    console.log(`File uploaded: ${result.Location}`);
+    return result;
+  } catch (err) {
+    console.error('Upload failed:', err);
+    throw err;
+  }
+}
+
+// Download file
+async function downloadFile(bucket, key, filePath) {
+  const params = { Bucket: bucket, Key: key };
+  
+  try {
+    const data = await s3.getObject(params).promise();
+    fs.writeFileSync(filePath, data.Body);
+    console.log(`File downloaded to ${filePath}`);
+  } catch (err) {
+    console.error('Download failed:', err);
+    throw err;
+  }
+}
+
+// List objects
+async function listObjects(bucket, prefix = '') {
+  const params = { Bucket: bucket, Prefix: prefix };
+  
+  try {
+    const data = await s3.listObjectsV2(params).promise();
+    return data.Contents.map(obj => ({
+      key: obj.Key,
+      size: obj.Size,
+      lastModified: obj.LastModified
+    }));
+  } catch (err) {
+    console.error('List failed:', err);
+    throw err;
+  }
+}
+
+// Presigned URL
+function getPresignedUrl(bucket, key, expiresIn = 3600) {
+  const params = {
+    Bucket: bucket,
+    Key: key,
+    Expires: expiresIn
+  };
+  
+  return s3.getSignedUrl('getObject', params);
+}
+
+// Delete object
+async function deleteObject(bucket, key) {
+  const params = { Bucket: bucket, Key: key };
+  
+  try {
+    await s3.deleteObject(params).promise();
+    console.log(`Deleted ${key}`);
+  } catch (err) {
+    console.error('Delete failed:', err);
+    throw err;
+  }
+}
+
+// Parallel uploads
+async function uploadMultiple(bucket, files) {
+  const uploads = files.map(file => 
+    uploadFile(bucket, file.key, file.path)
+  );
+  
+  try {
+    const results = await Promise.all(uploads);
+    console.log(`Uploaded ${results.length} files`);
+    return results;
+  } catch (err) {
+    console.error('Batch upload failed:', err);
+    throw err;
+  }
+}
+
+module.exports = {
+  uploadFile,
+  downloadFile,
+  listObjects,
+  getPresignedUrl,
+  deleteObject,
+  uploadMultiple
+};
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Object Storage / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Object Storage When",
+    points: ["Large unstructured files (images, videos)", "Petabyte-scale storage needed", "Infrequent random access", "Archival and backup data", "Integration with CDN for distribution"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use Databases When",
+    points: ["Frequent random access within data", "Complex queries required", "Transactional consistency needed", "Small structured records", "ACID guarantees important"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Key Design Hierarchy",
+      description: "Use meaningful prefixes (user-123/photos/2025-02). Enables logical organization and partial listing",
+      tags: ["design", "organization"]
+    }, {
+      title: "Multipart Upload",
+      description: "For files >100MB, use multipart upload. Enables parallel uploads and resume on failure",
+      tags: ["performance", "reliability"]
+    }, {
+      title: "Lifecycle Policies",
+      description: "Auto-transition to cheaper storage classes. Delete old data automatically",
+      tags: ["cost", "operations"]
+    }, {
+      title: "Versioning Strategy",
+      description: "Enable versioning for recovery, but configure expiration to manage costs",
+      tags: ["reliability", "cost"]
+    }, {
+      title: "Regional Replication",
+      description: "Cross-region replication for disaster recovery and latency reduction",
+      tags: ["availability", "reliability"]
+    }, {
+      title: "Cost Optimization",
+      description: "Use Intelligent-Tiering, lifecycle policies, and delete unused versions"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Bucket naming strategy supports access patterns",
+    "Key hierarchy meaningful and consistently applied",
+    "Versioning enabled for critical data",
+    "Lifecycle policies configured for cost",
+    "Cross-region replication for important data",
+    "Encryption at rest and in transit configured",
+    "Presigned URLs for temporary access",
+    "Access logging enabled for audit trail",
+    "Multipart upload for large files",
+    "CDN distribution configured for frequently accessed objects"
+  ]}
+/>
+
+## Self-Check
+
+- How would you organize keys for a photo sharing app?
+- What's the difference between versioning and cross-region replication?
+- When would you use Intelligent-Tiering vs manual transitions?
+- How do lifecycle policies reduce storage costs?
+
+:::info
+Object storage provides cost-effective, durable storage for unstructured data at massive scale, but isn't suitable for random access within files or complex queries. Use for files, backups, and archives alongside databases for structured data.
+:::
+
+## Next Steps
+
+- Explore **CDN Integration** for global distribution
+- Learn **Cost Optimization** for cloud storage
+- Study **Backup & Disaster Recovery** strategies
+- Dive into **Data Lifecycle** policies
+
+## References
+
+- AWS S3 Documentation
+- Google Cloud Storage Documentation
+- Azure Blob Storage Guide
+- AWS S3 Best Practices

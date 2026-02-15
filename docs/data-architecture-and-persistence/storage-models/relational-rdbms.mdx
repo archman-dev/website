@@ -1,0 +1,485 @@
+---
+sidebar_position: 1
+title: "Relational Databases (RDBMS)"
+description: "SQL databases with ACID guarantees, normalized schemas, and proven scalability patterns"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [RDBMS, SQL, PostgreSQL, MySQL, ACID, transactions, normalization, schema, relational]
+image: /img/archman-social-card.webp
+tags: [databases, RDBMS, SQL, transactions, ACID, normalization, PostgreSQL, MySQL, schema-design, relational-model]
+hide_title: true
+---
+
+<Hero title="Relational Databases (RDBMS)" subtitle="ACID-compliant data management with proven consistency and queryability" size="large" />
+
+## TL;DR
+
+Relational databases (RDBMS) like PostgreSQL and MySQL provide strong ACID guarantees, flexible querying via SQL, and normalized schema design. Use them for transactional systems, financial data, and whenever consistency matters more than raw throughput. Trade-off: eventual consistency of NoSQL for guaranteed data integrity.
+
+## Learning Objectives
+
+- Understand ACID properties and when they matter
+- Design normalized schemas that prevent anomalies
+- Recognize scalability patterns and limitations
+- Choose between RDBMS and NoSQL for your use case
+
+## Motivating Scenario
+
+You're building a banking application. A customer transfers $100 from account A to B. What happens if:
+- Database crashes after debit, before credit?
+- Two transfers happen simultaneously?
+- Network partition occurs mid-transaction?
+
+RDBMS handles all these through ACID guarantees. NoSQL leaves you to handle these yourself.
+
+## Core Concepts
+
+<Figure
+  title="ACID Properties"
+  description="The four guarantees of traditional relational databases"
+  diagram={`
+graph TB
+    A["<b>Atomicity</b><br/>Transaction all-or-nothing<br/>No partial updates"]
+    C["<b>Consistency</b><br/>Constraints enforced<br/>Valid states only"]
+    I["<b>Isolation</b><br/>Concurrent transactions<br/>Don't interfere"]
+    D["<b>Durability</b><br/>Committed data<br/>Survives failures"]
+    
+    A -.->|Transaction| C
+    C -.->|Execution| I
+    I -.->|Completion| D
+  `}
+/>
+
+### ACID Explained
+
+**Atomicity**: All-or-nothing transactions. Transfer either completes fully or rolls back entirely.
+
+**Consistency**: Database constraints maintained. Foreign keys, unique constraints, check constraints all enforced before commit.
+
+**Isolation**: Concurrent transactions don't see partial results. Serialization, repeatable reads, or snapshot isolation depending on level.
+
+**Durability**: Once committed, data survives server crashes, power loss. Typically via write-ahead logging to persistent storage.
+
+### Normalization vs Denormalization
+
+<Vs items={[
+{
+    label: "Normalized (3NF+)",
+    points: ["Write-heavy, transactional", "Complex relationships", "Data consistency critical", "Frequent schema changes", "Moderate query volume"]
+  },
+{
+    label: "Denormalized",
+    points: ["Read-heavy, analytical", "Simple relationships", "Consistency can be eventual", "Stable schema", "High query volume"]
+  }
+]} />
+
+## Practical Example
+
+<Tabs>
+<TabItem value="postgres" label="PostgreSQL">
+
+```sql
+-- Normalized schema for e-commerce
+CREATE TABLE customers (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE orders (
+  id SERIAL PRIMARY KEY,
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  total_amount DECIMAL(10, 2) NOT NULL,
+  status VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE order_items (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  product_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL,
+  price_per_unit DECIMAL(10, 2) NOT NULL
+);
+
+-- ACID transaction: transfer funds
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+  UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+  UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+  INSERT INTO transactions (from_id, to_id, amount) VALUES (1, 2, 100);
+COMMIT;
+-- All three operations succeed or all rollback
+```
+
+</TabItem>
+<TabItem value="python" label="Python + SQLAlchemy">
+
+```python
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Numeric
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+
+Base = declarative_base()
+
+class Customer(Base):
+    __tablename__ = 'customers'
+    id = Column(Integer, primary_key=True)
+    email = Column(String(255), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    orders = relationship("Order", back_populates="customer")
+
+class Order(Base):
+    __tablename__ = 'orders'
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    customer = relationship("Customer", back_populates="orders")
+
+# ACID transaction
+engine = create_engine('postgresql://user:password@localhost/db')
+Session = sessionmaker(bind=engine)
+session = Session()
+
+try:
+    # All operations execute atomically
+    customer = session.query(Customer).filter_by(email='john@example.com').first()
+    order = Order(customer_id=customer.id, total_amount=99.99)
+    session.add(order)
+    session.commit()  # Atomically commits all changes
+except Exception as e:
+    session.rollback()  # Any error rolls back everything
+    raise
+finally:
+    session.close()
+```
+
+</TabItem>
+<TabItem value="go" label="Go + Database/sql">
+
+```go
+import (
+    "database/sql"
+    "fmt"
+    _ "github.com/lib/pq"
+)
+
+func transferMoney(db *sql.DB, fromID, toID int, amount float64) error {
+    tx, err := db.Begin()
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+    
+    // Debit from_account
+    _, err = tx.Exec(
+        "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
+        amount, fromID,
+    )
+    if err != nil {
+        return err
+    }
+    
+    // Credit to_account
+    _, err = tx.Exec(
+        "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
+        amount, toID,
+    )
+    if err != nil {
+        return err
+    }
+    
+    // Log transaction
+    _, err = tx.Exec(
+        "INSERT INTO transactions (from_id, to_id, amount) VALUES ($1, $2, $3)",
+        fromID, toID, amount,
+    )
+    if err != nil {
+        return err
+    }
+    
+    return tx.Commit()  // Atomic commit
+}
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use RDBMS / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use RDBMS When",
+    points: ["Transactional consistency is critical", "Data has clear relational structure", "Complex multi-table queries needed", "ACID guarantees required (financial, healthcare)", "Schema is relatively stable"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use NoSQL When",
+    points: ["Eventual consistency acceptable", "Massive horizontal scale needed (>10K writes/sec)", "Schema frequently changes", "Simple key-based access patterns", "Unstructured or nested data"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Connection Pooling",
+      description: "Reuse connections rather than create per-request. Use PgBouncer or HikariCP",
+      tags: ["performance", "scaling"]
+    }, {
+      title: "Prepared Statements",
+      description: "Prevent SQL injection and enable query plan caching. Always use parameterized queries",
+      tags: ["security", "performance"]
+    }, {
+      title: "Index Everything",
+      description: "But not blindly. Index columns in WHERE, JOIN, ORDER BY clauses. Monitor index bloat",
+      tags: ["optimization", "performance"]
+    }, {
+      title: "Read Replicas for Scale",
+      description: "Replicate writes to secondary replicas. Read from replicas for analytics",
+      tags: ["scaling", "replication"]
+    }, {
+      title: "Avoid N+1 Queries",
+      description: "Eager load relationships. Join fetch or use query optimization in ORM",
+      tags: ["performance", "queries"]
+    }, {
+      title: "Transaction Isolation Levels",
+      description: "Choose appropriate level: READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, SERIALIZABLE",
+      tags: ["transactions", "consistency"]
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Schema is normalized to at least 3NF",
+    "Primary keys on all tables",
+    "Foreign keys enforce referential integrity",
+    "Indexes on frequently queried columns",
+    "Connection pooling configured",
+    "Prepared statements used throughout",
+    "Transaction isolation level defined for use case",
+    "Backup and recovery strategy documented",
+    "Monitoring and alerting for slow queries",
+    "Read replicas planned for scaling",
+    "Data archival strategy for old data",
+    "PII encryption at rest and in transit"
+  ]}
+/>
+
+## Deep Dive: Scaling RDBMS Beyond Single Node
+
+While RDBMS databases weren't designed for massive horizontal scaling, several patterns enable them to handle large volumes:
+
+### Read Replicas and Replication
+
+**Read replicas** distribute read traffic across secondary nodes, scaling read capacity without changing writes:
+
+```sql
+-- Primary handles all writes
+INSERT INTO users VALUES (...)
+UPDATE orders SET status = 'shipped' WHERE id = 123
+
+-- Replicas handle reads
+SELECT * FROM users WHERE email = 'alice@example.com'  -- from replica-1
+SELECT COUNT(*) FROM orders WHERE status = 'pending'   -- from replica-2
+```
+
+**Trade-offs**:
+- **Replication lag**: Replicas lag primary by milliseconds to seconds; reads may see stale data
+- **Write bottleneck**: All writes still go to primary; doesn't scale writes
+- **Failover complexity**: Promoting replica to primary requires careful orchestration
+- **Network overhead**: Replicating every change to multiple nodes consumes bandwidth
+
+### Sharding (Horizontal Partitioning)
+
+Distribute data across independent databases based on a shard key:
+
+```python
+def get_user_by_id(user_id):
+    shard_id = user_id % NUM_SHARDS  # Determine shard
+    db = get_database(shard_id)       # Route to correct database
+    return db.query("SELECT * FROM users WHERE id = ?", user_id)
+
+def create_order(user_id, items):
+    shard_id = user_id % NUM_SHARDS
+    db = get_database(shard_id)
+    db.execute("INSERT INTO orders VALUES (...)", user_id, items)
+```
+
+**Trade-offs**:
+- **Scales writes**: Each shard handles fraction of load
+- **Cross-shard complexity**: Queries joining multiple shards are expensive or impossible
+- **Rebalancing**: Adding shards requires redistributing data (expensive operation)
+- **Hotspots**: If shard key is poor (e.g., shard by country), some shards overloaded
+- **Distributed transactions**: ACID guarantees don't span shards; coordinating updates is complex
+
+### Vertical Partitioning
+
+Split large tables into narrower schemas to reduce I/O:
+
+```sql
+-- Before: users table with 50 columns
+SELECT id, name, email FROM users  -- 50 columns scanned; slow
+
+-- After: split into users (core) and user_profiles (extra fields)
+CREATE TABLE users (
+  id PRIMARY KEY,
+  name, email, created_at
+);
+
+CREATE TABLE user_profiles (
+  user_id PRIMARY KEY,
+  bio, preferences, settings  -- rarely accessed together
+);
+
+-- Query scans fewer columns; faster
+SELECT id, name, email FROM users
+```
+
+## Consistency Levels and Guarantees
+
+RDBMS traditionally offered **strong consistency**: all readers see the same committed data. Different isolation levels trade consistency for concurrency:
+
+### Isolation Levels (Trade-offs)
+
+| Level | Reads | Phantom Reads | Dirty Reads | Non-repeatable | Best For |
+|-------|-------|---------------|------------|---|---|
+| READ UNCOMMITTED | Fastest | Yes | Yes | Yes | Analytics on stale data |
+| READ COMMITTED | Fast | Yes | No | Yes | Default; most apps |
+| REPEATABLE READ | Slow | Yes | No | No | Financial systems |
+| SERIALIZABLE | Slowest | No | No | No | Critical transactions |
+
+```sql
+-- Transaction isolation in practice
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+  -- No other transaction can interfere
+  SELECT balance FROM accounts WHERE id = 1;  -- sees 1000
+  -- If another transaction modifies account 1, this transaction rolls back
+  UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+COMMIT;
+```
+
+## Practical Tuning: Query Optimization
+
+Most RDBMS performance issues stem from inefficient queries, not database design:
+
+### Using EXPLAIN Plans
+
+```sql
+EXPLAIN ANALYZE
+SELECT o.id, o.created_at, COUNT(i.id) as item_count
+FROM orders o
+LEFT JOIN order_items i ON o.id = i.order_id
+WHERE o.created_at > '2025-01-01'
+GROUP BY o.id
+ORDER BY o.created_at DESC;
+
+-- Output shows:
+-- Seq Scan on orders (cost 0..1000)   -- BAD: full table scan
+-- vs Index Scan on orders_created_at  -- GOOD: uses index
+```
+
+### Common Query Anti-patterns
+
+```python
+# Anti-pattern 1: N+1 queries
+orders = db.query("SELECT * FROM orders")
+for order in orders:
+    items = db.query("SELECT * FROM order_items WHERE order_id = ?", order.id)
+    # 1 query for orders + N queries for items = slow
+
+# Fixed: Join or eager load
+orders = db.query("""
+    SELECT o.*, i.* FROM orders o
+    JOIN order_items i ON o.id = i.order_id
+""")
+
+# Anti-pattern 2: SELECT * instead of needed columns
+SELECT * FROM users  -- fetches all 50 columns; slow
+
+# Fixed: name only needed columns
+SELECT id, name FROM users
+
+# Anti-pattern 3: Functions in WHERE disables indexes
+SELECT * FROM users WHERE LOWER(email) = 'alice@example.com'  -- index ignored
+# Fixed:
+SELECT * FROM users WHERE email = 'alice@example.com'  -- uses index
+```
+
+## Modern RDBMS Features
+
+Recent versions added features historically reserved for NoSQL:
+
+### JSON/Document Support
+
+```sql
+-- PostgreSQL: JSON columns
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name TEXT,
+  metadata JSON  -- nested data without normalization
+);
+
+INSERT INTO users VALUES (1, 'Alice', '{"preferences":{"theme":"dark","language":"en"}}');
+
+-- Query nested fields
+SELECT metadata -> 'preferences' ->> 'theme' FROM users WHERE id = 1;
+
+-- Index JSON paths
+CREATE INDEX idx_user_theme ON users USING gin(metadata -> 'preferences');
+```
+
+### Full-Text Search
+
+```sql
+-- PostgreSQL: full-text search
+CREATE INDEX idx_posts_search ON posts USING gin(to_tsvector('english', body));
+
+SELECT id, title FROM posts
+WHERE to_tsvector('english', body) @@ to_tsquery('english', 'database & performance')
+ORDER BY ts_rank(...) DESC;
+```
+
+## When RDBMS Hits Limits
+
+RDBMS excels at transactional consistency but struggles with:
+
+1. **Massive scale (> 10K writes/sec)**: Writes still go to single primary; replication can't keep up
+2. **Geographically distributed**: Replication across continents introduces latency; transactions slow
+3. **Unstructured data**: JSON/blob columns lose query power; NoSQL schema-less is better
+4. **Real-time analytics on live data**: OLTP databases designed for small queries; BI queries slow production
+5. **Time-series data**: Metrics, logs, traces are append-only; RDBMS not optimized for time-bucketed queries
+
+## Self-Check
+
+- What are the four ACID properties? When would breaking each one cause problems?
+- Why do most applications use RDBMS for transactional data despite NoSQL popularity?
+- What's the difference between strong and eventual consistency?
+- How do indexes improve query performance? What's the trade-off?
+- How would you scale RDBMS writes beyond a single primary?
+- What's the difference between read replicas and sharding?
+- When would you denormalize an RDBMS schema?
+
+:::info One Takeaway
+RDBMS databases provide strong ACID guarantees and flexible querying at the cost of distributed scalability. Use them for transactional systems where consistency matters; use NoSQL when you need horizontal scale and can accept eventual consistency. Master replication, sharding, and query optimization to extend RDBMS far beyond single-node limits.
+
+:::
+
+## Next Steps
+
+- Explore **Data Modeling & Access** for schema design patterns
+- Learn **Indexing Strategies** for query optimization
+- Study **Read Replicas and Replication** for scaling RDBMS
+- Dive into **Caching Patterns** for high-performance RDBMS systems
+
+## References
+
+- PostgreSQL Official Documentation
+- "Database Internals" by Alex Petrov
+- "Use the Index, Luke" by Markus Winand
+- High Performance MySQL (O'Reilly)

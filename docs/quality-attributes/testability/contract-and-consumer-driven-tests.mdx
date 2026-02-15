@@ -1,0 +1,380 @@
+---
+sidebar_position: 3
+title: "Contract and Consumer-Driven Tests"
+description: "Test API contracts between services; catch breaking changes early with CDC."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 30
+lastReviewed: 2025-02-14
+personas: [engineer, architect]
+keywords: [contract testing, consumer-driven contracts, cdc, pact, api compatibility, breaking changes]
+image: /img/archman-social-card.webp
+tags: [quality-attributes, testability, testing, contracts, api-design]
+hide_title: true
+---
+
+<Hero title="Contract and Consumer-Driven Tests" subtitle="Test API contracts to catch breaking changes before deployment." size="large" />
+
+## TL;DR
+
+**Contract testing** verifies that an API meets the expectations of its consumers. **Consumer-driven contracts (CDC)** start from the consumer's needs, not the provider's implementation. A consumer writes tests defining what data/behavior it needs; the provider verifies it delivers that. Catch breaking changes *before* deployment. Use tools like Pact to record and replay contracts. Contract testing is not integration testing—it mocks the provider, making tests fast and isolated. Perfect for microservices where many teams depend on shared APIs.
+
+## Learning Objectives
+
+- Design contracts between services
+- Write consumer-driven contract tests
+- Use Pact or similar tools
+- Integrate contract testing into CI/CD
+- Catch breaking changes early
+- Version APIs based on contract changes
+
+## Motivating Scenario
+
+Service A calls Service B's `/products` endpoint, expecting fields `id`, `name`, `price`. Service B removes `price` field without telling Service A. Service A breaks. With contract testing, Service B's change fails CI before it's deployed.
+
+## Core Concepts
+
+<Tabs>
+  <TabItem value="contract-vs-integration" label="Contract vs Integration Testing">
+
+| Aspect | Contract Testing | Integration Testing |
+|--------|------------------|---------------------|
+| **Mock provider?** | Yes | No |
+| **Speed** | Fast (mock) | Slow (real service) |
+| **Scope** | API contract only | Full end-to-end flow |
+| **Runs in CI?** | Every commit | Once per day |
+| **Detects breaking changes?** | Yes | Yes, but late |
+
+**Contract Testing:**
+- Consumer mocks provider
+- Consumer writes test: "I expect `/products` to return `{id, name, price}`"
+- Provider runs same test against real implementation
+- Fast, isolated, catches breaks early
+
+**Integration Testing:**
+- Start both services (real or containers)
+- Consumer calls provider (real)
+- Tests full workflow
+- Slow, catches integration bugs, not API contract breaks
+
+**Best practice:** Both. Contract tests catch API breaks. Integration tests catch real integration issues.
+
+  </TabItem>
+
+  <TabItem value="consumer-driven" label="Consumer-Driven Contracts">
+
+```python
+# Consumer Test (Service A) using Pact
+
+from pact import Consumer, Provider
+
+pact = Consumer('ServiceA').has_state(
+    'a product with ID 123 exists'
+).upon_receiving(
+    'a request for product 123'
+).with_request(
+    'get',
+    '/products/123'
+).will_respond_with(
+    200,
+    body={
+        'id': 123,
+        'name': 'Widget',
+        'price': 99.99
+    }
+)
+
+def test_fetch_product():
+    """This test defines what ServiceA expects."""
+    with pact:
+        response = requests.get('http://localhost:8000/products/123')
+        assert response.json()['price'] == 99.99
+
+# Pact saves this contract (JSON file):
+# {
+#   "interactions": [{
+#     "request": {"method": "GET", "path": "/products/123"},
+#     "response": {
+#       "status": 200,
+#       "body": {"id": 123, "name": "Widget", "price": 99.99}
+#     }
+#   }]
+# }
+---
+
+# Provider Test (Service B)
+
+# Service B verifies it can fulfill the contract
+# (doesn't mock itself, uses real implementation)
+
+@pytest.fixture
+def pact():
+    """Load contract from file."""
+    return Pact('ServiceA')  # Loads pact file
+
+def test_provider_fulfills_contract(pact):
+    """Service B: verify we match the contract."""
+    with pact.verify():
+        # Real endpoint
+        product = get_product(123)
+        assert 'id' in product
+        assert 'name' in product
+        assert 'price' in product  # MUST have price field
+        assert product['price'] == 99.99
+
+# Workflow:
+# 1. ServiceA (consumer) writes contract test
+# 2. Contract saved to file
+# 3. ServiceB (provider) runs against same contract
+# 4. If ServiceB changes API, contract test fails in CI
+# 5. ServiceB knows: can't remove 'price' field
+```
+
+  </TabItem>
+
+  <TabItem value="pact-example" label="Pact in CI/CD">
+
+```bash
+#!/bin/bash
+# Contract testing in CI/CD pipeline
+
+set -e
+
+# Step 1: Consumer tests (ServiceA)
+echo "=== Running Consumer Contract Tests (ServiceA) ==="
+cd services/service-a
+npm test  # Generates pact files: pacts/ServiceA-ServiceB.json
+
+# Step 2: Publish contract to broker (central storage)
+echo "=== Publishing Contract ==="
+npm run publish-pact \
+  --broker=https://pactbroker.example.com \
+  --version=$GIT_COMMIT
+
+# Step 3: Provider tests (ServiceB)
+echo "=== Running Provider Contract Tests (ServiceB) ==="
+cd ../service-b
+npm test
+
+# ServiceB CI runs:
+# 1. Download contracts from broker
+# 2. Run provider tests against each contract
+# 3. If any contract fails, CI breaks
+# 4. ServiceB can't deploy breaking changes
+
+# Step 4: Verify compatibility (can-deploy)
+echo "=== Verify Compatibility ==="
+npm run can-deploy \
+  --pacticipant=ServiceB \
+  --version=$GIT_COMMIT \
+  --broker=https://pactbroker.example.com
+
+# Output:
+# ServiceB version abc123:
+#   Verified against ServiceA (version xyz789): PASS
+# Can deploy: YES
+```
+
+Workflow:
+1. ServiceA (consumer) writes contract, publishes to broker
+2. ServiceB (provider) downloads contract, verifies fulfills it
+3. ServiceB tries to remove `price` field → contract test fails
+4. ServiceB can't merge PR (CI blocks)
+5. ServiceB must negotiate with ServiceA: "OK to remove?"
+
+  </TabItem>
+
+  <TabItem value="best-practices" label="Best Practices">
+
+```python
+# Good: Clear, specific contracts
+
+# Consumer: What do I actually need?
+pact = Consumer('OrderService').upon_receiving(
+    'a request for orders for user 123'
+).with_request(
+    'GET', '/users/123/orders',
+    query={'limit': 10, 'offset': 0}
+).will_respond_with(
+    200,
+    body={
+        'orders': [
+            {
+                'id': 1,
+                'total': 99.99,
+                'items': [
+                    {'product_id': 5, 'quantity': 2}
+                ]
+            }
+        ]
+    }
+)
+
+# Provider: What do I actually provide?
+def test_list_user_orders():
+    orders = get_user_orders(user_id=123, limit=10, offset=0)
+    assert len(orders) >= 0  # Could be empty
+    for order in orders:
+        assert 'id' in order
+        assert 'total' in order
+        assert 'items' in order
+    # Don't test implementation details (e.g., database structure)
+    # Only test contract (what consumer sees)
+---
+
+# Anti-Pattern: Over-specified contracts
+
+# Consumer: Too specific (brittle)
+pact = Consumer('OrderService').upon_receiving(
+    'a request for orders'
+).will_respond_with(
+    200,
+    body={
+        'orders': [
+            {
+                'id': 1,
+                'total': 99.99,
+                'created_at': '2025-02-14T10:00:00Z',  # Exact timestamp!
+                'customer': {
+                    'id': 123,
+                    'email': 'user@example.com',  # Exact email!
+                    'phone': '+1-555-0123'  # Exact format!
+                }
+            }
+        ]
+    }
+)
+# Problem: If customer email changes, contract fails (not provider issue)
+# Solution: Use matchers (e.g., "email must be valid email format")
+---
+
+# Better: Use matchers (Pact feature)
+
+from pact.matchers import like, term
+
+pact = Consumer('OrderService').upon_receiving(
+    'a request for orders'
+).will_respond_with(
+    200,
+    body={
+        'orders': [
+            {
+                'id': like(1),  # Any integer
+                'total': like(99.99),  # Any decimal
+                'created_at': term(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', '2025-02-14T10:00:00Z'),  # Any ISO timestamp
+                'customer': {
+                    'id': like(123),
+                    'email': term(r'.+@.+\..+', 'user@example.com'),  # Any valid email
+                }
+            }
+        ]
+    }
+)
+# Now contract is flexible (type-safe, not brittle)
+```
+
+  </TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Contract Testing: Best Practices"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**DO: Contract Test Service Boundaries**: Every API consumer/provider pair has contract tests. ServiceA depends on ServiceB? Contract test.",
+      "**DO: Consumer Writes Contract**: Consumer (ServiceA) defines what it needs. Provider (ServiceB) proves it delivers.",
+      "**DO: Use Pact or Similar Tool**: Pact records consumer expectations, provider verifies. Shareable, version-controlled contracts.",
+      "**DO: Integrate into CI**: Every commit: consumer tests pass, provider tests pass. Can-deploy checks before merge.",
+      "**DO: Version APIs Based on Contracts**: API breaking change? Bump version (/v2/). Old consumers stay on /v1/."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**DO: Contract Test Service Boundaries**: Only integration test (real services). Skip contract tests. Miss breaking changes in CI.",
+      "**DO: Consumer Writes Contract**: Provider guesses what consumers need. Ship breaking change, discover in production.",
+      "**DO: Use Pact or Similar Tool**: Manual contract checking. Error-prone, not automated.",
+      "**DO: Integrate into CI**: Manual verification. Rely on humans to check contracts.",
+      "**DO: Version APIs Based on Contracts**: Remove field without versioning. All consumers break."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: No Contract Tests",
+    body: "ServiceB removes field, no one knows. ServiceA breaks in production. Customer angry.",
+  },
+  {
+    label: "Anti-Pattern: Over-Specified Contracts",
+    body: "Contract tests exact timestamps, IDs, emails. Brittle. Fail for unrelated changes.",
+  },
+  {
+    label: "Pattern: Consumer-Driven Contracts",
+    body: "Consumer writes contract. Provider verifies. Alignment guaranteed.",
+  },
+  {
+    label: "Pattern: Pact Broker",
+    body: "Central contract repository. CI checks: can ServiceB version XYZ deploy with ServiceA version ABC?",
+  },
+  {
+    label: "Anti-Pattern: Late Discovery",
+    body: "No contracts in CI. Breaking change deployed. Discovered in production. Down for hours.",
+  },
+  {
+    label: "Pattern: Contract + Integration Tests",
+    body: "Contracts catch API breaks fast. Integration tests verify full workflow. Best of both.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Does every API consumer/provider pair have contract tests?",
+  "Are contracts written by consumers (not guessed by providers)?",
+  "Are contracts stored in Pact or similar tool (not manual)?",
+  "Are contracts version-controlled (in git)?",
+  "Are contract tests run in CI for every commit?",
+  "Can CI block incompatible deployments (can-deploy)?",
+  "Are contracts flexible (use matchers, not exact values)?",
+  "Are APIs versioned (/v1/, /v2/) to handle breaking changes?",
+  "Are consumers notified of API deprecations (6-month notice)?",
+  "Are old API versions supported for transition period?",
+  "Is Pact broker (or similar) set up for contract sharing?",
+  "Are contract tests fast (< 1 second)?",
+  "Do contract tests focus on API contract, not implementation?",
+  "Can new API versions be tested alongside old (parallel support)?",
+]} />
+
+## Self-Check
+
+1. **Right now**, if you remove a field from an API, does CI catch it before deploy?
+2. **Do all API consumers have tests** that verify provider behavior?
+3. **Do contract tests run in CI** for every commit?
+4. **Can you deploy a breaking API change** without CI failing?
+
+## Next Steps
+
+1. **Identify API boundaries** — Which services depend on which?
+2. **Write consumer contracts** — For each dependency, consumer writes contract
+3. **Set up Pact** — Store contracts, share between consumer/provider
+4. **Integrate into CI** — Consumer tests + provider tests for every commit
+5. **Add can-deploy check** — Block incompatible deployments
+6. **Version APIs** — Use /v1/, /v2/ for major changes
+7. **Document contracts** — Keep OpenAPI/AsyncAPI specs in sync
+
+## References
+
+1. <a href="https://pact.foundation/" target="_blank" rel="nofollow noopener noreferrer">Pact Foundation ↗️</a>
+2. <a href="https://martinfowler.com/articles/consumerDrivenContracts.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Consumer-Driven Contracts ↗️</a>
+3. <a href="https://pact.foundation/blog/2015/07/21/scope-of-contract-testing.html" target="_blank" rel="nofollow noopener noreferrer">Pact: Scope of Contract Testing ↗️</a>
+4. <a href="https://cloud.google.com/architecture/devops-culture/version-control-systems" target="_blank" rel="nofollow noopener noreferrer">Google Cloud: API Versioning ↗️</a>
+---

@@ -1,0 +1,757 @@
+---
+sidebar_position: 14
+title: "Scheduling and Autoscaling"
+description: "Distribute workloads and scale based on demand using container orchestration."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, architect, sre]
+keywords: [scheduling, autoscaling, Kubernetes, load distribution, elasticity]
+image: /img/archman-social-card.webp
+tags: [cloud-native, orchestration, operations]
+hide_title: true
+---
+
+<Hero title="Scheduling and Autoscaling" subtitle="Distribute pods and scale capacity dynamically based on demand." size="large" />
+
+## TL;DR
+
+Scheduling: Assign pod to node. Kubernetes scheduler uses: resource requests (CPU, memory), taints/tolerations (node constraints), node affinity (prefer certain nodes), pod affinity (group related pods). HPA (Horizontal Pod Autoscaler): Scale pod count based on metrics (CPU, memory, custom). VPA (Vertical Pod Autoscaler): Adjust resource requests. Cluster Autoscaler: Add nodes when pods can't fit. Golden rule: measure before scaling (scale at 70% utilization, not 90%+).
+
+## Learning Objectives
+
+- Understand pod scheduling algorithm
+- Configure resource requests and limits
+- Use taints and tolerations
+- Implement pod affinity/anti-affinity
+- Setup horizontal pod autoscaling (HPA)
+- Configure custom metrics for scaling
+- Implement cluster autoscaling
+- Monitor scaling events
+- Debug scheduling issues
+
+## Motivating Scenario
+
+Pod deploy fails: "Insufficient CPU". Pods scattered across nodes, can't fit. Cluster Autoscaler doesn't know when to add nodes. HPA scales pods to 1000, but no resources to run them. Result: poor utilization. With proper scheduling: pods pack efficiently, HPA + Cluster Autoscaler work together.
+
+## Core Concepts
+
+### Scheduling Process
+
+```
+1. Filter nodes:
+   ✓ Has enough CPU/memory
+   ✓ Tolerate taints
+   ✓ Match node affinity
+
+2. Rank nodes:
+   - Prefer less loaded
+   - Prefer nodes with high score
+
+3. Bind pod to best node
+```
+
+### Pod Resource Model
+
+```yaml
+spec:
+  containers:
+  - name: app
+    image: myapp:1.0
+    resources:
+      requests:
+        cpu: "100m"        # Reserve 100 millicores
+        memory: "128Mi"    # Reserve 128MB
+      limits:
+        cpu: "500m"        # Max 500 millicores
+        memory: "512Mi"    # Max 512MB
+```
+
+- Request: Reserved (guaranteed available)
+- Limit: Max allowed (can throttle or kill)
+
+### Scaling Types
+
+| Type | Trigger | Adjustment | Use Case |
+|------|---------|-----------|----------|
+| **HPA** | CPU/Memory % or custom metric | Scale pod count | Stateless services |
+| **VPA** | Actual resource usage | Adjust requests | Right-sizing |
+| **CA** | Pods pending (no node space) | Add nodes | Cluster growth |
+
+## Implementation
+
+<Tabs>
+<TabItem value="scheduling" label="Scheduling">
+
+```yaml
+# Pod with resource requirements
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  containers:
+  - name: app
+    image: myapp:1.0
+    resources:
+      requests:
+        cpu: "100m"      # 100 millicores (0.1 CPU)
+        memory: "128Mi"  # 128 MB
+      limits:
+        cpu: "500m"      # 500 millicores
+        memory: "512Mi"  # 512 MB
+---
+# Taints and tolerations (run workload on specific nodes)
+# Taint node (prevent pods from running)
+# kubectl taint nodes gpu-node gpu=yes:NoSchedule
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload
+spec:
+  containers:
+  - name: compute
+    image: ml-trainer:1.0
+  tolerations:
+  - key: gpu
+    operator: Equal
+    value: "yes"
+    effect: NoSchedule
+---
+# Pod affinity (co-locate pods)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      affinity:
+        # Preferred: API pods on same nodes as cache pods
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - cache
+              topologyKey: kubernetes.io/hostname
+        
+        # Anti-affinity: Spread across nodes
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - api
+            topologyKey: kubernetes.io/hostname
+      
+      # Node affinity: Run on specific nodes
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: disk
+              operator: In
+              values:
+              - ssd  # Only nodes with ssd=true label
+---
+# Node selector (simple affinity)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-memory-app
+spec:
+  nodeSelector:
+    memory-type: high  # Only nodes with this label
+  containers:
+  - name: app
+    image: app:1.0
+```
+
+</TabItem>
+<TabItem value="hpa" label="Autoscaling">
+
+```yaml
+# Horizontal Pod Autoscaler (HPA)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2        # At least 2 pods
+  maxReplicas: 10       # At most 10 pods
+  metrics:
+  # Scale based on CPU
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale up at 70% CPU
+  
+  # Scale based on memory
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale up at 80% memory
+  
+  # Scale based on custom metric
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "1000"  # Scale at 1000 req/s per pod
+  
+  # Scale based on external metric (e.g., queue length)
+  - type: External
+    external:
+      metric:
+        name: sqs_queue_depth
+        selector:
+          matchLabels:
+            queue_name: orders
+      target:
+        type: AverageValue
+        averageValue: "30"  # Scale at 30 messages per pod
+  
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Scale up immediately
+      policies:
+      - type: Percent
+        value: 100          # Double pods each scale-up
+        periodSeconds: 15   # Check every 15 seconds
+    
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5 min before scaling down
+      policies:
+      - type: Percent
+        value: 50           # Remove 50% of pods
+        periodSeconds: 60   # Check every minute
+---
+# Vertical Pod Autoscaler (VPA) - adjust resource requests
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: api-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  updatePolicy:
+    updateMode: "Auto"  # Restart pods with new resources
+  resourcePolicy:
+    containerPolicies:
+    - containerName: api
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 1024Mi
+---
+# Cluster Autoscaler (CA)
+# Installed on cluster, monitors pending pods
+# Adds nodes when pods can't fit
+# Removes unused nodes after 10 minutes
+
+# CA config (via cloud provider flags)
+# --scale-down-enabled=true
+# --scale-down-delay-after-add=10m
+# --scale-down-delay-after-failure=3m
+# --scale-down-unready-time=20m
+# --skip-nodes-with-system-pods=true
+```
+
+</TabItem>
+<TabItem value="monitoring" label="Monitoring Scaling">
+
+```python
+# Monitor scheduling and scaling events
+from kubernetes import client, config, watch
+
+config.load_incluster_config()
+v1 = client.CoreV1Api()
+apps_v1 = client.AppsV1Api()
+
+def monitor_pod_scheduling():
+    """Watch pod scheduling events"""
+    w = watch.Watch()
+    
+    for event in w.stream(v1.list_pod_for_all_namespaces, timeout_seconds=30):
+        pod = event['object']
+        event_type = event['type']
+        
+        # Pod scheduled
+        if pod.status.conditions:
+            for condition in pod.status.conditions:
+                if condition.type == 'PodScheduled' and condition.status == 'True':
+                    print(f"Pod {pod.metadata.name} scheduled on {pod.spec.node_name}")
+                
+                elif condition.type == 'PodScheduled' and condition.status == 'False':
+                    print(f"Pod {pod.metadata.name} pending: {condition.reason}")
+
+def monitor_hpa_scaling():
+    """Watch HPA scaling events"""
+    custom_api = client.CustomObjectsApi()
+    
+    hpas = custom_api.list_namespaced_custom_object(
+        "autoscaling", "v2", "default", "horizontalpodautoscalers"
+    )
+    
+    for hpa in hpas['items']:
+        name = hpa['metadata']['name']
+        
+        if 'status' in hpa:
+            current = hpa['status'].get('currentReplicas', 0)
+            desired = hpa['status'].get('desiredReplicas', 0)
+            
+            if current != desired:
+                print(f"HPA {name} scaling: {current} → {desired}")
+            
+            # Show metrics
+            for metric in hpa['status'].get('currentMetrics', []):
+                if 'resource' in metric:
+                    cpu = metric['resource'].get('currentAverageUtilization', 'N/A')
+                    print(f"  CPU: {cpu}%")
+
+def check_node_capacity():
+    """Check node resources"""
+    nodes = v1.list_node()
+    
+    for node in nodes.items:
+        name = node.metadata.name
+        
+        # Allocatable resources
+        allocatable = node.status.allocatable
+        cpu = allocatable['cpu']
+        memory = allocatable['memory']
+        
+        # Used resources
+        pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={name}")
+        
+        cpu_used = sum(parse_cpu(p.spec.containers[0].resources.requests['cpu']) 
+                      for p in pods.items if p.spec.containers[0].resources.requests)
+        
+        print(f"Node {name}: CPU {cpu_used}/{cpu}, Memory {memory}")
+
+def parse_cpu(cpu_str):
+    """Parse CPU string (100m, 0.5, 1) to millicores"""
+    if cpu_str.endswith('m'):
+        return int(cpu_str[:-1])
+    return int(float(cpu_str) * 1000)
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Scenarios
+
+### Scenario 1: E-Commerce Traffic Spike
+
+```
+Normal traffic: 10 pods
+Flash sale starts: 1000x traffic spike
+
+HPA detects CPU > 70%
+Scales to 100 pods (max)
+Cluster Autoscaler adds nodes
+System handles spike
+
+30 min later: HPA scales down to 15 pods
+CA removes unused nodes
+Cost: $X for spike period
+```
+
+### Scenario 2: Batch Processing
+
+```
+Batch job: Sort 1M orders
+Requires 50 CPU cores, 100GB memory
+Pod affinity: Keep batch pods on same nodes (fast network)
+Taint node: Only batch workloads
+HPA: Scale to 50 pods max
+Result: 50 concurrent tasks, completes in 1 hour
+```
+
+### Scenario 3: Mixed Workloads
+
+```
+On-demand: Production API (responsive)
+Spot instances: Batch jobs (cost-sensitive)
+GPU nodes: ML training (expensive)
+
+Scheduling:
+- API: preferredDuringScheduling on on-demand
+- Batch: preferredDuringScheduling on spot
+- ML: required on GPU nodes
+
+Result: 40% cost savings without reliability loss
+```
+
+## Common Mistakes
+
+### Mistake 1: No Resource Requests
+
+```yaml
+# ❌ WRONG: No requests
+resources:
+  limits:
+    cpu: "500m"
+
+# Scheduler doesn't reserve space
+# Pods can be overprovisioned
+
+# ✅ CORRECT: Requests + limits
+resources:
+  requests:
+    cpu: "100m"
+  limits:
+    cpu: "500m"
+```
+
+### Mistake 2: HPA on Wrong Metrics
+
+```yaml
+# ❌ WRONG: Scale based on request count (misleading)
+- metric:
+    name: http_requests_total
+
+# ✅ CORRECT: Scale based on per-pod rate
+- metric:
+    name: http_requests_per_second_per_pod
+```
+
+### Mistake 3: CA Doesn't Know When to Add
+
+```yaml
+# ❌ WRONG: HPA maxes out, pods pending
+# Cluster Autoscaler waits (misconfigured)
+# Pods stay pending
+
+# ✅ CORRECT: CA monitor pending pods
+# Automatically add nodes within 2 minutes
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "Resource requests defined for all containers?",
+  "Resource limits set (prevent OOM kill)?",
+  "HPA configured (min/max replicas)?",
+  "Scaling metrics chosen (CPU, memory, custom)?",
+  "HPA scale-up/down delays tuned?",
+  "Pod affinity configured (co-location)?",
+  "Pod anti-affinity configured (spreading)?",
+  "Node selector or node affinity used?",
+  "Taints and tolerations for special nodes?",
+  "Cluster Autoscaler enabled?",
+  "Monitoring of scaling events?",
+  "Runbook for scaling failures?"
+]} />
+
+## Next Steps
+
+1. Define resource requests/limits
+2. Setup HPA for stateless services
+3. Configure scaling metrics
+4. Deploy Cluster Autoscaler
+5. Monitor scaling events
+6. Tune scaling parameters
+7. Test scaling under load
+8. Document scaling behavior
+
+## References
+
+- <a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes HPA ↗</a>
+- <a href="https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler" target="_blank" rel="nofollow noopener noreferrer">Vertical Pod Autoscaler ↗</a>
+- <a href="https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler" target="_blank" rel="nofollow noopener noreferrer">Cluster Autoscaler ↗</a>
+
+## Advanced Scaling Scenarios
+
+### Custom Metrics Autoscaling
+
+Scale based on application-specific metrics:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: queue-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: queue-worker
+  minReplicas: 1
+  maxReplicas: 50
+  metrics:
+  # Scale based on queue depth
+  - type: Pods
+    pods:
+      metric:
+        name: sqs_queue_depth
+        selector:
+          matchLabels:
+            queue: orders
+      target:
+        type: AverageValue
+        averageValue: "10"  # 10 messages per pod
+```
+
+Metrics flow:
+1. Custom metric emitted by app
+2. Collected by metrics collector (Prometheus, Stackdriver)
+3. Adapter exposes to Kubernetes metrics API
+4. HPA reads and scales
+
+### Scaling Policies
+
+Control scaling speed:
+
+```yaml
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 0  # Scale up immediately
+    policies:
+    - type: Percent
+      value: 100          # Double pods
+      periodSeconds: 15
+    - type: Pods
+      value: 10           # Add 10 pods max
+      periodSeconds: 15
+    selectPolicy: Max     # Use most aggressive
+  
+  scaleDown:
+    stabilizationWindowSeconds: 300  # Wait 5 min
+    policies:
+    - type: Percent
+      value: 25           # Remove 25% of pods
+      periodSeconds: 60
+    selectPolicy: Min     # Use least aggressive
+```
+
+### Pod Disruption Budgets
+
+Ensure minimum availability during scaling:
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+spec:
+  minAvailable: 2  # At least 2 pods must be available
+  selector:
+    matchLabels:
+      app: api
+```
+
+When scaling down:
+- Kubernetes respects PDB
+- Won't terminate pod if it would violate constraint
+- Ensures service availability
+
+### Vertical Scaling
+
+Adjust resource requests without restarting:
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: api-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  updatePolicy:
+    updateMode: "Recreate"  # Restart pods to apply
+  resourcePolicy:
+    containerPolicies:
+    - containerName: api
+      controlledResources: ["cpu", "memory"]
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 2000m
+        memory: 4Gi
+```
+
+VPA recommender observes usage and adjusts:
+- If consistently using 200m CPU, recommend 250m (+ overhead)
+- If consistently using 512Mi memory, recommend 640Mi (+ overhead)
+
+### Cost Optimization
+
+Reduce scaling costs:
+
+1. **Spot instances**: 70% cheaper, but can be interrupted
+   ```yaml
+   nodeAffinity:
+     preferredDuringSchedulingIgnoredDuringExecution:
+     - weight: 100
+       nodeSelectorTerms:
+       - matchExpressions:
+         - key: cloud.google.com/gke-preemptible
+           operator: In
+           values:
+           - "true"
+   ```
+
+2. **Reserved instances**: 30-50% cheaper for committed capacity
+   ```yaml
+   nodeSelector:
+     cloud.google.com/gke-nodepool: reserved-pool
+   ```
+
+3. **Mixed strategy**: Use spot for flexible, reserved for baseline
+
+## Troubleshooting Scaling Issues
+
+### Pod Pending
+
+Cause: Not enough resources
+
+Debug:
+```bash
+kubectl describe pod <pod-name>
+# Look for: Insufficient CPU, Insufficient Memory
+
+# Check node resources
+kubectl describe node <node-name>
+
+# Solution: Increase resource requests, add nodes, or reduce pod count
+```
+
+### HPA Not Scaling
+
+Cause: Metrics not available
+
+Debug:
+```bash
+kubectl get hpa
+kubectl describe hpa <hpa-name>
+
+# Check metrics
+kubectl get --all-namespaces=true --all-pods=true \
+  resource.metrics.k8s.io v1beta1 pods
+
+# Solution: Install metrics-server, configure custom metrics adapter
+```
+
+### Scaling Too Slow/Fast
+
+Tune scaling parameters:
+
+```yaml
+# Currently scaling too slow?
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 0  # Was 300, reduce delay
+    policies:
+    - type: Percent
+      value: 100  # Increase aggression
+      periodSeconds: 15
+
+# Currently scaling too fast?
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 300  # Add delay
+    policies:
+    - type: Percent
+      value: 50   # Reduce aggression
+      periodSeconds: 30
+```
+
+## Conclusion
+
+Scheduling and autoscaling are foundations of Kubernetes:
+- Resource requests guide scheduler
+- Pod affinity/anti-affinity control placement
+- HPA scales based on metrics
+- Cluster Autoscaler adds nodes
+
+Tuning requires:
+- Measuring current resource usage
+- Setting appropriate requests/limits
+- Configuring HPA thresholds
+- Monitoring scaling events
+
+Result: Efficient resource utilization, automatic scaling, cost optimization.
+
+### HPA Real-World Configurations
+
+**Web Server (CPU-based scaling)**:
+```yaml
+minReplicas: 2
+maxReplicas: 20
+targetCPUUtilizationPercentage: 70
+# Typical for stateless web servers
+```
+
+**Queue Worker (Custom metric)**:
+```yaml
+minReplicas: 1
+maxReplicas: 50
+metrics:
+- type: Pods
+  pods:
+    metric:
+      name: queue_depth
+    target:
+      averageValue: "10"  # 10 items per worker
+# Scale based on work queue size
+```
+
+**Database (Memory-based, no scaling)**:
+```yaml
+# Don't use HPA for stateful workloads
+# Instead: VPA for right-sizing, CA for node capacity
+minReplicas: 3
+# Fixed count, manual scaling
+```
+
+### Resource Request Tuning
+
+Common starting points (adjust based on actual metrics):
+
+```yaml
+Web service:
+  cpu: 100m
+  memory: 128Mi
+
+API service:
+  cpu: 250m
+  memory: 512Mi
+
+Worker:
+  cpu: 500m
+  memory: 1Gi
+
+Database:
+  cpu: 2000m
+  memory: 8Gi
+```
+
+Measure actual usage, then adjust requests accordingly.
+

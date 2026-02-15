@@ -1,0 +1,667 @@
+---
+sidebar_position: 8
+title: "In-Memory Caches & Data Grids"
+description: "Distributed caching and in-memory data platforms for sub-millisecond latency and session management"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [in-memory caches, data grids, Memcached, Redis, Hazelcast, distributed caching, session store]
+image: /img/archman-social-card.webp
+tags: [databases, caching, Redis, Memcached, Hazelcast, in-memory, distributed, session-management, latency]
+hide_title: true
+---
+
+<Hero title="In-Memory Caches & Data Grids" subtitle="Distributed memory platforms for sub-millisecond latency and session management" size="large" />
+
+## TL;DR
+
+In-memory caches (Memcached, Redis) and data grids (Hazelcast, Apache Ignite) store data in RAM across distributed nodes. Microsecond-to-millisecond latency, perfect for caching, sessions, real-time state. Trade-off: limited to RAM size, data loss on crash (unless persisted), eventual consistency in distributed mode, requires robust monitoring.
+
+## Learning Objectives
+
+- Understand distributed caching architectures
+- Design cache-aside and write-through patterns
+- Recognize when data grids add value over caches
+- Choose appropriate eviction and persistence strategies
+
+## Motivating Scenario
+
+User session management: 1M concurrent users, session object 10KB = 10GB. RDBMS read on every request: 100ms latency per user. Redis: &lt;1ms. Shopping carts, profile preferences: critical for experience. Session loss unacceptable: configure persistence.
+
+## Core Concepts
+
+<Figure
+  title="Caching Architecture"
+  description="Multiple cache layers reduce latency and database load"
+  diagram={`
+graph TB
+    App["Application"]
+    L1["L1 Cache<br/>In-process<br/>Sub-μs"]
+    L2["L2 Cache<br/>Redis/Memcached<br/>1-10ms"]
+    DB["Database<br/>RDBMS<br/>10-100ms"]
+    
+    App -->|Check| L1
+    L1 -->|Miss| L2
+    L2 -->|Miss| DB
+    DB -->|Populate| L2
+    L2 -->|Populate| L1
+    
+    style L1 fill:#00cc00
+    style L2 fill:#0066cc
+    style DB fill:#cc0000
+  `}
+/>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="memcached" label="Memcached (Simple)">
+
+```python
+import memcache
+
+# Connect to Memcached
+mc = memcache.Client(['127.0.0.1:11211'])
+
+# Simple cache operations
+def get_user_with_cache(user_id):
+    cache_key = f'user:{user_id}'
+    
+    # Try to get from cache
+    user = mc.get(cache_key)
+    if user:
+        return user
+    
+    # Cache miss - fetch from database
+    user = fetch_user_from_db(user_id)
+    
+    # Store in cache for 1 hour
+    mc.set(cache_key, user, 3600)
+    return user
+
+# Batch operations
+def get_users_batch(user_ids):
+    # Get all from cache
+    cached = mc.get_multi([f'user:{uid}' for uid in user_ids])
+    
+    # Find missing
+    missing_ids = [uid for uid in user_ids if f'user:{uid}' not in cached]
+    
+    if missing_ids:
+        # Fetch missing from database
+        db_users = fetch_users_from_db(missing_ids)
+        
+        # Populate cache
+        for user in db_users:
+            mc.set(f'user:{user.id}', user, 3600)
+        
+        cached.update({f'user:{u.id}': u for u in db_users})
+    
+    return cached
+
+# Counter for rate limiting
+def increment_counter(user_id, limit=100, window=60):
+    key = f'rate_limit:{user_id}'
+    count = mc.incr(key)
+    
+    if count == 1:
+        mc.expire(key, window)
+    
+    return count <= limit
+
+# Cache invalidation
+def invalidate_user(user_id):
+    mc.delete(f'user:{user_id}')
+```
+
+</TabItem>
+<TabItem value="redis" label="Redis (Distributed)">
+
+```python
+import redis
+from redis.lock import Lock
+import json
+
+r = redis.Redis(host='localhost', port=6379, db=0)
+
+# Cache-aside pattern
+def get_user_cached(user_id):
+    key = f'user:{user_id}'
+    cached = r.get(key)
+    if cached:
+        return json.loads(cached)
+    
+    user = fetch_from_db(user_id)
+    r.setex(key, 3600, json.dumps(user))
+    return user
+
+# Write-through pattern
+def update_user(user_id, updates):
+    # Write to database first
+    user = update_db(user_id, updates)
+    
+    # Then update cache
+    r.setex(f'user:{user_id}', 3600, json.dumps(user))
+    return user
+
+# Distributed lock
+def critical_operation(resource_id):
+    lock = Lock(r, f'lock:{resource_id}', timeout=10)
+    with lock:
+        # Only one process enters here
+        perform_critical_operation(resource_id)
+
+# Session management
+def store_session(session_id, user_id, data):
+    r.hset(f'session:{session_id}', mapping={
+        'user_id': user_id,
+        'created_at': datetime.utcnow().isoformat(),
+        **data
+    })
+    r.expire(f'session:{session_id}', 86400)  # 24 hour TTL
+
+# Publish/Subscribe
+def send_notification(user_id, message):
+    r.publish(f'notifications:{user_id}', json.dumps({
+        'text': message,
+        'timestamp': datetime.utcnow().isoformat()
+    }))
+
+def subscribe_notifications(user_id, callback):
+    pubsub = r.pubsub()
+    pubsub.subscribe(f'notifications:{user_id}')
+    
+    for message in pubsub.listen():
+        if message['type'] == 'message':
+            data = json.loads(message['data'])
+            callback(data)
+
+# Sorted set for leaderboard
+def add_score(user_id, score):
+    r.zadd('leaderboard', {f'user:{user_id}': score})
+
+def get_top_100():
+    return r.zrevrange('leaderboard', 0, 99, withscores=True)
+
+# Persistence options
+# AOF (Append Only File) - log every write
+r.config_set('appendonly', 'yes')
+
+# RDB (Snapshot) - periodic snapshots
+r.bgsave()  # Async snapshot
+r.save()    # Sync snapshot
+```
+
+</TabItem>
+<TabItem value="hazelcast" label="Hazelcast (Data Grid)">
+
+```java
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.map.IMap;
+import com.hazelcast.query.Predicates;
+import java.util.concurrent.ConcurrentMap;
+
+public class CacheGrid {
+    public static void main(String[] args) {
+        // Create or join grid
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance();
+        
+        // Get distributed map
+        IMap<String, User> userMap = instance.getMap("users");
+        
+        // Put and get with TTL
+        User user = new User("Alice", 30);
+        userMap.put("user:1", user, 1, TimeUnit.HOURS);
+        
+        User cached = userMap.get("user:1");
+        
+        // Query on cached data
+        Collection<User> adults = userMap.values(
+            Predicates.greaterEqual("age", 18)
+        );
+        
+        // Distributed lock
+        ILock lock = instance.getLock("critical_resource");
+        lock.lock();
+        try {
+            // Critical section
+            performCriticalOperation();
+        } finally {
+            lock.unlock();
+        }
+        
+        // Listen to changes
+        userMap.addEntryListener(event -> {
+            System.out.println("Changed: " + event.getKey());
+        }, true);
+        
+        // Distributed atomic operations
+        IAtomicLong counter = instance.getAtomicLong("counter");
+        counter.incrementAndGet();
+        
+        // Compute operations (atomic)
+        userMap.computeIfPresent("user:1", (key, user) -> {
+            user.setLastLogin(System.currentTimeMillis());
+            return user;
+        });
+    }
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js + Redis Cluster">
+
+```javascript
+const redis = require('redis');
+const { createCluster } = require('redis');
+
+// Redis Cluster for high availability
+const cluster = createCluster({
+  rootNodes: [
+    { host: 'localhost', port: 6379 },
+    { host: 'localhost', port: 6380 },
+    { host: 'localhost', port: 6381 }
+});
+
+cluster.on('error', (err) => console.log('Cluster Error:', err));
+
+async function initialize() {
+  await cluster.connect();
+}
+
+// Cache-aside pattern
+async function getUserCached(userId) {
+  const key = `user:${userId}`;
+  const cached = await cluster.get(key);
+  
+  if (cached) {
+    return JSON.parse(cached);
+  }
+  
+  const user = await fetchFromDatabase(userId);
+  await cluster.setEx(key, 3600, JSON.stringify(user));
+  
+  return user;
+}
+
+// Session management
+async function createSession(sessionId, userData) {
+  const sessionKey = `session:${sessionId}`;
+  await cluster.hSet(sessionKey, userData);
+  await cluster.expire(sessionKey, 86400);  // 24 hours
+}
+
+// Rate limiting with sliding window
+async function checkRateLimit(userId, maxRequests = 100, windowSeconds = 60) {
+  const key = `rate_limit:${userId}`;
+  const current = await cluster.incr(key);
+  
+  if (current === 1) {
+    await cluster.expire(key, windowSeconds);
+  }
+  
+  return current <= maxRequests;
+}
+
+// Pub/Sub messaging
+async function broadcastMessage(channel, message) {
+  await cluster.publish(channel, JSON.stringify(message));
+}
+
+async function subscribeToChannel(channel, handler) {
+  const subscriber = cluster.duplicate();
+  await subscriber.connect();
+  
+  await subscriber.subscribe(channel, (message) => {
+    handler(JSON.parse(message));
+  });
+  
+  return subscriber;
+}
+
+// Initialize
+initialize().catch(console.error);
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Caches/Data Grids / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use In-Memory Caches When",
+    points: ["Sub-millisecond latency required", "Session management (stateless scale)", "Frequently accessed, slowly changing data", "Temporary state (rate limits, tokens)", "Database load relief critical"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use Direct Database Access When",
+    points: ["Data consistency guarantee required", "Rarely accessed data", "Large datasets (>RAM capacity)", "Complex queries (not simple key lookups)", "Audit trail/compliance important"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Cache Stampede",
+      description: "Multiple requests miss cache after expiration. Use locks or probabilistic expiration",
+      tags: ["caching", "scaling"]
+    }, {
+      title: "Cache Coherence",
+      description: "Keep cache consistent with database. Write-through or write-behind strategies",
+      tags: ["consistency", "patterns"]
+    }, {
+      title: "Eviction Policy",
+      description: "LRU, LFU, TTL. Match policy to workload. Monitor eviction rate",
+      tags: ["memory", "performance"]
+    }, {
+      title: "Persistence Strategy",
+      description: "AOF for durability, RDB for snapshots. Trade latency for recovery",
+      tags: ["reliability", "configuration"]
+    }, {
+      title: "Replication for HA",
+      description: "Master-slave replication. Sentinel for automatic failover",
+      tags: ["availability", "reliability"]
+    }, {
+      title: "Memory Limits",
+      description: "Monitor memory usage. Watch for swap. Plan for growth"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Cache invalidation strategy defined",
+    "TTL/expiration times appropriate",
+    "Eviction policy matches workload",
+    "Replication/HA configured",
+    "Persistence strategy (AOF, RDB, or none)",
+    "Memory capacity for data growth planned",
+    "Connection pooling configured",
+    "Monitoring for hit rate and evictions",
+    "Backup/recovery procedures documented",
+    "Cache bypass for critical operations"
+  ]}
+/>
+
+## Cache Patterns Deep Dive
+
+### Cache-Aside (Lazy Loading)
+
+```python
+def get_product(product_id):
+    key = f'product:{product_id}'
+
+    # Try cache first
+    cached = cache.get(key)
+    if cached:
+        return json.loads(cached)
+
+    # Cache miss, load from database
+    product = db.query('SELECT * FROM products WHERE id = ?', product_id)
+
+    # Store in cache for next time
+    cache.setex(key, 3600, json.dumps(product))
+
+    return product
+
+# Pros: Simple, lazy loading
+# Cons: Cache misses are expensive (database read); stale data possible
+```
+
+### Write-Through
+
+```python
+def update_product(product_id, updates):
+    # Write to cache first
+    key = f'product:{product_id}'
+    cache.setex(key, 3600, json.dumps(updates))
+
+    # Then write to database
+    db.update('UPDATE products SET ... WHERE id = ?', product_id, updates)
+
+    return updates
+
+# Pros: Cache and database always consistent
+# Cons: Every write goes to both; slower writes; database is bottleneck
+```
+
+### Write-Behind (Write-Back)
+
+```python
+def update_product_async(product_id, updates):
+    # Write to cache immediately (fast)
+    key = f'product:{product_id}'
+    cache.setex(key, 3600, json.dumps(updates))
+
+    # Queue database write for later (asynchronous)
+    queue.enqueue('update_product', product_id, updates)
+
+    return updates  # Return quickly to client
+
+# Background worker
+def process_queue():
+    while True:
+        product_id, updates = queue.dequeue()
+        db.update('UPDATE products SET ... WHERE id = ?', product_id, updates)
+
+        # If database write fails, re-queue and retry
+        # If cache miss before database write completes, serve stale data
+
+# Pros: Fast writes, cache prioritized
+# Cons: Possible data loss if process crashes before database write; eventual consistency
+```
+
+## Cache Stampede Solution Patterns
+
+**Problem:**
+```
+1. Popular key expires (e.g., product:123 cached for 1 hour)
+2. Expiration happens at 10:00:00
+3. 1000 concurrent requests at 10:00:01 all miss cache
+4. All 1000 requests query database
+5. Database spike; slow down; becomes bottleneck
+```
+
+**Solution 1: Probabilistic Early Expiration**
+```python
+def get_with_early_expiration(key, fetch_fn, ttl=3600):
+    cached = cache.get(key)
+
+    # Parse cache metadata
+    if cached:
+        data, exp_time = json.loads(cached)
+        now = time.time()
+
+        # Trigger refresh if within 10% of expiration
+        if now > exp_time - (ttl * 0.1):
+            # Refresh asynchronously
+            schedule_async_refresh(key, fetch_fn)
+
+        return data
+
+    # Cache miss, fetch and store
+    data = fetch_fn()
+    cache.setex(key, ttl, json.dumps((data, now + ttl)))
+    return data
+```
+
+**Solution 2: Locking**
+```python
+def get_with_lock(key, fetch_fn, ttl=3600):
+    cached = cache.get(key)
+    if cached:
+        return json.loads(cached)
+
+    # Acquire lock to prevent thundering herd
+    lock = cache.get_lock(f'lock:{key}')
+
+    if lock.acquire(blocking=False):  # Non-blocking
+        try:
+            # Re-check cache (might have been populated by another thread)
+            cached = cache.get(key)
+            if cached:
+                return json.loads(cached)
+
+            # This thread does the fetch
+            data = fetch_fn()
+            cache.setex(key, ttl, json.dumps(data))
+            return data
+        finally:
+            lock.release()
+    else:
+        # Another thread is fetching; wait for it
+        lock.acquire()  # Blocking
+        cached = cache.get(key)
+        if cached:
+            return json.loads(cached)
+        # Still miss? Fetch ourselves
+        return fetch_fn()
+```
+
+## Cache Invalidation Strategies
+
+**TTL (Time-To-Live)**
+```python
+cache.setex('user:123', 300, user_data)  # Expire in 5 minutes
+# Trade: Stale data possible for 5 minutes
+```
+
+**Event-Driven Invalidation**
+```python
+# When user updates profile
+def update_user_profile(user_id, updates):
+    db.update('UPDATE users SET ... WHERE id = ?', user_id, updates)
+    cache.delete(f'user:{user_id}')  # Explicit invalidation
+    publish_event('user.updated', { user_id, updates })
+```
+
+**Tagging**
+```python
+# Cache multiple related items
+cache.setex('product:123:title', 3600, "Widget")
+cache.setex('product:123:price', 3600, "19.99")
+cache.setex('product:123:stock', 3600, "45")
+
+# Tag them all together
+cache.tag('product:123:title', 'product:123')
+cache.tag('product:123:price', 'product:123')
+cache.tag('product:123:stock', 'product:123')
+
+# Invalidate all product:123 items at once
+cache.invalidate_by_tag('product:123')
+```
+
+## Self-Check
+
+- What's cache stampede and how do you prevent it? (Thundering herd on cache expiration; prevent with early expiration or locking)
+- When should you use write-through vs write-behind? (Write-through: consistency critical. Write-behind: latency critical, eventual consistency acceptable)
+- What's the difference between Memcached and Redis? (Memcached: simple, key-value only. Redis: rich data types, persistence, pub/sub, complex operations)
+- How do you handle cache consistency with database updates? (Write-through for immediate consistency, event-driven invalidation for eventual consistency, TTL for lazy invalidation)
+- What's the impact of cache hit rate? (Hit rate 90% vs 50% = 80% latency reduction vs 20% reduction. Monitor hit rate religiously)
+
+:::info
+In-memory caches provide sub-millisecond latency for frequently accessed data but require careful consistency management with primary data stores. Use as a layer between applications and databases, never as primary data store. Cache miss cost (database read) is 100-1000x higher than cache hit; prioritize high hit rates.
+
+:::
+
+## Cache Tuning and Optimization
+
+### Memory Management
+
+```python
+# Monitor memory usage in Redis
+info = redis.info('memory')
+print(f"Used memory: {info['used_memory_human']}")
+print(f"Max memory: {info['maxmemory_human']}")
+print(f"Eviction policy: {info['maxmemory_policy']}")
+
+# Configure max memory
+redis.config_set('maxmemory', '2gb')  # Max 2GB
+redis.config_set('maxmemory-policy', 'allkeys-lru')  # Evict LRU keys when full
+```
+
+Eviction policies:
+- **LRU (Least Recently Used):** Evict least recently accessed key
+- **LFU (Least Frequently Used):** Evict least frequently accessed key
+- **TTL:** Evict keys with shortest time to live
+- **Random:** Evict random key
+
+Choose based on your workload:
+- Session data: LRU (recent sessions matter)
+- Caching static content: LFU (frequently accessed stays)
+- Rate limiting: TTL (time-based removal)
+
+### Connection Pooling
+
+```python
+# Without pooling: Create new connection for each operation (slow)
+for item_id in range(1000):
+    r = redis.Redis(host='localhost')
+    r.get(f'item:{item_id}')
+    # New connection created 1000 times
+
+# With pooling: Reuse connections (fast)
+pool = redis.ConnectionPool(host='localhost', max_connections=50)
+r = redis.Redis(connection_pool=pool)
+
+for item_id in range(1000):
+    r.get(f'item:{item_id}')
+    # Connections reused from pool
+```
+
+Pool size tuning:
+- Too small: Requests queue, latency increases
+- Too large: Memory usage high, connections wasteful
+- Typical: 10-50 connections for application size
+
+### Cold Start Problem
+
+```
+Scenario: Cache is empty (cold start)
+1. Application starts, cache has no data
+2. All requests miss cache
+3. All requests hit database
+4. Database becomes bottleneck
+5. System slow until cache warms up
+
+Solutions:
+
+1. Preload critical data
+   # On startup, preload frequently accessed data
+   startup_keys = ['popular_products', 'config', 'feature_flags']
+   for key in startup_keys:
+       data = fetch_from_db(key)
+       cache.set(key, data, ttl=3600)
+
+2. Gradual warmup
+   # Background job that re-caches everything weekly
+   def warm_cache():
+       for product in db.get_all_products():
+           cache.set(f'product:{product.id}', product)
+
+3. Accept cold start
+   # Just live with slower performance for 5 minutes until cache populates
+```
+
+## Next Steps
+
+- Explore **Caching Patterns** for comprehensive strategies (cache-aside, write-through, write-behind)
+- Learn **Session Management** architectures (sticky sessions, distributed sessions, Redis sessions)
+- Study **Distributed Locking** for concurrent access without racing (Redis locks, leases)
+- Dive into **Data Pipeline** integration with caches (ETL with caching)
+- Implement **Cache Monitoring** (hit rate, eviction rate, memory usage, latency)
+
+## References
+
+- Redis Official Documentation & Redis Patterns
+- Memcached Documentation
+- Hazelcast Reference Manual
+- "System Design Interview" by Alex Xu - Caching chapters
+- "Designing Data-Intensive Applications" by Martin Kleppmann - Chapter on Caching
+- O'Reilly: "Caching Best Practices and Patterns"

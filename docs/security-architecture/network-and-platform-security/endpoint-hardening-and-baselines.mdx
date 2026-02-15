@@ -1,0 +1,663 @@
+---
+title: "Endpoint Hardening and Security Baselines"
+sidebar_position: 3
+label: "Endpoint Hardening and Security Baselines"
+body: "Secure individual endpoints through hardening, configuration baselines, vulnerability management, and compliance monitoring."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, security-lead, infrastructure]
+keywords: [hardening, baseline, endpoint-security, configuration-management, vulnerability-scanning, compliance, cis-benchmark, antivirus, edr]
+image: /img/archman-social-card.webp
+tags: [security, hardening, endpoint-security, configuration-management, vulnerability-management, baselines, compliance, cis-benchmark]
+hide_title: true
+---
+
+<Hero title="Endpoint Hardening and Security Baselines" subtitle="Securing Individual Hosts and Systems" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Endpoint hardening reduces attack surface by disabling unnecessary services, applying security patches, enforcing strong authentication, and monitoring for compromise. Security baselines provide standardized configurations for consistent hardening. Automated configuration management ensures drift doesn't reintroduce vulnerabilities.
+
+## Learning Objectives
+
+- Understand attack surface reduction through hardening
+- Implement CIS Benchmarks and security baselines
+- Automate endpoint configuration and compliance
+- Deploy endpoint detection and response (EDR)
+- Monitor and remediate configuration drift
+
+## Core Concepts
+
+### Hardening Principles
+
+1. **Minimize Attack Surface**: Disable unneeded services, ports, protocols
+2. **Apply Least Privilege**: Run services with minimum required permissions
+3. **Enforce Strong Authentication**: MFA, strong passwords, certificate-based
+4. **Keep Systems Updated**: Patch operating system and software regularly
+5. **Monitor and Alert**: Detect anomalies and unauthorized changes
+
+### Security Baselines
+
+**Definition**: Standardized, secure configurations applied to all systems of a type
+
+**Common Baselines**:
+- CIS Benchmarks (Center for Internet Security)
+- DISA Security Technical Implementation Guides (STIGs)
+- NIST hardening guidance
+- Vendor recommendations (Microsoft, Red Hat, etc.)
+
+### Drift Detection
+
+**Problem**: Systems gradually diverge from secure baseline through ad-hoc changes
+
+**Solution**: Automated scanning and remediation
+- Compare actual vs. desired configuration
+- Alert on drift
+- Auto-remediate or require approval
+
+## Practical Example
+
+### Hardening Strategy
+
+<Tabs>
+<TabItem value="linux" label="Linux Hardening">
+
+```bash
+# Kernel hardening
+sysctl -w kernel.kptr_restrict=2
+sysctl -w kernel.dmesg_restrict=1
+sysctl -w kernel.unprivileged_bpf_disabled=1
+sysctl -w net.ipv4.tcp_syncookies=1
+
+# Disable unnecessary services
+systemctl disable avahi-daemon
+systemctl disable cups
+systemctl disable isc-dhcp-server
+
+# File permissions hardening
+chmod 600 /etc/ssh/sshd_config
+chmod 000 /etc/shadow
+
+# Firewall
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp  # SSH only
+
+# Automatic updates
+apt-get install unattended-upgrades
+systemctl enable unattended-upgrades
+```
+
+</TabItem>
+<TabItem value="windows" label="Windows Hardening">
+
+```powershell
+# Disable unnecessary services
+Get-Service "WinRM" | Set-Service -StartupType Disabled
+Get-Service "RemoteRegistry" | Set-Service -StartupType Disabled
+
+# Windows Firewall
+Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
+New-NetFirewallRule -DisplayName "Allow SSH" -Direction Inbound `
+  -Action Allow -Protocol tcp -LocalPort 22
+
+# Windows Defender
+Set-MpPreference -DisableRealTimeMonitoring $false
+Set-MpPreference -PUAProtection enable
+
+# BitLocker encryption
+Enable-BitLocker -MountPoint "C:" -EncryptionMethod Aes256
+
+# Group Policy for CIS Benchmark
+# Apply GPO: Account Policies, User Rights Assignment, etc.
+```
+
+</TabItem>
+<TabItem value="ansible" label="Configuration as Code">
+
+```yaml
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Update all packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+
+    - name: Disable unnecessary services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop:
+        - avahi-daemon
+        - cups
+        - isc-dhcp-server
+
+    - name: Configure SSH hardening
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - regexp: "^PermitRootLogin"
+          line: "PermitRootLogin no"
+        - regexp: "^PasswordAuthentication"
+          line: "PasswordAuthentication no"
+        - regexp: "^PubkeyAuthentication"
+          line: "PubkeyAuthentication yes"
+      notify: restart ssh
+
+    - name: Harden kernel parameters
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_set: yes
+      loop:
+        - { name: 'kernel.kptr_restrict', value: '2' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+
+    - name: Install EDR agent
+      apt:
+        name: endpoint-detection-response
+        state: present
+```
+
+</TabItem>
+</Tabs>
+
+## Hardening Checklist by Component
+
+### SSH Server
+- Disable root login
+- Disable password authentication (use keys only)
+- Change default port (security through obscurity, limited value)
+- Restrict to specific users/groups
+- Use strong key types (Ed25519 preferred)
+
+### SSH and Web Servers
+- Remove server banners
+- Disable unnecessary modules
+- Run with least privilege (dedicated user)
+- Configure file permissions restrictively
+- Enable access logging
+
+### File System
+- Separate partitions: /boot, /home, /var, /tmp
+- Mount with restrictive permissions (noexec, nosuid, nodev where possible)
+- Regular backup and integrity checking
+- File ownership and permissions hardened
+
+### System Services
+- Disable all unnecessary services
+- Only enable required ports/protocols
+- Run services in containers/chroot when possible
+- Implement resource limits (cgroups, ulimit)
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Hardening Best Practices",
+    points: [
+      "Apply CIS Benchmarks or vendor recommendations",
+      "Automate hardening with Ansible/Terraform/Chef",
+      "Define security baselines as code",
+      "Version control all configurations",
+      "Regular compliance scanning and drift detection",
+      "Patch management process documented and automated",
+      "Least privilege: minimal permissions for services",
+      "EDR/SIEM for detection of compromises"
+    ]},
+{
+    label: "Common Mistakes",
+    points: [
+      "Manual hardening (inconsistent across systems)",
+      "No configuration management (drift over time)",
+      "Hardening forgotten after initial setup",
+      "Running everything with admin/root privileges",
+      "Keeping default passwords and configurations",
+      "Not testing hardening before production",
+      "No monitoring for configuration drift",
+      "Assuming firewall is enough (defense in depth)"
+    ]
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Security baseline defined for each endpoint type?",
+  "Baseline based on industry standards (CIS, STIG)?",
+  "Baseline version controlled and documented?",
+  "Baseline tested before deployment?",
+  "Unnecessary services disabled?",
+  "File permissions restricted (600, 700 where needed)?",
+  "SSH hardened (no root login, key-only auth)?",
+  "Kernel parameters hardened (sysctl)?",
+  "Hardening automated (Ansible, Terraform, Chef)?",
+  "Compliance scanning on regular schedule?",
+  "Drift detection and alerting enabled?",
+  "Remediation process documented?",
+  "Patch management process defined?",
+  "Auto-update policy for critical patches?",
+  "Regular scan for vulnerable packages?",
+  "Update testing required before deployment?"
+]} />
+
+## Hardening Implementation Timeline
+
+### Week 1: Discovery and Assessment
+- Scan all endpoints (Windows, Linux, Mac)
+- Identify current baseline gaps
+- Classify systems by risk (critical, high, medium, low)
+- Document existing hardening controls
+
+### Week 2-3: Baseline Development
+- Select CIS Benchmark version
+- Customize for your environment
+- Test in non-prod (lab, staging)
+- Create rollback procedures
+
+### Week 4-6: Pilot Rollout
+- Target non-critical systems first
+- Monitor for application breakage
+- Gather feedback from teams
+- Refine baseline based on issues
+
+### Week 7-10: Full Rollout
+- Deploy to all systems (phased by department)
+- Run compliance scans after each batch
+- Address drift immediately
+- Document exceptions
+
+### Week 11+: Continuous Monitoring
+- Weekly compliance scans
+- Automated drift remediation
+- Incident response on violations
+- Quarterly baseline updates
+
+## Common Hardening Challenges
+
+### Challenge 1: Hardening Breaks Applications
+
+**Problem**: Disabling services breaks legacy apps.
+
+**Solution**: Create exceptions with justification:
+
+```yaml
+Baseline: CIS Debian 9
+Exception:
+  Service: Apache2
+  Reason: Required for internal wiki
+  Owner: Platform team
+  Approval: CISO
+  Expires: 2025-12-31
+  Compensating_Controls:
+    - WAF in front of Apache
+    - Network restricted to internal IPs
+    - Quarterly pen testing
+```
+
+### Challenge 2: Performance Impact
+
+**Problem**: Encryption, logging, monitoring slow systems.
+
+**Solution**: Profile and optimize:
+
+```bash
+# Before hardening
+Response time: 50ms
+CPU: 20%
+
+# After hardening (full logging + encryption)
+Response time: 150ms
+CPU: 45%
+
+# Optimization:
+# 1. Move logging to async (100ms → 60ms)
+# 2. Use hardware acceleration (60ms → 55ms)
+# 3. Increase resources (45% → 25% CPU utilization)
+```
+
+### Challenge 3: High False Positive Rate
+
+**Problem**: EDR generates too many alerts, security team ignores them.
+
+**Solution**: Tune rules based on baseline:
+
+```python
+class EDRTuning:
+    def baseline_normal_behavior(self):
+        """Learn what's normal in your environment."""
+        # Collect 2 weeks of alerts
+        alerts = self.collect_alerts()
+
+        # Filter out noise
+        known_safe = [
+            'chrome_update.exe',  # Legitimate auto-update
+            'powershell_admin.ps1',  # Legitimate admin script
+            'network_scan.py'  # Legitimate monitoring
+        ]
+
+        # Remove known-good from alerts
+        filtered = [a for a in alerts if not self._is_known_safe(a)]
+
+        # Remaining = potential threats
+        return filtered
+
+    def tune_rules(self):
+        """Adjust thresholds based on baseline."""
+        # Before: Alert on ANY process with admin token
+        # After: Alert only on UNEXPECTED process with admin token
+
+        # Define normal:
+        normal_admin_processes = {
+            'svchost.exe',
+            'lsass.exe',
+            'conhost.exe',
+            'explorer.exe'
+        }
+
+        # Alert on anything else
+        return normal_admin_processes
+```
+
+## Self-Check
+
+- Can you list the security baseline for each endpoint type?
+- How often do endpoints drift from baseline?
+- What happens when a hardening control fails?
+- Are EDR agents installed on critical endpoints?
+- Do you know which hardening controls are most important for your organization?
+- Have you tested hardening in non-production first?
+- What's your rollback procedure if hardening breaks something?
+
+:::info One Takeaway
+
+Endpoint hardening reduces attack surface, but only if automated and monitored. Manual hardening leads to drift. Configuration as code with compliance monitoring ensures baselines persist.
+
+:::
+
+## Next Steps
+
+1. Define security baselines using CIS Benchmarks
+2. Implement automated hardening (Ansible, Terraform)
+3. Deploy compliance scanning tools
+4. Set up drift detection and alerts
+5. Implement EDR on critical systems
+6. Create patch management automation
+
+## Advanced Hardening Scenarios
+
+### Kubernetes Node Hardening
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+spec:
+  # Use minimal, hardened container images
+  containers:
+  - name: app
+    image: app:latest
+    securityContext:
+      # Run as non-root user
+      runAsNonRoot: true
+      runAsUser: 1000
+      # Read-only root filesystem
+      readOnlyRootFilesystem: true
+      # No privilege escalation
+      allowPrivilegeEscalation: false
+      # Drop all capabilities, add only needed ones
+      capabilities:
+        drop:
+        - ALL
+        add:
+        - NET_BIND_SERVICE
+      # Enforce seccomp profile
+      seccompProfile:
+        type: RuntimeDefault
+
+  # Pod security context
+  securityContext:
+    fsGroup: 1000
+    supplementalGroups: [1001]
+
+  # Network policies
+  networkPolicy:
+    policyTypes:
+    - Ingress
+    - Egress
+    ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            role: frontend
+      ports:
+      - protocol: TCP
+        port: 8080
+
+  # Resource limits prevent DoS
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "100m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+```
+
+### AWS EC2 Hardening with Systems Manager
+
+```yaml
+# Automated patch management and hardening
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  HardenedSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Hardened security group
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        SourceSecurityGroupId: !Ref BastionSecurityGroup  # SSH only from bastion
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0  # HTTPS only
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0  # Outbound HTTPS only
+        Description: Allow HTTPS for package updates
+
+  SSMMaintenanceWindow:
+    Type: AWS::SSM::MaintenanceWindow
+    Properties:
+      Name: HardenedPatchingWindow
+      Schedule: 'cron(0 2 ? * SUN *)'  # Sunday 2 AM
+      Duration: 4
+      Cutoff: 0
+      AllowUnassociatedTargets: false
+
+  PatchBaseline:
+    Type: AWS::SSM::PatchBaseline
+    Properties:
+      Name: HardenedBaseline
+      OperatingSystemType: WINDOWS
+      ApprovalRules:
+        PatchRules:
+        - PatchFilterGroup:
+            PatchFilters:
+            - Key: CLASSIFICATION
+              Values:
+              - Security
+              - CriticalUpdates
+          ApproveAfterDays: 0  # Auto-approve critical
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c55b159cbfafe1f0  # Hardened AMI
+      InstanceType: t3.micro
+      IAMInstanceProfile: !Ref SSMInstanceProfile
+      SecurityGroupIds:
+      - !Ref HardenedSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # Enable CloudWatch agent for monitoring
+          wget https://s3.amazonaws.com/amazoncloudwatch-agent/windows/amd64/latest/amazon-cloudwatch-agent.msi
+          msiexec.exe /i amazon-cloudwatch-agent.msi /quiet
+
+          # Enable Windows Defender
+          Set-MpPreference -DisableRealTimeMonitoring $false
+
+          # Set password policy
+          secedit /export /cfg c:\\secpol.cfg
+          (gc c:\\secpol.cfg).replace("PasswordHistorySize = 0", "PasswordHistorySize = 24") | Out-File c:\\secpol.cfg
+          secedit /configure /db c:\\windows\\security\\local.sdb /cfg c:\\secpol.cfg /areas SECURITYPOLICY
+```
+
+### Container Image Hardening
+
+```dockerfile
+# Hardened multi-stage build
+FROM alpine:3.19 AS builder
+WORKDIR /build
+COPY . .
+RUN apk add --no-cache gcc musl-dev && \
+    gcc -static -o app main.c
+
+# Minimal final image
+FROM scratch
+COPY --from=builder /build/app /app
+USER nobody
+ENTRYPOINT ["/app"]
+```
+
+Vulnerabilities: 0 (scratch image has nothing to exploit)
+
+### Compliance Scanning with Trivy
+
+```bash
+# Scan container image for vulnerabilities
+trivy image --severity HIGH,CRITICAL myapp:latest
+
+# Scan filesystem
+trivy fs --severity HIGH /path/to/code
+
+# Scan GitHub repo
+trivy repo https://github.com/myorg/myrepo
+
+# Generate compliance report
+trivy image --format json --output report.json myapp:latest
+```
+
+## Hardening Metrics and KPIs
+
+Track hardening effectiveness:
+
+```python
+class HardeningMetrics:
+    def __init__(self, compliance_scanner):
+        self.scanner = compliance_scanner
+
+    def get_dashboard(self):
+        """Hardening status dashboard."""
+        return {
+            'endpoints_total': self._count_endpoints(),
+            'endpoints_compliant': self._count_compliant(),
+            'compliance_percentage': self._calc_percentage(),
+            'critical_findings': self._count_critical_issues(),
+            'days_since_last_patch': self._days_unpatched(),
+            'av_enabled_percentage': self._av_coverage(),
+            'mfa_enabled_percentage': self._mfa_coverage(),
+            'failed_hardening_checks': self._failed_checks(),
+            'remediation_queue': self._pending_remediations()
+        }
+
+    def alert_on_drift(self, threshold_days=7):
+        """Alert if system drifts from baseline."""
+        for endpoint in self.scanner.scan_all():
+            if endpoint.days_since_compliant > threshold_days:
+                self.logger.critical(f"Drift detected: {endpoint.name}")
+                self._trigger_auto_remediation(endpoint)
+```
+
+## Hardening in CI/CD Pipeline
+
+```yaml
+# GitLab CI hardening checks
+stages:
+  - build
+  - scan
+  - deploy
+
+container_scan:
+  stage: scan
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 1 $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+  allow_failure: false
+
+compliance_check:
+  stage: scan
+  script:
+    - apt-get install -y openssh-client openssh-server
+    - openscap-scan-system baseline cis-debian --exit-on-fail
+
+deploy_hardened:
+  stage: deploy
+  script:
+    - ansible-playbook -i inventory.ini hardening-baseline.yml
+    - inspec exec compliance/cis-docker-benchmark.rb -t docker://myapp:latest
+  only:
+    - main
+```
+
+## Post-Hardening Verification
+
+```bash
+#!/bin/bash
+# Verify hardening is effective
+
+# 1. Check SSH configuration
+grep "^PermitRootLogin no" /etc/ssh/sshd_config || echo "FAIL: Root login allowed"
+grep "^PasswordAuthentication no" /etc/ssh/sshd_config || echo "FAIL: Password auth allowed"
+
+# 2. Check file permissions
+[ $(stat -c %a /etc/shadow) -eq 000 ] || echo "FAIL: /etc/shadow readable"
+[ $(stat -c %a /etc/passwd) -eq 644 ] || echo "FAIL: /etc/passwd writable"
+
+# 3. Check firewall is enabled
+systemctl is-active ufw || echo "FAIL: Firewall not active"
+
+# 4. Check kernel hardening
+sysctl kernel.kptr_restrict | grep -q 2 || echo "FAIL: Kernel ASLR weak"
+
+# 5. Check antivirus
+systemctl is-active clamav-daemon || echo "FAIL: Antivirus not running"
+
+# 6. Check updates
+apt list --upgradable | grep -q . && echo "FAIL: Updates available"
+
+echo "Hardening verification complete"
+```
+
+## References
+
+- [CIS Benchmarks](https://www.cisecurity.org/cis-benchmarks/)
+- [NIST Hardening Guidance](https://csrc.nist.gov/publications/detail/sp/800-123/final)
+- [DISA STIGs](https://iase.disa.mil/stigs/)
+- "The Art of Software Security Testing" by Chris Wysopal
+- "Security Engineering: A Guide to Building Dependable Distributed Systems" by Ross Anderson

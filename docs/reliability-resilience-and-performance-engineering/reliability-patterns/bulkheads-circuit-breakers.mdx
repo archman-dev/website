@@ -1,0 +1,369 @@
+---
+sidebar_position: 2
+title: "Bulkheads & Circuit Breakers"
+description: "Isolate failures and prevent cascading outages using proven reliability patterns."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: ["bulkheads", "&", "circuit"]
+image: /img/archman-social-card.webp
+tags: [reliability, performance, patterns, scalability]
+hide_title: true
+---
+
+<Hero title="Bulkheads & Circuit Breakers" subtitle="Isolate failures and prevent cascading outages using proven reliability patterns." imageAlt="bulkheads & circuit breakers illustration" size="large" />
+
+## TL;DR
+
+Isolate failures and prevent cascading outages using proven reliability patterns. This pattern is proven in production at scale and requires thoughtful implementation, continuous tuning, and rigorous monitoring to realize its benefits.
+
+## Learning Objectives
+
+- Understand the problem this pattern solves
+- Learn when and how to apply it correctly
+- Recognize trade-offs and failure modes
+- Implement monitoring to validate effectiveness
+- Apply the pattern in your own systems
+
+## Motivating Scenario
+
+Your e-commerce system has checkout, recommendation, and reviews services. One day, the recommendation service slows down (database issue). Without protection:
+- Checkout calls recommendation (waits 30sec, times out)
+- Checkout thread blocked for 30sec
+- All checkout threads exhaust (max 100)
+- New checkouts rejected (HTTP 503)
+- System down completely
+
+With bulkheads (isolation):
+- Checkout has 20 threads dedicated to its operations
+- Recommendation calls happen in separate thread pool (10 threads)
+- Recommendation slows down → only 10 threads blocked
+- Checkout unaffected (has 20 threads, using only 10 for other operations)
+- System degraded (no recommendations) but functional
+
+With circuit breaker (fast failure):
+- Recommendation fails multiple times
+- Circuit breaker opens (stops sending requests)
+- Checkout gets fast error ("service unavailable") instead of 30sec timeout
+- Checkout can serve without recommendations
+- Result: users get checkout without recommendations rather than total failure
+
+## Core Concepts
+
+### Bulkheads: Isolation Pattern
+
+Separate resources so one failure doesn't cascade.
+
+**Thread pool bulkhead:**
+```
+Service A (Checkout):
+  Thread Pool 1: 50 threads for checkout requests
+  Thread Pool 2: 10 threads for recommendation calls
+  Thread Pool 3: 5 threads for review calls
+
+If recommendation service hangs, only Pool 2 threads block.
+Pools 1 and 3 continue normally.
+```
+
+**Connection pool bulkhead:**
+```
+Service A:
+  Database Connection Pool: 20 connections (shared)
+  Problem: One slow query uses all 20, other requests starve
+
+Fixed with bulkheads:
+  Checkout Query Pool: 10 connections reserved
+  Analytics Query Pool: 5 connections reserved
+  Reports Query Pool: 5 connections reserved
+
+One service can't monopolize all connections.
+```
+
+**Request queue bulkhead:**
+```
+Service A:
+  Checkout Queue: 1000 max
+  Recommendation Queue: 100 max
+
+During spike:
+  Checkout: uses 1000 queue slots
+  Recommendation: has own 100 slots, independent
+
+Spikes in recommendation don't affect checkout queue.
+```
+
+### Circuit Breaker: Fast Failure Pattern
+
+Stop calling failing service, fail fast instead.
+
+**States:**
+```
+Closed (normal):
+  - Requests flow through to service
+  - Failures tracked (count, rate)
+
+Open (circuit trips when threshold exceeded):
+  - Requests fail immediately (no call to service)
+  - Service gets time to recover (no load)
+  - Timeout to half-open: 30 seconds
+
+Half-Open (testing recovery):
+  - Allow limited requests (e.g., 1 request)
+  - If successful: close circuit
+  - If fails again: reopen circuit
+```
+
+**Example state machine:**
+```
+[Closed] -- failures > 50% or count > 10 --> [Open]
+           failure rate under 50%               |
+                                                | (30 sec timeout)
+                                                v
+                                            [Half-Open]
+                                                |
+                              (test request succeeds)
+                              (test request fails)
+                                  |              |
+                                  v              v
+                              [Closed]       [Open]
+```
+
+### Pattern Purpose
+
+Bulkheads and Circuit Breakers prevent cascading failures. Bulkheads isolate resources; circuit breakers fail fast.
+
+### Key Principles
+
+1. **Isolation:** Resources per function; one doesn't starve others
+2. **Fast failure:** Don't hammer failing service; fail fast
+3. **Graceful degradation:** Continue with reduced function
+4. **Recovery:** Allow service time to recover before retrying
+
+### When to Use
+
+- Microservices with external dependencies
+- Need high availability (some service degradation acceptable)
+- Performance or reliability critical
+
+### When NOT to Use
+
+- Monolithic app (harder to isolate)
+- All services must work or fail completely
+- Complexity burden not justified by risk
+
+## Real-World Implementation
+
+### Resilience4j (Java) Circuit Breaker
+
+```java
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.core.registry.EntryAddedEvent;
+
+CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+    .failureRateThreshold(50.0f)  // Open at 50% failure rate
+    .waitDurationInOpenState(Duration.ofSeconds(30))
+    .permittedNumberOfCallsInHalfOpenState(3)  // Allow 3 test calls
+    .recordExceptions(IOException.class)  // Only count these exceptions
+    .ignoreExceptions(IllegalArgumentException.class)  // Don't count these
+    .build();
+
+CircuitBreaker circuitBreaker = CircuitBreaker.of("payment-service", config);
+
+// Decorate the call
+Supplier<String> decoratedSupplier = CircuitBreaker.decorateSupplier(
+    circuitBreaker,
+    () -> callPaymentService()
+);
+
+try {
+    String result = decoratedSupplier.get();
+} catch (CallNotPermittedException e) {
+    // Circuit open, fail fast
+    log.warn("Payment service unavailable, using cached result");
+    useCachedPaymentData();
+}
+
+// Bulkhead with separate thread pool
+ThreadPoolBulkhead bulkhead = ThreadPoolBulkhead.of(
+    "payment-pool",
+    ThreadPoolBulkheadConfig.custom()
+        .maxThreadPoolSize(10)
+        .coreThreadPoolSize(5)
+        .queueCapacity(100)
+        .build()
+);
+
+Supplier<String> bulkheadDecorated = ThreadPoolBulkhead.decorateSupplier(
+    bulkhead,
+    () -> callPaymentService()
+);
+```
+
+## Practical Example
+
+<Tabs>
+<TabItem value="patterns" label="Core Patterns">
+
+```yaml
+# Bulkheads & Circuit Breakers Patterns and Their Use
+
+Circuit Breaker:
+  Purpose: Prevent cascading failures by stopping requests to failing service
+  When_Failing: Return fast with cached or degraded response
+  When_Recovering: Gradually allow requests to verify recovery
+  Metrics_to_Track: Failure rate, response time, circuit trips
+
+Timeout & Retry:
+  Purpose: Handle transient failures and slow responses
+  Implementation: Set timeout, wait, retry with backoff
+  Max_Retries: 3-5 depending on operation cost and urgency
+  Backoff: Exponential (1s, 2s, 4s) to avoid overwhelming failing service
+
+Bulkhead:
+  Purpose: Isolate resources so one overload doesn't affect others
+  Implementation: Separate thread pools, connection pools, queues
+  Example: Checkout path has dedicated database connections
+  Benefit: One slow query doesn't affect other traffic
+
+Graceful Degradation:
+  Purpose: Maintain partial service when components fail
+  Example: Show cached data when personalization service is down
+  Requires: Knowledge of what's essential vs. nice-to-have
+  Success: Users barely notice the degradation
+
+Load Shedding:
+  Purpose: Shed less important work during overload
+  Implementation: Reject low-priority requests when queue is full
+  Alternative: Increase latency for all rather than reject some
+  Trade-off: Some customers don't get served vs. all customers are slow
+```
+
+</TabItem>
+<TabItem value="config" label="Configuration Example">
+
+```yaml
+Reliability_Configuration:
+  service_timeouts:
+    payment_api: 5s
+    recommendation_engine: 2s
+    user_auth: 1s
+  
+  retry_policy:
+    transient_errors: [408, 429, 503, 504]
+    max_retries: 3
+    backoff_multiplier: 2
+    initial_delay: 100ms
+  
+  circuit_breaker:
+    failure_threshold: 50%
+    window: 10 requests
+    open_timeout: 30s
+    
+  load_shedding:
+    queue_threshold: 1000
+    shed_non_essential: true
+    reject_priority: low
+```
+
+</TabItem>
+<TabItem value="metrics" label="Monitoring">
+
+```
+Essential Metrics:
+
+Latency:
+  - P50, P95, P99 response times
+  - Alert if P99 > acceptable threshold
+  
+Failure Rates:
+  - Error rate percentage
+  - Alert if >5% errors
+  
+Pattern-Specific:
+  - Circuit breaker trips (alert if >3 in 5min)
+  - Retry count distribution
+  - Load shed requests
+  - Bulkhead resource utilization
+
+Example Dashboard:
+  - Real-time traffic flow with failures highlighted
+  - Circuit breaker state (Open/Closed/Half-Open)
+  - Retry success rates by service
+  - Queue depths and shedding rates
+```
+
+</TabItem>
+</Tabs>
+
+## Implementation Guide
+
+1. **Identify the Problem:** What specific failure mode are you protecting against?
+2. **Choose the Right Pattern:** Different problems need different solutions
+3. **Implement Carefully:** Half-implemented patterns are worse than nothing
+4. **Configure Based on Data:** Don't copy thresholds from blog posts
+5. **Monitor Relentlessly:** Validate the pattern actually solves your problem
+6. **Tune Continuously:** Thresholds need adjustment as load and systems change
+
+## Characteristics of Effective Implementation
+
+✓ Clear objectives: Can state in one sentence what you're solving
+✓ Proper monitoring: Can see whether pattern is working
+✓ Appropriate thresholds: Based on data from your system
+✓ Graceful failure mode: Unacceptable in production
+✓ Well-tested: Failure scenarios explicitly tested
+✓ Documented: Future maintainers understand why it exists
+
+## Pitfalls to Avoid
+
+❌ Blindly copying patterns: Thresholds from one system don't work for another
+❌ Over-retrying: Making failing service worse by hammering it
+❌ Forgetting timeouts: Retries without timeouts extend the pain
+❌ Silent failures: If circuit breaker opens, someone needs to know
+❌ No monitoring: Deploying patterns without metrics to validate
+❌ Set and forget: Patterns need tuning as load and systems change
+
+## Related Patterns
+
+- **Bulkheads:** Isolate different use cases so failures don't cascade
+- **Graceful Degradation:** Degrade functionality when load is high
+- **Health Checks:** Detect failures requiring retry or circuit breaker
+- **Observability:** Metrics and logs showing whether pattern works
+
+## Checklist: Implementation Readiness
+
+- [ ] Problem clearly identified and measured
+- [ ] Pattern selected is appropriate for the problem
+- [ ] Thresholds based on actual data from your system
+- [ ] Failure mode is explicit and acceptable
+- [ ] Monitoring and alerts configured before deployment
+- [ ] Failure scenarios tested explicitly
+- [ ] Team understands the pattern and trade-offs
+- [ ] Documentation explains rationale and tuning
+
+## Self-Check
+
+1. **Can you state in one sentence why you need this pattern?** If not, you might not need it.
+2. **Have you measured baseline before and after?** If not, you don't know if it helps.
+3. **Did you tune thresholds for your system?** Or copy them from a blog post?
+4. **Can someone on-call understand what triggers and what it does?** If not, document better.
+
+## Takeaway
+
+These patterns are powerful because proven in production. But power comes with complexity. Implement only what you need, tune based on data, and monitor relentlessly. A well-implemented pattern you understand is worth far more than several half-understood patterns copied from examples.
+
+## Next Steps
+
+1. **Identify the problem:** What specific failure mode are you protecting against?
+2. **Gather baseline data:** Measure current behavior before implementing
+3. **Implement carefully:** Start simple, add complexity only if needed
+4. **Monitor and measure:** Validate the pattern actually helps
+5. **Tune continuously:** Adjust thresholds based on production experience
+
+## References
+
+1. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+2. <a href="https://www.amazon.com/Site-Reliability-Engineering-Production-Systems/dp/149192912X" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book ↗️</a>
+3. <a href="https://martinfowler.com/bliki/CircuitBreaker.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Circuit Breaker Pattern ↗️</a>

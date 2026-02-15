@@ -1,0 +1,560 @@
+---
+sidebar_position: 1
+title: "Resources, Representations, and HATEOAS"
+description: "Design REST resources with rich representations and hypermedia linking"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [REST resources, representations, HATEOAS, hypermedia, content negotiation, resource design, REST maturity]
+image: /img/archman-social-card.webp
+tags: [REST, API-design, hypermedia, resources, representations, content-negotiation, HATEOAS, REST-level-3]
+hide_title: true
+---
+
+<Hero title="Resources, Representations, and HATEOAS" subtitle="Design REST resources with rich representations and hypermedia linking" imageAlt="Resources and representations illustration" size="large" />
+
+## TL;DR
+
+In REST, **resources are the core abstraction**—identifiable entities (users, posts, orders) accessible via URIs. A resource may have multiple **representations** (JSON, XML, HTML) negotiated via Accept headers. **HATEOAS** (Hypermedia As The Engine Of Application State) uses links to guide clients through workflows, reducing coupling and enabling server-side evolution. While HATEOAS is optional, understanding it prevents architectural mistakes and improves long-term maintainability.
+
+## Learning Objectives
+
+- Distinguish between resources, representations, and their URIs
+- Apply content negotiation for multiple formats
+- Understand HATEOAS and its practical benefits
+- Design self-documenting APIs using hypermedia links
+- Recognize the REST maturity model and where you stand
+
+## Motivating Scenario
+
+Your e-commerce API returns a user: `{ "id": 123, "name": "Alice", "email": "alice@example.com" }`. Later, clients ask for addresses. You add an `addresses` array to the response. Then they need order history. You add that too. Soon, the response contains nested structures clients don't need, bloating bandwidth and confusing documentation.
+
+With hypermedia, you'd return: `{ "id": 123, "name": "Alice", "_links": { "self": { "href": "/users/123" }, "addresses": { "href": "/users/123/addresses" }, "orders": { "href": "/users/123/orders" } } }`. Clients follow links on demand. The server can change URLs without breaking clients. Evolution becomes straightforward.
+
+## Core Concepts
+
+### Resources vs Representations
+
+A **resource** is an abstract concept—the user Alice. A **representation** is a specific format of that resource. The same resource `/users/123` might be represented as JSON, XML, or HAL. The resource is singular; representations are multiple.
+
+### Content Negotiation
+
+Clients use the `Accept` header to request preferred formats. The server responds with `Content-Type`. This decouples the resource model from format concerns and lets you add new formats without API changes.
+
+### HATEOAS: Hypermedia as the Engine
+
+HATEOAS means responses include links that tell clients what actions are possible next. Instead of clients knowing URLs hardcoded, links guide navigation. This enables:
+- **Loose coupling**: Clients don't hardcode URL patterns
+- **Server-side evolution**: URLs can change without client updates
+- **Self-discovery**: APIs become self-documenting
+
+## Practical Example
+
+<Tabs>
+<TabItem value="naive" label="❌ Naive Approach">
+
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "orders": [
+    { "id": 1001, "total": 99.99 },
+    { "id": 1002, "total": 149.50 }
+  ],
+  "addresses": [
+    { "type": "billing", "street": "123 Main St" },
+    { "type": "shipping", "street": "456 Oak Ave" }
+}
+```
+
+Issues: Clients receive unwanted nested data. Adding new relations requires API changes. URLs hardcoded in clients.
+
+</TabItem>
+<TabItem value="hypermedia" label="✅ HATEOAS Approach">
+
+```json
+GET /users/123
+Accept: application/hal+json
+
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "_links": {
+    "self": { "href": "/users/123" },
+    "addresses": { "href": "/users/123/addresses" },
+    "orders": { "href": "/users/123/orders" },
+    "edit": { "href": "/users/123", "method": "PUT" },
+    "deactivate": { "href": "/users/123/deactivate", "method": "POST" }
+  }
+}
+
+GET /users/123/orders
+{
+  "_embedded": {
+    "orders": [
+      { "id": 1001, "total": 99.99, "_links": { "self": { "href": "/orders/1001" } } }
+  },
+  "_links": {
+    "self": { "href": "/users/123/orders" },
+    "create": { "href": "/users/123/orders", "method": "POST" }
+  }
+}
+```
+
+Benefits: Clients follow links. Server can move URLs. New relations added without breaking existing clients.
+
+</TabItem>
+</Tabs>
+
+## REST Maturity Model
+
+The **Richardson Maturity Model** ranks REST implementations:
+
+| Level | Characteristics | Example |
+|-------|-----------------|---------|
+| 0 (POX) | HTTP tunneling, RPC-style | `POST /api?action=getUser&id=123` |
+| 1 | Resources, but not HTTP methods | `GET /users/123`, `POST /updateUser` (wrong verb) |
+| 2 | HTTP verbs and status codes | `GET /users/123` returns 200, `PUT /users/123` returns 204 |
+| 3 | HATEOAS with hypermedia links | Responses include navigable links; self-documenting |
+
+**Most public APIs today are Level 2.** Level 3 (HATEOAS) is valuable for complex workflows and long-term evolution but adds complexity. Choose based on your API's scope and client diversity.
+
+## When to Use HATEOAS
+
+<Vs highlight={[0,0]} items={[
+{
+    label: "Use HATEOAS When",
+    points: [
+      "API has many resources with complex relationships",
+      "You want to evolve URLs without client updates",
+      "Clients need guidance on available actions",
+      "Long-term stability is a priority",
+      "API documentation should be self-contained"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Skip HATEOAS When",
+    points: [
+      "Client tightly coupled to your organization",
+      "Simple, stable resource model",
+      "Performance critical (adds link overhead)",
+      "Clients prefer static documentation",
+      "Building internal API for single application"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+**Pitfall**: Returning all nested relations in every response. Users don't always need order history. Use links and let clients request what they need via separate requests or `?include=orders`.
+
+**Pitfall**: Inventing custom link formats. Use standard formats: HAL+JSON, JSON:API, or Siren. Clients understand these conventions.
+
+**Pitfall**: Breaking HATEOAS by hardcoding URLs in client code. If clients still hardcode `/users/{id}`, hypermedia adds no value.
+
+**Pattern**: Use links for navigation and state transitions, not for every possible piece of data. A link to "addresses" is valuable; a link to "default address" is probably data that belongs in the representation.
+
+## Design Review Checklist
+
+- [ ] Identified all resources in your API (nouns, not verbs)
+- [ ] Each resource has a stable, meaningful URI
+- [ ] Content negotiation handled (Accept header respected)
+- [ ] Documented all representations your API supports
+- [ ] Decided: HATEOAS needed or Level 2 sufficient?
+- [ ] If using HATEOAS, chose standard format (HAL, JSON:API, Siren)
+- [ ] Links clearly document available actions
+- [ ] Error responses don't include contradictory links
+
+## Representation Format Examples
+
+### JSON Representation
+```json
+GET /users/123
+Accept: application/json
+
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "created_at": "2025-09-10T10:00:00Z"
+}
+```
+
+### HAL+JSON (with HATEOAS)
+```json
+GET /users/123
+Accept: application/hal+json
+
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "created_at": "2025-09-10T10:00:00Z",
+  "_links": {
+    "self": { "href": "/users/123" },
+    "all_users": { "href": "/users" },
+    "addresses": { "href": "/users/123/addresses" },
+    "orders": { "href": "/users/123/orders" },
+    "edit": { "href": "/users/123", "method": "PUT" },
+    "delete": { "href": "/users/123", "method": "DELETE" }
+  }
+}
+```
+
+### JSON:API Representation
+```json
+GET /users/123
+
+{
+  "data": {
+    "type": "users",
+    "id": "123",
+    "attributes": {
+      "name": "Alice",
+      "email": "alice@example.com",
+      "created_at": "2025-09-10T10:00:00Z"
+    },
+    "relationships": {
+      "addresses": {
+        "data": [
+          { "type": "addresses", "id": "1" }
+        ]
+      },
+      "orders": {
+        "data": [
+          { "type": "orders", "id": "5001" }
+        ]
+      }
+    }
+  }
+}
+```
+
+## Content Negotiation in Practice
+
+### Server-Driven Negotiation
+Client specifies format via Accept header:
+```
+GET /api/users/123
+Accept: application/json
+
+or
+
+GET /api/users/123
+Accept: application/xml
+
+or
+
+GET /api/users/123
+Accept: text/csv
+```
+
+### Agent-Driven Negotiation
+Server provides list of available formats:
+```
+GET /api/users/123
+
+HTTP/1.1 300 Multiple Choices
+Link: </api/users/123>; rel="self"; type="application/json"
+Link: </api/users/123.xml>; rel="alternate"; type="application/xml"
+Link: </api/users/123.csv>; rel="alternate"; type="text/csv"
+```
+
+## Self-Check
+
+- Can you describe the difference between a resource and a representation?
+- How would content negotiation help your API scale to multiple clients?
+- What is one business scenario where HATEOAS would simplify client code?
+- Can you design HATEOAS links for your critical resources?
+- How would you handle content negotiation errors?
+
+:::info One Takeaway
+Resources are nouns, representations are formats, and hypermedia links are the connective tissue that lets your API evolve without breaking clients. Choose your representation format strategically—HAL and JSON:API are mature standards with library support.
+
+:::
+
+## HATEOAS Maturity Levels
+
+### Level 0: Plain JSON (No HATEOAS)
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice"
+}
+// Client must hardcode URL patterns
+client_code: "/users/{id}" hardcoded
+```
+
+### Level 1: Simple Links
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "_links": {
+    "self": { "href": "/users/123" }
+  }
+}
+// Client still hardcodes related resource paths
+```
+
+### Level 2: Navigation Links
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "_links": {
+    "self": { "href": "/users/123" },
+    "all_users": { "href": "/users" },
+    "orders": { "href": "/users/123/orders" },
+    "addresses": { "href": "/users/123/addresses" }
+  }
+}
+// Client can discover related resources
+```
+
+### Level 3: Action Links (True HATEOAS)
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "status": "active",
+  "_links": {
+    "self": { "href": "/users/123" },
+    "all_users": { "href": "/users" },
+    "orders": { "href": "/users/123/orders" },
+    "addresses": { "href": "/users/123/addresses" },
+    "edit": { "href": "/users/123", "method": "PUT" },
+    "deactivate": { "href": "/users/123/deactivate", "method": "POST" },
+    "delete": { "href": "/users/123", "method": "DELETE" }
+  }
+}
+// Server tells client what actions are possible
+// If user inactive, "deactivate" link would be absent
+// Client doesn't hardcode which actions available
+```
+
+## Choosing Your Representation Format
+
+### JSON (Plain)
+**Pros**: Simple, lightweight, universal
+**Cons**: No discovery, no hypermedia
+**Use for**: Internal APIs, tightly coupled clients
+
+### HAL (Hypertext Application Language)
+**Pros**: Simple HATEOAS, well-defined standard
+**Cons**: Limited action description
+**Libraries**: Spring HATEOAS (Java), Halogen (Scala), Roar (Ruby)
+**Use for**: RESTful APIs with hypermedia
+
+### JSON:API
+**Pros**: Complete spec, handles relationships, filtering, pagination
+**Cons**: More complex, opinionated
+**Libraries**: All major languages supported
+**Use for**: Complex APIs with many relationships
+
+### Siren
+**Pros**: Rich action description, fields with validation
+**Cons**: Less widely adopted
+**Libraries**: Limited ecosystem
+**Use for**: APIs with complex state transitions
+
+## Content Negotiation in Production
+
+```python
+# Flask example: respond to multiple formats
+@app.route('/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    user = User.query.get(user_id)
+
+    # Check Accept header
+    accept_header = request.headers.get('Accept', 'application/json')
+
+    if 'application/xml' in accept_header:
+        return to_xml(user), 200, {'Content-Type': 'application/xml'}
+    elif 'application/csv' in accept_header:
+        return to_csv(user), 200, {'Content-Type': 'text/csv'}
+    elif 'application/hal+json' in accept_header:
+        return to_hal_json(user), 200, {'Content-Type': 'application/hal+json'}
+    else:
+        # Default to JSON
+        return to_json(user), 200, {'Content-Type': 'application/json'}
+
+# Client specifies preference (can accept multiple)
+GET /users/123
+Accept: application/hal+json, application/json;q=0.9, */*;q=0.1
+// Server responds with HAL+JSON if available, falls back to JSON
+```
+
+## Pagination with HATEOAS
+
+Pagination is challenging with HATEOAS—users need to traverse pages:
+
+```json
+GET /users?page=2&limit=10
+{
+  "data": [
+    { "id": 11, "name": "User 11" },
+    { "id": 12, "name": "User 12" },
+    ...
+  ],
+  "_links": {
+    "self": { "href": "/users?page=2&limit=10" },
+    "first": { "href": "/users?page=1&limit=10" },
+    "previous": { "href": "/users?page=1&limit=10" },
+    "next": { "href": "/users?page=3&limit=10" },
+    "last": { "href": "/users?page=10&limit=10" }
+  },
+  "total": 100,
+  "pages": 10
+}
+```
+
+**Benefits of HATEOAS pagination**:
+- Client doesn't need to construct URLs
+- Server can change pagination strategy (limit, offset → cursor-based)
+- Discoverability: client knows available pages
+
+## Conditional Requests with HATEOAS
+
+HATEOAS can include conditional request information:
+
+```json
+GET /users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "_links": {
+    "self": {
+      "href": "/users/123",
+      "title": "Get user",
+      "type": "application/hal+json"
+    },
+    "edit": {
+      "href": "/users/123",
+      "method": "PUT",
+      "title": "Update user",
+      "schema": { ... }
+    }
+  },
+  "_embedded": {
+    "orders": [
+      {
+        "id": 1001,
+        "amount": 99.99,
+        "_links": { "self": { "href": "/orders/1001" } }
+      }
+    ]
+  }
+}
+```
+
+## HATEOAS in Error Responses
+
+Error responses should also include helpful links:
+
+```json
+HTTP/1.1 404 Not Found
+Content-Type: application/hal+json
+
+{
+  "error": "Not Found",
+  "message": "User 999 does not exist",
+  "status": 404,
+  "_links": {
+    "help": { "href": "/docs/errors#404" },
+    "search": { "href": "/users?search=..." },
+    "create": { "href": "/users", "method": "POST" }
+  }
+}
+```
+
+## Hypermedia-Driven API Example
+
+Complete example of hypermedia-driven workflow:
+
+```
+1. Client starts at root
+   GET /
+   {
+     "_links": {
+       "users": { "href": "/users" },
+       "products": { "href": "/products" },
+       "search": { "href": "/search{?q}" }  // URI Template
+     }
+   }
+
+2. Client discovers users collection
+   GET /users
+   {
+     "data": [ { "id": 1, "name": "Alice" } ],
+     "_links": {
+       "self": { "href": "/users" },
+       "create": { "href": "/users", "method": "POST" }
+     }
+   }
+
+3. Client follows user link
+   GET /users/1
+   {
+     "id": 1,
+     "name": "Alice",
+     "_links": {
+       "self": { "href": "/users/1" },
+       "orders": { "href": "/users/1/orders" },
+       "edit": { "href": "/users/1", "method": "PUT" },
+       "delete": { "href": "/users/1", "method": "DELETE" }
+     }
+   }
+
+4. Client discovers orders
+   GET /users/1/orders
+   {
+     "data": [ { "id": 1001, "total": 99.99 } ],
+     "_links": {
+       "self": { "href": "/users/1/orders" },
+       "create": { "href": "/users/1/orders", "method": "POST" }
+     }
+   }
+
+5. Client discovers specific order
+   GET /orders/1001
+   {
+     "id": 1001,
+     "total": 99.99,
+     "_links": {
+       "self": { "href": "/orders/1001" },
+       "user": { "href": "/users/1" },
+       "items": { "href": "/orders/1001/items" },
+       "cancel": { "href": "/orders/1001/cancel", "method": "POST" }
+     }
+   }
+```
+
+No hardcoded URLs; entire API discovered through links.
+
+## Next Steps
+
+- Read **URI Design & Methods** to learn how to structure URIs clearly
+- Study **Error Formats & Problem Details** for consistent error representations
+- Explore frameworks like HAL, JSON:API, or Siren for HATEOAS implementation
+- Implement content negotiation to support multiple clients
+- Design your first hypermedia-driven API workflow
+
+## References
+
+- Richardson Maturity Model (Leonard Richardson)
+- Fielding Dissertation on REST (Roy T. Fielding)
+- HAL Specification
+- JSON:API Specification
+- RESTful Web Services (Leonard Richardson & Sam Ruby)

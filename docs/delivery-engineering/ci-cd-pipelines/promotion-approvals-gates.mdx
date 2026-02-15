@@ -1,0 +1,590 @@
+---
+sidebar_position: 2
+title: "Promotion, Approvals, and Gates"
+description: "Control flow of changes through environments; approve releases with appropriate rigor."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [ci-cd, promotion, approvals, gates, release-control, environments, governance]
+image: /img/archman-social-card.webp
+tags: [ci-cd, promotion, approvals, governance, release-management, safety, control, best-practices]
+hide_title: true
+---
+
+<Hero title="Promotion, Approvals, and Gates" subtitle="Control flow of changes through environments; approve releases with appropriate rigor." imageAlt="Approval illustration" size="large" />
+
+## TL;DR
+
+Environments: dev → staging → production. Artifact is promoted (automatically or manually) from one to the next only if it passes gates. Gates can be automated (tests, security scans) or manual (human approval).
+
+Dev gates: automatic (low risk). Staging gates: moderate approval needed. Prod gates: strict approval required. Automate approvals based on objective criteria (all tests passed). Reserve manual approvals for subjective decisions (high-risk, architecture, regulatory).
+
+## Learning Objectives
+
+- Design multi-environment promotion workflows
+- Define appropriate approval gates by environment
+- Distinguish between automated and manual approval triggers
+- Implement audit trails for compliance
+- Reduce toil through approval automation
+- Balance speed with safety and governance
+
+## Motivating Scenario
+
+Your team wants to deploy a critical payment service update. Currently, approvals take 4 hours: manual code review, manual approval request to ops team, waiting for on-call lead to review, then finally deploying.
+
+A competitor with approval automation: push code → CI/CD runs tests → if all pass → automatic approval based on quality gates → deployed to staging → staging tests pass → automatic production deployment. Total time: 20 minutes.
+
+Your team has security requirements (code review, compliance checks) but those are manual and slow. Competitor automates policy checks: SAST scan, dependency vulnerability check, code review bot that catches common issues. Humans only review if automation flags something.
+
+Result: You ship features 10x slower due to approval toil.
+
+## Core Concepts
+
+### Environment Promotion Architecture
+
+<Figure>
+  {`flowchart LR
+    Code["Code Pushed<br/>to Main"] --> Build["Build Artifact<br/>Docker image"]
+    Build --> Dev["Deploy to Dev<br/>Run tests"]
+    Dev --> DevGate{"All Checks<br/>Passed?"}
+    DevGate -->|No| Fail["Build Failed<br/>Feedback to Dev"]
+    DevGate -->|Yes| Staging["Promote to Staging<br/>Production-like env"]
+    Staging --> StagingTests["Run Integration<br/>& Performance Tests"]
+    StagingTests --> StagingGate{"Quality<br/>Passed?"}
+    StagingGate -->|No| Revert["Investigate<br/>Fix"]
+    StagingGate -->|Yes| Approval{"Manual<br/>Approval?"}
+    Approval -->|Required| Wait["Wait for PM/Lead<br/>Approval"]
+    Approval -->|Auto| Prod
+    Wait --> Prod["Deploy to Prod<br/>Rolling/Canary"]
+    Prod --> Monitor["Monitor Metrics<br/>Auto-rollback if needed"]`}
+</Figure>
+
+### Gate Types by Environment
+
+**Development Environment**:
+- Automated gates only
+- Unit tests, linting, type checking
+- Fast feedback (seconds to 2 minutes)
+- No human approval
+- Fail early, iterate quickly
+
+**Staging Environment**:
+- Automated quality gates (integration tests, security scans)
+- Optional human approval for high-risk changes
+- Slow tests (10-30 minutes) are acceptable
+- Production-like data and infrastructure
+- Last chance to catch issues before production
+
+**Production Environment**:
+- All automated gates from staging
+- Mandatory human approval (usually PM or tech lead)
+- Approval based on: business impact, error budget, deploy window
+- Audit trail required for compliance
+- Deployment strategy (canary, blue-green, rolling) chosen by risk
+
+### Approval Strategies
+
+**Automatic Approval**:
+- Trigger: All quality gates passed
+- Condition: Low-risk change (documentation, internal tools, bug fix)
+- Owner: System/CI/CD
+- Audit: Automatic log of "approval"
+
+**Single Approval**:
+- Trigger: Quality gates + manual review
+- Reviewer: Tech lead or PM
+- Time to approval: 15 minutes to 2 hours
+- Use for: Feature changes, configuration updates
+
+**Multi-stage Approval**:
+- Trigger: Quality gates + sequential approvals
+- Approvers: Tech lead → PM → On-call lead (for prod)
+- Time to approval: 1-4 hours
+- Use for: High-impact changes, major refactors, security-critical
+
+**Scheduled Release**:
+- Trigger: Approved, waiting for release window
+- Release window: Business hours, low-traffic time
+- Approval locked: No changes after approval
+- Use for: Database migrations, breaking API changes
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="github-actions" label="GitHub Actions Promotion Gates" default>
+    ```yaml
+    # .github/workflows/promotion-pipeline.yml
+    name: Promotion Pipeline
+
+    on:
+      push:
+        branches: [main]
+      workflow_dispatch:
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: mycompany/payment-service
+
+    jobs:
+      # Stage 1: Build and test (Dev environment)
+      build-and-test:
+        runs-on: ubuntu-latest
+        permissions:
+          contents: read
+          security-events: write
+        outputs:
+          image-tag: ${{ steps.meta.outputs.tags }}
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Run unit tests
+            run: |
+              npm install
+              npm run test:unit
+              npm run coverage
+
+          - name: Run linter
+            run: npm run lint
+
+          - name: Build Docker image
+            run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+          - name: Security scanning (SAST)
+            uses: aquasecurity/trivy-action@master
+            with:
+              image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+              format: 'sarif'
+              output: 'trivy-results.sarif'
+
+          - name: Check for vulnerabilities
+            run: |
+              if grep -q '"CRITICAL"' trivy-results.sarif; then
+                echo "Critical vulnerabilities found!"
+                exit 1
+              fi
+
+          - name: Publish to registry
+            run: |
+              docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+              docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      # Stage 2: Deploy to staging (Staging environment)
+      deploy-staging:
+        needs: build-and-test
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main'
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Deploy to staging
+            run: |
+              kubectl set image deployment/payment-service \
+                payment-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                -n staging
+
+          - name: Wait for rollout
+            run: |
+              kubectl rollout status deployment/payment-service \
+                -n staging --timeout=5m
+
+          - name: Run integration tests
+            run: |
+              npm run test:integration -- --env=staging
+
+          - name: Run performance tests
+            run: |
+              npm run test:performance -- --env=staging
+
+          - name: Check metrics
+            run: |
+              # Verify error rate is acceptable
+              ERROR_RATE=$(curl -s http://prometheus-staging:9090/api/v1/query?query=error_rate | jq '.data.result[0].value[1]')
+              if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+                echo "Error rate too high in staging: $ERROR_RATE"
+                exit 1
+              fi
+
+      # Stage 3: Request approval (before prod)
+      request-approval:
+        needs: deploy-staging
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main'
+
+        steps:
+          - name: Create deployment approval issue
+            uses: actions/github-script@v7
+            with:
+              script: |
+                const issue = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `Deploy approval needed: ${{ github.sha }}`,
+                  body: `**Commit**: ${{ github.sha }}\n**Branch**: main\n**Author**: ${{ github.actor }}\n\nAll checks passed in staging.\n\n**To approve**: Reply with /approve\n**To reject**: Reply with /reject`,
+                  labels: ['deployment', 'approval-needed']
+                });
+
+                console.log(`Created approval issue: ${issue.data.number}`);
+
+      # Stage 4: Deploy to production (Production environment)
+      deploy-production:
+        needs: request-approval
+        runs-on: ubuntu-latest
+        if: github.event_name == 'workflow_dispatch'  # Manual trigger only
+
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Verify approval (in real scenario, check approval system)
+            run: echo "Approved for production deployment"
+
+          - name: Deploy with canary strategy
+            run: |
+              # Deploy to 10% of traffic
+              kubectl set image deployment/payment-service \
+                payment-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                -n production
+
+              # Use traffic splitting (e.g., Istio, Flagger)
+              kubectl apply -f - <<EOF
+              apiVersion: flagger.app/v1beta1
+              kind: Canary
+              metadata:
+                name: payment-service
+                namespace: production
+              spec:
+                targetRef:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  name: payment-service
+                progressDeadlineSeconds: 60
+                service:
+                  port: 8080
+                analysis:
+                  interval: 1m
+                  threshold: 5
+                  maxWeight: 100
+                  stepWeight: 20
+                  metrics:
+                  - name: error-rate
+                    thresholdRange:
+                      max: 1
+                  - name: latency
+                    thresholdRange:
+                      max: 1000
+              EOF
+
+          - name: Monitor canary
+            run: |
+              kubectl wait --for=condition=ready \
+                canary/payment-service -n production \
+                --timeout=10m
+    ```
+  </TabItem>
+
+  <TabItem value="argocd" label="ArgoCD Progressive Promotion">
+    ```yaml
+    # argocd-appset.yaml - Progressive promotion via GitOps
+
+    apiVersion: argoproj.io/v1alpha1
+    kind: ApplicationSet
+    metadata:
+      name: payment-service-promotion
+    spec:
+      generators:
+        - list:
+            elements:
+              - name: dev
+                namespace: dev
+                environment: development
+                approval_required: false
+                wait_time: 0
+
+              - name: staging
+                namespace: staging
+                environment: staging
+                approval_required: false
+                wait_time: 1h
+
+              - name: prod
+                namespace: production
+                environment: production
+                approval_required: true
+                wait_time: 24h
+
+      template:
+        metadata:
+          name: 'payment-service-{{ name }}'
+        spec:
+          project: default
+          source:
+            repoURL: https://github.com/mycompany/infra
+            targetRevision: main
+            path: environments/payment-service/{{ name }}
+
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: '{{ namespace }}'
+
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+
+          # Progressive sync: wait before promoting to next env
+          # For staging: wait 1 hour for monitoring/validation
+          # For prod: requires manual approval in ArgoCD UI
+          revisionHistoryLimit: 5
+
+    ---
+    # AppProject with approval policy
+    apiVersion: argoproj.io/v1alpha1
+    kind: AppProject
+    metadata:
+      name: payment-service
+    spec:
+      sourceRepos:
+        - 'https://github.com/mycompany/*'
+
+      destinations:
+        - namespace: 'dev'
+          server: 'https://kubernetes.default.svc'
+        - namespace: 'staging'
+          server: 'https://kubernetes.default.svc'
+        - namespace: 'production'
+          server: 'https://kubernetes.default.svc'
+
+      # Roles for approval
+      roles:
+        - name: tech-lead
+          policies:
+            - p, proj:payment-service:tech-lead, applications, sync, payment-service/*, allow
+            - p, proj:payment-service:tech-lead, applications, override, payment-service/*, allow
+
+        - name: pm
+          policies:
+            - p, proj:payment-service:pm, applications, sync, payment-service/*, allow
+
+    # Notification policy (request approval)
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: argocd-notifications-cm
+    data:
+      service.slack: |
+        token: $slack-token
+      template.approval-needed: |
+        message: "Approval needed for prod deployment: {{.app.spec.source.path}}"
+        slack:
+          attachments: |
+            [{
+              "color": "#FF9900",
+              "fields": [
+                {"title": "App", "value": "{{.app.metadata.name}}"},
+                {"title": "Revision", "value": "{{.app.status.sync.revision}}"}
+              ]
+            }]
+      trigger.approval-sync: |
+        - when: app.status.operationState.finishedAt == '' and app.metadata.namespace == 'production'
+          send: [approval-needed]
+    ```
+  </TabItem>
+
+  <TabItem value="terraform" label="Terraform Approval Workflow">
+    ```hcl
+    # main.tf - Promotion with approval gates
+
+    terraform {
+      required_version = ">= 1.0"
+      required_providers {
+        aws = {
+          source  = "hashicorp/aws"
+          version = "~> 5.0"
+        }
+      }
+
+      backend "s3" {
+        bucket         = "terraform-state"
+        key            = "payment-service/terraform.tfstate"
+        region         = "us-east-1"
+        dynamodb_table = "terraform-locks"
+        encrypt        = true
+      }
+    }
+
+    # Variable for approval gate
+    variable "environment" {
+      type        = string
+      description = "Target environment"
+      validation {
+        condition     = contains(["dev", "staging", "prod"], var.environment)
+        error_message = "Environment must be dev, staging, or prod."
+      }
+    }
+
+    variable "require_approval_for_prod" {
+      type        = bool
+      default     = true
+      description = "Require manual approval for production changes"
+    }
+
+    variable "approved_by" {
+      type        = string
+      default     = ""
+      description = "User who approved this change (required for prod)"
+    }
+
+    # Gate logic
+    locals {
+      is_production = var.environment == "prod"
+
+      # Production deployments require approval
+      approval_check = is_production ? (
+        var.require_approval_for_prod && var.approved_by != "" ? true : (
+          var.require_approval_for_prod ? false : true
+        )
+      ) : true
+    }
+
+    # This will fail if production needs approval but wasn't provided
+    resource "null_resource" "approval_gate" {
+      triggers = {
+        approval_required = local.is_production && var.require_approval_for_prod
+        approved          = var.approved_by != ""
+      }
+
+      provisioner "local-exec" {
+        command = local.approval_check ? "echo 'Approved'" : "echo 'APPROVAL REQUIRED' && exit 1"
+      }
+    }
+
+    # Example: RDS instance with environment-specific settings
+    resource "aws_db_instance" "payment_db" {
+      depends_on = [null_resource.approval_gate]
+
+      identifier            = "payment-db-${var.environment}"
+      allocated_storage     = var.environment == "prod" ? 200 : 20
+      instance_class        = var.environment == "prod" ? "db.r6i.2xlarge" : "db.t3.small"
+      engine                = "postgres"
+      engine_version        = "15.3"
+      backup_retention_days = var.environment == "prod" ? 30 : 7
+
+      # Production requires additional protection
+      multi_az               = var.environment == "prod" ? true : false
+      storage_encrypted      = true
+      deletion_protection    = var.environment == "prod" ? true : false
+      enabled_cloudwatch_logs_exports = ["postgresql"]
+
+      tags = {
+        Environment = var.environment
+        ManagedBy   = "Terraform"
+        ApprovedBy  = var.approved_by
+      }
+    }
+
+    # Output for audit trail
+    output "deployment_info" {
+      value = {
+        environment  = var.environment
+        approved_by  = var.approved_by
+        timestamp    = timestamp()
+        approval_req = local.is_production && var.require_approval_for_prod
+      }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Automate vs Manual Approvals
+
+<Vs title="Automatic vs Manual Approvals" items={[
+{label: "Automate Approval", points: [
+      "Tests are comprehensive and deterministic",
+      "Change is low-risk (documentation, logging)",
+      "Security scans pass without vulnerabilities",
+      "Performance regression tests pass",
+      "Deployment is incremental (canary)",
+      "Rollback is fast and automatic"
+    ]},
+{label: "Manual Approval", points: [
+      "High-risk change (breaking API, data migration)",
+      "Requires business judgment (feature flags)",
+      "Security implications need review",
+      "Regulatory or compliance requirements",
+      "Affects critical customer journeys",
+      "Rollback is manual or risky"
+    ]}
+]} highlight={[0, 1]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Progressive Promotion",
+      body: "Dev (instant) → Staging (automatic after passing) → Prod (approval required). Each stage tests more thoroughly. Staging tests integration and performance; Prod tests with real data, canary deployment."
+    },
+    {
+      label: "Pattern: Approval as Code",
+      body: "Define approval policies in code, not in tribal knowledge. 'Production changes need tech-lead approval.' Store in version control, reviewable, auditable."
+    },
+    {
+      label: "Pitfall: Approval Bottleneck",
+      body: "Manual approval takes 4+ hours because approvers are unavailable. Result: Features queue up. Solution: Expand approver pool, rotate on-call, or automate more gates."
+    },
+    {
+      label: "Pitfall: Approvals Rubber-Stamp",
+      body: "Approver always clicks 'approve' without reading details. Approval becomes meaningless toil. Solution: Make approval automated if you trust it, or require substantive review."
+    },
+    {
+      label: "Pitfall: Environment Parity Missing",
+      body: "Staging is not like production (old data, missing services, different configs). Change passes staging but fails in prod. Solution: Sync staging data weekly, use production-like infrastructure."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Each environment has defined promotion criteria (which gates must pass?)",
+    "Automated gates are objective and measurable (tests pass, coverage >80%, no vulns)",
+    "Manual approvals are required only for high-risk changes (clearly defined)",
+    "Approval process is documented and includes decision criteria",
+    "Audit trail exists for all approvals (who, when, change details)",
+    "Approval time is &lt;2 hours (SLA for time-sensitive deploys)",
+    "Approvers have clear escalation path if blocked",
+    "Dev environment is fast-feedback (no manual approval)",
+    "Prod environment has at least 2-layer approval for breaking changes",
+    "Approval policies are version-controlled and reviewed"
+  ]}
+/>
+
+## Self-Check
+
+- Can you deploy a low-risk change from code to production in &lt;30 minutes?
+- What is your average approval wait time for production deployments?
+- Are there subjective approval decisions that could be automated (gates)?
+- Have you ever had approval become a bottleneck to deployment?
+- Is your approval audit trail queryable and compliance-friendly?
+
+## Next Steps
+
+1. **Week 1**: Document current promotion workflow and approval gates
+2. **Week 2**: Map gates to "why do we need this?" (remove if not justified)
+3. **Week 3**: Implement 3 automated quality gates (tests, security scans, lint)
+4. **Week 4**: Reduce manual approval scope by automating objective decisions
+5. **Ongoing**: Monitor approval wait times; iterate based on feedback
+
+## References
+
+1. Humble, J., & Farley, D. (2010). Continuous Delivery. Addison-Wesley.
+2. Forsgren, N., et al. (2018). Accelerate. IT Revolution Press.
+3. Accelerate State of DevOps Report. <a href="https://cloud.google.com/state-of-devops" target="_blank" rel="nofollow noopener noreferrer">cloud.google.com/state-of-devops ↗️</a>

@@ -1,0 +1,343 @@
+---
+sidebar_position: 2
+title: "Transaction Boundaries and Sagas"
+description: "Coordinate distributed transactions across services using choreography and orchestration patterns."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [sagas, distributed-transactions, choreography, orchestration, transaction-boundaries, compensating-transactions, eventual-consistency, rollback]
+image: /img/archman-social-card.webp
+tags: [microservices, transactions, patterns, coordination, consistency, reliability, distributed-systems, failure-handling, best-practices, architecture]
+hide_title: true
+---
+
+<Hero title="Transaction Boundaries and Sagas" subtitle="Coordinate distributed transactions across services using choreography and orchestration patterns." imageAlt="Saga pattern illustration" size="large" />
+
+## TL;DR
+
+In microservices, ACID transactions across services are impossible—you have separate databases and no global rollback. Sagas solve this: a sequence of local transactions coordinated to either all succeed or all fail. Two patterns exist: choreography (services communicate via events) and orchestration (a coordinator directs each step). Choreography is loosely coupled but hard to debug; orchestration is easier to understand but creates a central coordinator. Use compensating transactions to handle failures—if step 3 fails, explicitly undo steps 2 and 1. This isn't ACID, but it's sufficient for most business workflows.
+
+## Learning Objectives
+
+- Understand why traditional ACID transactions don't work across services
+- Design distributed transactions using sagas
+- Implement choreography-based sagas with events
+- Implement orchestration-based sagas with coordinators
+- Design compensating transactions for rollback
+- Handle failures and partial failures in distributed workflows
+
+## Motivating Scenario
+
+A user places an order. The system must: reserve inventory, charge credit card, and reserve shipping. If any step fails, all previous steps must undo. In a monolith, this is one transaction with automatic rollback. In microservices, inventory service, payment service, and shipping service are separate. If step 2 (charge card) fails, you must explicitly unreserve inventory and cancel the shipping reservation. How do you coordinate this reliably?
+
+## Core Concepts
+
+### Why ACID Fails in Microservices
+
+ACID transactions require a single database with global locks and rollback capability. Microservices have separate databases without shared locks. Coordination across networks is inherently unreliable—messages can be delayed, services can crash, and networks can partition. You can't achieve true ACID without a single database, so you settle for eventual consistency.
+
+### Sagas: Choreography vs. Orchestration
+
+A saga is a sequence of local transactions, each updating one service's database. If all succeed, the saga completes. If one fails, compensating transactions undo previous changes. Two coordination styles exist: choreography (services react to events) and orchestration (a central coordinator sends commands).
+
+### Compensating Transactions
+
+Rollback in distributed systems means explicitly undoing changes. If you reserved inventory, you must unreserve it. This isn't automatic—you must design undo operations for each step. Compensating transactions are the inverse of their original operation.
+
+### Idempotency and Retries
+
+Networks fail, services crash, and messages duplicate. Make every operation idempotent: calling it multiple times with the same input produces the same result. This enables safe retries without double-processing.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Trying to use distributed transactions naively
+class OrderService:
+    def create_order(self, user_id, items):
+        # This will fail if payment service crashes after we reserved inventory
+        inventory = self.inventory_client.reserve_inventory(items)
+        payment = self.payment_client.charge_card(user_id, total_price)
+        shipping = self.shipping_client.reserve_shipping(user_id)
+        return Order(user_id=user_id, items=items)
+
+# ✅ EXCELLENT - Saga using choreography (event-driven)
+class OrderService:
+    def __init__(self, event_bus, db):
+        self.event_bus = event_bus
+        self.db = db
+
+    def create_order(self, user_id, items):
+        order = Order(user_id=user_id, items=items, status='pending')
+        self.db.insert(order)
+        # Emit event; other services react and emit their own events
+        self.event_bus.publish('OrderCreated', {
+            'order_id': order.id,
+            'user_id': user_id,
+            'items': items,
+            'total': calculate_total(items)
+        })
+        return order
+
+    def on_inventory_reserved(self, event):
+        order = self.db.get_order(event['order_id'])
+        order.inventory_reserved = True
+        self.db.update(order)
+
+    def on_payment_failed(self, event):
+        order = self.db.get_order(event['order_id'])
+        order.status = 'cancelled'
+        self.db.update(order)
+        # Emit compensating event to unreserve inventory
+        self.event_bus.publish('OrderCancelled', {'order_id': order.id})
+
+# ✅ EXCELLENT - Saga using orchestration (coordinator-driven)
+class OrderOrchestrator:
+    def __init__(self, db, services, event_bus):
+        self.db = db
+        self.services = services
+        self.event_bus = event_bus
+
+    def create_order(self, user_id, items):
+        order = Order(user_id=user_id, items=items, status='pending')
+        self.db.insert(order)
+
+        try:
+            # Step 1: Reserve inventory
+            self.services.inventory.reserve_inventory(items)
+            order.inventory_reserved = True
+            self.db.update(order)
+
+            # Step 2: Charge payment
+            self.services.payment.charge_card(user_id, calculate_total(items))
+            order.payment_charged = True
+            self.db.update(order)
+
+            # Step 3: Reserve shipping
+            self.services.shipping.reserve_shipping(user_id, items)
+            order.status = 'confirmed'
+            self.db.update(order)
+
+        except PaymentFailedError:
+            # Compensate: unreserve inventory
+            self.services.inventory.unreserve_inventory(order.id)
+            order.status = 'cancelled'
+            self.db.update(order)
+            raise
+
+        return order
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - No rollback mechanism
+func (s *OrderService) CreateOrder(ctx context.Context, userID string, items []Item) error {
+    inventory, err := s.inventoryClient.ReserveInventory(ctx, items)
+    if err != nil {
+        return err
+    }
+    // If this fails, inventory is already reserved—no undo
+    payment, err := s.paymentClient.ChargeCard(ctx, userID, total)
+    if err != nil {
+        return err
+    }
+    // ...
+}
+
+// ✅ EXCELLENT - Saga with compensating transactions
+type OrderOrchestrator struct {
+    db        *sql.DB
+    inventory InventoryClient
+    payment   PaymentClient
+    shipping  ShippingClient
+}
+
+func (o *OrderOrchestrator) CreateOrder(ctx context.Context, userID string, items []Item) (*Order, error) {
+    tx, err := o.db.BeginTx(ctx, nil)
+    if err != nil {
+        return nil, err
+    }
+    defer tx.Rollback()
+
+    order := &Order{UserID: userID, Items: items, Status: "pending"}
+    err = tx.Exec("INSERT INTO orders (user_id, status) VALUES (?, ?)", userID, order.Status)
+    if err != nil {
+        return nil, err
+    }
+
+    // Step 1: Reserve inventory
+    invRes, err := o.inventory.ReserveInventory(ctx, items)
+    if err != nil {
+        return nil, err
+    }
+
+    // Step 2: Charge payment
+    payRes, err := o.payment.ChargeCard(ctx, userID, CalculateTotal(items))
+    if err != nil {
+        // Compensate: unreserve inventory
+        o.inventory.UnreserveInventory(ctx, invRes.ReservationID)
+        return nil, err
+    }
+
+    // Step 3: Reserve shipping
+    shipRes, err := o.shipping.ReserveShipping(ctx, userID, items)
+    if err != nil {
+        // Compensate: undo both previous steps
+        o.inventory.UnreserveInventory(ctx, invRes.ReservationID)
+        o.payment.RefundCharge(ctx, payRes.TransactionID)
+        return nil, err
+    }
+
+    // All steps succeeded
+    order.Status = "confirmed"
+    err = tx.Commit()
+    return order, err
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - No compensation on failure
+class OrderService {
+    async createOrder(userId, items) {
+        await this.inventoryClient.reserve(items);
+        await this.paymentClient.charge(userId, total);  // Fails!
+        // Inventory already reserved but no undo
+        await this.shippingClient.reserve(userId, items);
+    }
+}
+
+// ✅ EXCELLENT - Saga with orchestration
+class OrderOrchestrator {
+    constructor(db, clients, eventBus) {
+        this.db = db;
+        this.clients = clients;
+        this.eventBus = eventBus;
+    }
+
+    async createOrder(userId, items) {
+        const order = { userId, items, status: 'pending' };
+        await this.db.insert('orders', order);
+
+        const compensations = [];
+
+        try {
+            // Step 1: Reserve inventory
+            const invRes = await this.clients.inventory.reserve(items);
+            compensations.push(() => this.clients.inventory.unreserve(invRes.id));
+
+            // Step 2: Charge payment
+            const payRes = await this.clients.payment.charge(userId, calculateTotal(items));
+            compensations.push(() => this.clients.payment.refund(payRes.id));
+
+            // Step 3: Reserve shipping
+            const shipRes = await this.clients.shipping.reserve(userId, items);
+
+            order.status = 'confirmed';
+            await this.db.update('orders', order.id, order);
+            this.eventBus.emit('order-confirmed', order);
+
+            return order;
+        } catch (error) {
+            // Compensation: undo in reverse order
+            for (const compensation of compensations.reverse()) {
+                try {
+                    await compensation();
+                } catch (e) {
+                    console.error('Compensation failed:', e);
+                    // Log and retry later
+                }
+            }
+
+            order.status = 'cancelled';
+            await this.db.update('orders', order.id, order);
+            throw error;
+        }
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "When to Use Sagas",
+    points: ["Workflows spanning multiple services that must all succeed or all fail", "Business processes that can tolerate eventual consistency", "Systems where you need visibility into multi-step workflows", "Scenarios where services can handle compensating transactions", "High-scale systems requiring distributed coordination"],
+    highlightTone: "positive"
+  },
+{
+    label: "When NOT to Use Sagas",
+    points: ["Single-service transactions (use ACID database transactions)", "Real-time financial transactions requiring strong ACID guarantees", "Workflows with complex rollback logic that", ",", "t reliably undo previous changes", "Early-stage systems without mature event infrastructure"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Choreography Complexity",
+      description: "Event-driven sagas are hard to debug. Use sagas with explicit workflow definitions to make the overall flow visible.",
+      icon: "⚠️"
+    }, {
+      title: "Orphaned Compensations",
+      description: "Compensating transactions can fail. Design idempotent compensations and implement dead-letter queues for failed compensations.",
+      icon: "⚠️"
+    }, {
+      title: "Orchestration Bottleneck",
+      description: "Orchestrators can become bottlenecks. Use them judiciously and consider distributing orchestration logic.",
+      icon: "⚠️"
+    }, {
+      title: "Explicit Undo Operations",
+      description: "Define compensating transactions for each step. Make them idempotent and thoroughly test them.",
+      icon: "✓"
+    }, {
+      title: "Distributed Tracing",
+      description: "Trace sagas across services to understand failures. Assign saga IDs and trace all related operations.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "All steps in the saga are idempotent (safe to retry)",
+    "Compensating transactions are designed for each step",
+    "Failures between steps are handled explicitly",
+    "Saga state is persisted to survive crashes",
+    "Monitoring and alerts are configured for saga failures",
+    "Long-running sagas have timeouts and cleanup policies",
+    "Compensating transactions are thoroughly tested"
+  ]}
+/>
+
+## Self-Check
+
+- What's the difference between choreography and orchestration sagas?
+- How do you ensure idempotency in distributed transactions?
+- What happens if a compensating transaction fails?
+
+:::info One Takeaway
+Sagas are not ACID, but they're sufficient for most distributed workflows. The key insight is: explicitly undo changes instead of relying on automatic rollback. This requires discipline but gives you control over distributed consistency.
+
+:::
+
+## Next Steps
+
+- Implement saga pattern with a framework like Temporal or Axon
+- Design compensating transactions for all critical workflows
+- Set up distributed tracing to monitor sagas across services
+- Explore dead-letter queues for handling failed compensations
+
+## References
+
+- Chris Richardson, Microservices Patterns: With examples in Java
+- Pat Helland, Life beyond Distributed Transactions
+- Sean Winn, Saga Pattern for Distributed Transactions

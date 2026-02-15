@@ -1,0 +1,743 @@
+---
+sidebar_position: 3
+title: Serverless & Functions-as-a-Service (FaaS)
+description: Event-driven compute, auto-scaling, and pay-per-execution with no infrastructure management
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["serverless","faas","lambda","event-driven","cold-start","pay-per-execution","managed-services"]
+image: /img/archman-social-card.webp
+tags: ["compute","architecture","serverless","event-driven","autoscaling"]
+hide_title: true
+---
+
+<Hero
+  title="Serverless & Functions-as-a-Service"
+  description="Event-driven compute, instant scaling, and pay-per-execution—no infrastructure to manage"
+  size="large"
+/>
+
+### TL;DR
+
+Serverless platforms (AWS Lambda, Google Cloud Functions, Azure Functions) execute event-driven workloads with **zero infrastructure provisioning**. Pay only for execution duration (millisecond-seconds). **Auto-scaling is instantaneous** from 0 to thousands of concurrent invocations. **Idle time costs nothing**. Trade cold-start latency (100ms-1s first invocation), statelessness (external stores), and execution time limits (15 minutes) for operational simplicity and cost efficiency on bursty, event-driven workloads. Not suitable for continuous, high-throughput workloads (containers cheaper).
+
+### Learning Objectives
+
+- Understand event-driven execution model and when to use FaaS
+- Design functions with minimal cold-start impact (provisioned concurrency, warm pools, code optimization)
+- Manage function state across invocations using external stores
+- Design idempotent, atomic operations (handle duplicate invocations)
+- Architect serverless workflows with orchestration, error handling, timeouts
+- Compare serverless vs containers vs managed services
+
+### Motivation: Scaling to Zero
+
+Your e-commerce platform: quiet nights (minimal traffic), sales spikes during Black Friday. Options:
+
+**Traditional VMs**: Reserve for peak (10x cost for 95% idle time). Or undersized and crash during spikes.
+
+**Containers**: Minimum footprint still costs 24/7 (even when idle). HPA scales slower than traffic spikes.
+
+**Serverless**: Pay $0 when idle. Scales to 10,000 concurrent invocations in milliseconds. During quiet night: $0. During spike: pay actual execution time. Cost savings: 90%.
+
+## Core Concepts
+
+**Event-Driven**: Function triggered by event (API request, S3 upload, database change, scheduled task). No polling, no idle containers.
+
+**Cold Start**: First invocation incurs latency (100ms-1s) for container initialization. Subsequent invocations in same container reuse warm state (~5-50ms). Provisioned concurrency keeps containers warm.
+
+**Stateless Execution**: Each invocation starts with clean environment. State persisted in external services (DynamoDB, S3, RDS, cache). Enables horizontal scaling.
+
+**Managed Isolation**: Each function runs in isolated container. Platform handles resource limits, security, monitoring.
+
+**Pricing Model**: Invocations (per 1 million) + compute (GB-seconds). Example: 1M invocations × 512MB × 1s = ~$21/month (if you've heard "pay for what you use", this is it).
+
+<Figure caption="Serverless execution flow: events → platform → functions → results">
+
+```mermaid
+graph TB
+  Events["Event Sources"]
+  ├─ API["API Gateway"]
+  ├─ S3["S3 Bucket"]
+  ├─ DDB["DynamoDB Stream"]
+  ├─ SNS["SNS Topic"]
+  └─ Cron["CloudWatch Events"]
+
+  Events -->|Event| Platform["Serverless Platform<br/>(AWS Lambda, etc.)"]
+
+  Platform -->|Cold Start<br/>OR<br/>Warm Reuse| Container["Execution Container<br/>Code + Environment"]
+
+  Container -->|Execute<br/>User Function| Output["Result"]
+  Container -->|Logs| CloudWatch["CloudWatch Logs"]
+  Container -->|Metrics| Monitoring["Metrics"]
+
+  Output -->|Response| APIClient["API Client"]
+```
+
+</Figure>
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="lambda-python" label="AWS Lambda (Python)" default>
+```python
+import json
+import boto3
+import os
+from datetime import datetime
+from uuid import uuid4
+
+dynamodb = boto3.resource('dynamodb')
+s3 = boto3.client('s3')
+orders_table = dynamodb.Table(os.environ['ORDERS_TABLE'])
+
+# Cold start: runs once per container
+print("Lambda function loaded")  # Warm containers skip this
+
+def lambda_handler(event, context):
+    """
+    Process order from API Gateway or SQS.
+    Returns JSON response.
+    """
+    try:
+        # Extract order data
+        body = json.loads(event.get('body', '{}')) if 'body' in event else event
+        order_id = str(uuid4())
+        customer_id = body['customer_id']
+        items = body['items']
+        total = body['total']
+
+        # Idempotent write (prevent duplicates on retries)
+        orders_table.put_item(
+            Item={
+                'order_id': order_id,
+                'customer_id': customer_id,
+                'items': items,
+                'total': total,
+                'timestamp': datetime.utcnow().isoformat(),
+                'status': 'PENDING_PAYMENT'
+            },
+            ConditionExpression='attribute_not_exists(order_id)'
+        )
+
+        # Log to S3 for audit trail
+        s3.put_object(
+            Bucket=os.environ['AUDIT_BUCKET'],
+            Key=f'orders/{order_id}.json',
+            Body=json.dumps(body)
+        )
+
+        return {
+            'statusCode': 201,
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({
+                'order_id': order_id,
+                'status': 'CREATED',
+                'message': 'Order created successfully'
+            })
+        }
+
+    except Exception as e:
+        print(f"ERROR: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+
+# Timeout context
+def lambda_handler_with_timeout(event, context):
+    """Example: handle timeout gracefully"""
+    remaining_ms = context.get_remaining_time_in_millis()
+    
+    if remaining_ms < 10000:
+        # Only 10 seconds left, don't start long operation
+        return {'statusCode': 202, 'message': 'Processing in background'}
+    
+    # Safe to do long operation
+    process_large_dataset()
+```
+  </TabItem>
+
+  <TabItem value="sam" label="AWS SAM (Infrastructure as Code)">
+```yaml
+# SAM = Serverless Application Model
+# Define Lambda + API Gateway + DynamoDB in YAML
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Timeout: 30
+    Memory: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        ORDERS_TABLE: !Ref OrdersTable
+        AUDIT_BUCKET: !Ref AuditBucket
+
+Resources:
+  # Lambda Function
+  OrderProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: order-processor
+      CodeUri: src/
+      Handler: app.lambda_handler
+      
+      # Provisioned concurrency (warm containers)
+      ProvisionedConcurrentExecutions: 10
+      
+      # Environment variables
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+          BATCH_SIZE: 100
+      
+      # Permissions (IAM role)
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+        - S3CrudPolicy:
+            BucketName: !Ref AuditBucket
+      
+      # Event triggers
+      Events:
+        # API Gateway trigger
+        OrderApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersAPI
+            Path: /orders
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+        
+        # SQS queue trigger
+        OrderQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 5
+        
+        # Scheduled trigger (cron)
+        DailyProcessing:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0 2 * * ? *)'  # 2 AM UTC daily
+
+  # DynamoDB Table
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: orders
+      BillingMode: PAY_PER_REQUEST  # On-demand pricing
+      AttributeDefinitions:
+        - AttributeName: order_id
+          AttributeType: S
+        - AttributeName: customer_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: order_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: customer-timestamp-index
+          KeySchema:
+            - AttributeName: customer_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # SQS Queue
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: order-events
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 3600
+
+  # S3 Bucket
+  AuditBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'audit-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+  # API Gateway
+  OrdersAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: OrdersAPI
+      Description: Order processing API
+
+Outputs:
+  OrderProcessorArn:
+    Value: !GetAtt OrderProcessorFunction.Arn
+  OrdersTableName:
+    Value: !Ref OrdersTable
+  ApiEndpoint:
+    Value: !Sub 'https://${OrdersAPI}.execute-api.${AWS::Region}.amazonaws.com/Prod'
+```
+  </TabItem>
+
+  <TabItem value="orchestration" label="Step Functions (Workflow Orchestration)">
+```json
+{
+  "Comment": "Order processing workflow",
+  "StartAt": "ValidateOrder",
+  "States": {
+    "ValidateOrder": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...validate-function",
+      "Next": "ProcessPayment",
+      "Catch": [
+        {
+          "ErrorEquals": ["ValidationError"],
+          "Next": "OrderValidationFailed"
+        }
+      ]
+    },
+    "ProcessPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...payment-function",
+      "TimeoutSeconds": 60,
+      "Next": "PaymentSuccessful?",
+      "Retry": [
+        {
+          "ErrorEquals": ["TimeoutError"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ]
+    },
+    "PaymentSuccessful?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.paymentStatus",
+          "StringEquals": "SUCCESS",
+          "Next": "FulfillOrder"
+        },
+        {
+          "Variable": "$.paymentStatus",
+          "StringEquals": "FAILED",
+          "Next": "RefundOrder"
+        }
+      ],
+      "Default": "PaymentUnknown"
+    },
+    "FulfillOrder": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...fulfill-function",
+      "Next": "NotifyCustomer"
+    },
+    "RefundOrder": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...refund-function",
+      "Next": "NotifyCustomer"
+    },
+    "NotifyCustomer": {
+      "Type": "Task",
+      "Resource": "arn:aws:sns:...",
+      "End": true
+    },
+    "OrderValidationFailed": {
+      "Type": "Fail",
+      "Error": "VALIDATION_ERROR",
+      "Cause": "Order validation failed"
+    },
+    "PaymentUnknown": {
+      "Type": "Fail",
+      "Error": "UNKNOWN_PAYMENT_STATUS",
+      "Cause": "Payment status unknown"
+    }
+  }
+}
+```
+  </TabItem>
+</Tabs>
+
+## Cold Start Mitigation Strategies
+
+<Tabs>
+  <TabItem value="warmpool" label="Warm Pool Strategy" default>
+```
+Problem: Cold start latency (100ms-1s) unacceptable for user-facing APIs
+
+Solution 1: Provisioned Concurrency
+  - AWS Lambda: Provisioned Concurrency (keeps N containers warm)
+  - Cost: $0.40/hour per provisioned concurrency
+  - Example: 10 provisioned = $96/month
+  - Benefit: Eliminates cold starts for first 10 concurrent requests
+  - Downside: Additional cost
+
+Solution 2: Scheduled Warmup
+  - Invoke function every 5 minutes (synthetic request)
+  - Cost: Low (just pays for invocations)
+  - Benefit: Keeps warm containers active
+  - Downside: Not guaranteed (platform may evict), adds latency variable
+
+Solution 3: Optimize Code
+  - Move imports outside handler (one-time at cold start)
+  - Lazy-initialize heavy libs (on first use)
+  - Reduce package size (fewer MB to load)
+  - Use Lambda layers for common code
+  - Example: 3s cold start → 200ms by optimizing
+
+Solution 4: Use Containers for Critical Paths
+  - Hybrid approach: serverless for async, containers for API
+  - Containers boot in 1-2s, predictable
+  - Serverless for event handlers (cold starts acceptable)
+
+Example: E-commerce
+  ✓ API Gateway → Container (fast, consistent)
+  ✓ Order received → Lambda → Process async (cold start OK)
+  ✓ Scheduled reports → Lambda → Run on schedule (cold start irrelevant)
+```
+  </TabItem>
+
+  <TabItem value="code-optimization" label="Code Optimization for Cold Starts">
+```python
+# WRONG: Slow cold start (1.5s)
+import boto3
+import requests
+import pandas as pd
+import numpy as np
+import urllib3
+
+# Heavy imports at top slow down cold start
+
+def lambda_handler(event, context):
+    # Uses boto3 (already loaded)
+    dynamodb = boto3.client('dynamodb')
+    response = dynamodb.get_item(...)
+    return response
+
+# RIGHT: Fast cold start (200ms)
+import boto3
+
+# Light, essential imports only at top
+dynamodb = None  # Lazy init
+
+def lambda_handler(event, context):
+    global dynamodb
+    
+    if dynamodb is None:
+        # Lazy load only when needed (warm container reuses)
+        dynamodb = boto3.client('dynamodb')
+    
+    response = dynamodb.get_item(...)
+    
+    # Heavy libs only if actually used
+    if needs_pandas():
+        import pandas as pd
+        df = pd.DataFrame(...)
+    
+    return response
+
+def needs_pandas():
+    # Only import if request requires it
+    pass
+
+# Cold start improvement: 1.5s → 200ms (7.5x faster!)
+```
+  </TabItem>
+</Tabs>
+
+## Idempotency and Duplicate Handling
+
+Serverless functions may be invoked twice (retries, timeouts). Design for idempotency:
+
+```python
+# Non-idempotent (WRONG):
+def lambda_handler(event, context):
+    order_id = event['order_id']
+    balance = db.get_balance(event['customer_id'])
+    db.update_balance(balance - 100)  # Charged twice if retried!
+    return {'charged': True}
+
+# Idempotent (RIGHT):
+def lambda_handler(event, context):
+    order_id = event['order_id']
+    request_id = event['request_id']  # Unique per request
+    
+    # Check if already processed
+    existing = db.query('SELECT * FROM charges WHERE request_id = ?', request_id)
+    if existing:
+        return {'already_charged': True}
+    
+    # Atomic operation: charge only if request_id not exists
+    try:
+        db.execute(
+            'INSERT INTO charges (request_id, order_id, amount) VALUES (?, ?, ?)',
+            request_id, order_id, 100
+        )
+        return {'charged': True}
+    except DuplicateKeyError:
+        # Already charged, return same response
+        return {'already_charged': True}
+```
+
+## Serverless vs Containers vs VMs
+
+<Vs items={[
+{
+    label: "Serverless (Lambda)",
+    points: [
+      "Pay-per-execution (no idle cost)",
+      "Scales 0 → 10K in milliseconds",
+      "Cold start latency (100ms-1s)",
+      "Stateless (external state required)",
+      "Max 15-minute execution time",
+      "Event-driven (async workloads)",
+      "Best for: Bursty, event-driven, unpredictable load"
+    ]
+  },
+{
+    label: "Containers (Kubernetes)",
+    points: [
+      "Pay for reserved capacity (even idle)",
+      "Scales slowly (seconds to minutes)",
+      "Consistent latency (no cold starts)",
+      "Stateful (local volumes possible)",
+      "Unlimited execution time",
+      "Long-lived processes",
+      "Best for: High-throughput, steady load, complex apps"
+    ]
+  },
+{
+    label: "VMs (EC2)",
+    points: [
+      "Hourly billing (expensive idle)",
+      "Manual scaling (operator-driven)",
+      "Boot time (30s-2m)",
+      "Full OS (legacy app support)",
+      "Unlimited execution time",
+      "Persistent state (local disk)",
+      "Best for: Legacy apps, long jobs, full control needed"
+    ]
+  }
+]} />
+
+## Common Patterns and Pitfalls
+
+<Showcase sections={[
+  {
+    title: "Pitfall: Assuming Idempotency",
+    description: "Function invoked twice (retries, timeouts). Second invocation charges customer twice.",
+    fix: "Design for idempotency. Use request ID for deduplication. Atomic operations."
+  },
+  {
+    title: "Pitfall: Cold Start Surprises",
+    description: "Works in staging (warm), slow in production (cold). Users complain.",
+    fix: "Test cold starts in production. Use provisioned concurrency for critical paths."
+  },
+  {
+    title: "Pitfall: Timeout Errors",
+    description: "Function times out silently. Work partially completed. Retry tries again.",
+    fix: "Check remaining_time_in_millis(). Don't start work within 5s of timeout."
+  },
+  {
+    title: "Pitfall: State in Function Code",
+    description: "Global variables shared across warm invocations. Data persists unexpectedly.",
+    fix: "Treat globals as potentially shared. Use external state (DB, cache)."
+  },
+  {
+    title: "Pattern: Fan-Out",
+    description: "Single event triggers multiple function invocations (SNS, SQS).",
+    fix: "Decouples processing. Enables parallel work."
+  },
+  {
+    title: "Pattern: Orchestration",
+    description: "Step Functions coordinate complex workflows (validate → charge → fulfill).",
+    fix: "Manage error handling, retries, timeouts at orchestration level."
+  }
+]} />
+
+## Serverless Checklist
+
+<Checklist items={[
+  "Is the workload event-driven (not continuous)?",
+  "Does execution time stay under 5 minutes (most cases)?",
+  "Is bursty scaling acceptable (not predictable load)?",
+  "Can state be stored externally (DynamoDB, S3)?",
+  "Is cold-start latency acceptable (or use provisioned concurrency)?",
+  "Are functions designed for idempotency?",
+  "Is error handling implemented (retries, DLQ)?",
+  "Are timeouts configured appropriately?",
+  "Is monitoring/logging in place (CloudWatch)?",
+  "Have you estimated costs (pay-per-execution)?",
+]} />
+
+## Self-Check
+
+1. **What's a cold start, and when does it happen?** First invocation in new container (~100ms-1s). Warm reuses (~5-50ms).
+2. **Why design for idempotency?** Functions may be invoked twice. Idempotency ensures same result.
+3. **How do you keep containers warm?** Provisioned concurrency or scheduled warmup invocations.
+4. **What's the 15-minute limit?** Max execution time per invocation. Design for shorter operations.
+5. **When to use serverless vs containers?** Serverless: bursty, event-driven. Containers: predictable, high-throughput.
+
+:::info
+**One Takeaway**: Serverless excels at event-driven workloads where scaling to zero saves costs. For user-facing APIs, use provisioned concurrency to hide cold starts. For background jobs, accept cold-start latency.
+:::
+
+## Next Steps
+
+- Set up **monitoring/alarms** (CloudWatch, X-Ray)
+- Implement **structured logging** (JSON logs for easier debugging)
+- Design **error handling** (DLQ, retry logic)
+- Learn **Step Functions** for complex workflows
+- Estimate **costs** using AWS calculator
+
+## References
+
+- AWS Lambda Best Practices: https://docs.aws.amazon.com/lambda/latest/dg/best-practices.html
+- Google Cloud Functions: https://cloud.google.com/functions
+- Azure Functions: https://azure.microsoft.com/en-us/services/functions/
+- Serverless Framework: https://www.serverless.com/
+- Cold Start Analysis: https://www.paulswail.com/2021/04/aws-lambda-cold-start-analysis.html
+
+## Advanced Patterns and Production Considerations
+
+### Cost Optimization
+
+**Pricing model review:**
+- Invocations: $0.20 per 1 million calls
+- Compute: $0.0000166667 per GB-second ($0.60 per GB-month)
+- Storage: Varies by service
+
+**Example cost calculation:**
+```
+Scenario: Process 1M orders/month
+- Function: 512MB memory, 1 second execution
+- Invocations: 1,000,000 × $0.20/1M = $0.20
+- Compute: 1,000,000 × 1s × (512/1024) GB = 500K GB-s
+  500K × $0.0000166667 = $8.33
+- Total: ~$8.53/month (plus taxes, data transfer, etc.)
+
+Same workload on containers:
+- Single t3.medium (2 vCPU, 4GB): $30/month
+- Reserve instance: $12-15/month (better deal if consistent)
+
+Verdict: Serverless cheaper for <10K invocations/month
+         Containers cheaper for >50K invocations/month
+         Break-even around 20K invocations
+```
+
+**Cost optimization strategies:**
+1. Right-size memory: More memory = faster execution = lower compute cost
+2. Reduce invocations: Batch smaller requests
+3. Use provisioned concurrency sparingly (only critical paths)
+4. Cache results: Don't recompute
+5. Optimize cold starts: Less initialization = lower cost
+6. Monitor CloudWatch costs: Logs and metrics also add up
+
+### Error Handling and Resilience
+
+**Dead-Letter Queues (DLQ):**
+```
+Normal Flow:
+  Event → SQS → Lambda → DynamoDB ✓
+
+Error Case:
+  Event → SQS → Lambda → Error! → DLQ (for manual review)
+  
+Alerts: Ops team notified of failures
+Recovery: Replay from DLQ once fixed
+```
+
+**Retry policies:**
+```yaml
+MaximumEventAge: 3600  # Don't retry older than 1 hour
+MaximumRetryAttempts: 2  # Retry up to 2 times
+```
+
+**Timeout handling:**
+```python
+def lambda_handler(event, context):
+    remaining_ms = context.get_remaining_time_in_millis()
+    
+    if remaining_ms < 5000:
+        # Less than 5 seconds left, don't start work
+        # Return gracefully, let system retry
+        return {'statusCode': 202, 'message': 'In progress'}
+    
+    # Safe to do work
+    process_order()
+    return {'statusCode': 200}
+```
+
+### Monitoring and Observability
+
+**Key metrics:**
+- Invocation count: How many times called?
+- Duration: How long per invocation?
+- Error rate: What % fail?
+- Throttling: Hitting concurrency limits?
+- Cold starts: How often?
+
+**CloudWatch alarms:**
+```
+Alert if:
+  - Error rate > 1%
+  - Duration p99 > 10 seconds (expected 1s)
+  - Throttling events occur
+  - DLQ has messages
+```
+
+**X-Ray tracing:**
+```python
+from aws_xray_sdk.core import xray_recorder
+
+@xray_recorder.capture('database_query')
+def query_order(order_id):
+    # X-Ray tracks timing, errors, etc.
+    return dynamodb.get_item(...)
+
+# Visualize: X-Ray service map shows which services called
+# Performance timeline for each request
+```
+
+### Hybrid Architectures
+
+**When to use which compute:**
+
+| Workload | Best Option | Why |
+|----------|------------|-----|
+| Real-time API | Containers | Low latency, no cold start |
+| Event processor | Serverless | Cost-effective, scales with events |
+| Scheduled job | Serverless | Runs on schedule, pay for runtime |
+| Long-running | Containers | Unlimited execution time |
+| Batch processing | Containers or Spot VMs | Cost-optimized for large volume |
+| Spiky traffic | Serverless | Auto-scales instantly |
+| Predictable load | Containers | Reserved instances cheaper |
+
+**Example e-commerce:**
+```
+API Gateway → Containers (consistent latency)
+  ├─ Orders Service (steady traffic, need low latency)
+  └─ User Service (steady traffic)
+
+SNS → Lambda (event-driven)
+  ├─ Process Payment (async, bursty)
+  ├─ Send Notifications (bursty)
+  └─ Update Analytics (bursty)
+
+Scheduled → Lambda
+  ├─ Cleanup old sessions (daily)
+  └─ Generate reports (nightly)
+
+Cost: Containers handle steady load efficiently
+      Serverless handles bursty events cheaply
+      Hybrid = best of both worlds
+```
+

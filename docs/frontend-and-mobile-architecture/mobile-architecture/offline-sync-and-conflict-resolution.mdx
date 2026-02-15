@@ -1,0 +1,412 @@
+---
+sidebar_position: 2
+title: Offline Sync & Conflict Resolution
+description: Client-side state, server sync, and handling concurrent edits
+docType: deep-dive
+difficulty: advanced
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","mobile-lead"]
+keywords: ["offline-first","sync","conflict-resolution","operational-transform","crdt","eventual-consistency"]
+image: /img/archman-social-card.webp
+tags: ["mobile","offline-first","data-sync"]
+hide_title: true
+---
+
+<Hero
+  title="Offline Sync & Conflict Resolution"
+  description="Enable offline editing with smart sync and conflict resolution when reconnected"
+  size="large"
+/>
+
+## TL;DR
+
+**Local-First**: Store all data locally (SQLite, Realm), cache server responses, never force cloud-only.
+
+**Conflict Resolution**: Last-write-wins (simple, lossy), Operational Transform (complex, rich), CRDTs (powerful, emergent consistency).
+
+**Sync Strategies**: Queue writes offline, retry on reconnect, merge conflicts, notify user of resolutions.
+
+**Eventual Consistency**: Accept temporary divergence; guarantee convergence when online.
+
+## Learning Objectives
+
+You will be able to:
+- Design local-first data architectures that work offline.
+- Implement reliable sync with retry logic and idempotency.
+- Choose and implement conflict resolution strategies.
+- Handle edge cases (app crash during sync, network flakiness).
+- Test offline scenarios and conflict scenarios.
+
+## Motivating Scenario
+
+User edits document offline (title, content). Meanwhile, another user edits same document online. When offline user reconnects:
+- Both have changes
+- Which wins? Title: user A's version, content: user B's version? Or one overwrites the other?
+- User expects both changes merged
+
+Without proper sync: last write wins (other changes lost) or error (sync fails).
+With proper sync: changes merged intelligently, user notified of any conflicts.
+
+## Core Concepts
+
+### Local-First Architecture
+
+All data stored locally first, server is backup/sync target:
+
+```
+App → Local Storage (SQLite/Realm)
+      ↓
+      Network
+      ↓
+      Server
+
+Works offline (local), syncs when online.
+```
+
+Benefits:
+- Instant reads (no network wait)
+- Works offline automatically
+- Faster perceived performance
+- Network glitches don't break app
+
+### Write Queue Pattern
+
+Queue writes locally, replay when online:
+
+<Tabs>
+<TabItem value="writequeue" label="Write Queue Implementation">
+```kotlin title="WriteQueue.kt" showLineNumbers
+data class WriteOperation(
+  val id: String,
+  val type: String, // "create", "update", "delete"
+  val entityId: String,
+  val data: Map<String, Any>,
+  val timestamp: Long,
+  var synced: Boolean = false,
+  var error: String? = null,
+)
+
+class OfflineSyncManager(val db: Database) {
+  fun queueWrite(operation: WriteOperation) {
+    // Store in local queue table
+    db.insertWrite(operation)
+
+    // Try to sync immediately if online
+    if (isOnline()) {
+      syncWrites()
+    }
+  }
+
+  fun syncWrites() {
+    val writes = db.getPendingWrites()
+
+    writes.forEach { write ->
+      try {
+        val response = api.sync(write)
+
+        // Mark synced
+        db.updateWrite(write.id, synced = true)
+
+        // Update local state with server response
+        db.updateEntity(write.entityId, response)
+      } catch (e: Exception) {
+        write.error = e.message
+        db.updateWrite(write.id, error = e.message)
+        // Will retry later
+      }
+    }
+  }
+}
+```
+</TabItem>
+<TabItem value="idempotency" label="Idempotent Operations">
+```kotlin title="IdempotentOps.kt" showLineNumbers
+// Server: idempotent operations (safe to retry)
+data class SyncRequest(
+  val operationId: String, // Unique per operation
+  val type: String,
+  val data: Map<String, Any>,
+)
+
+// Server endpoint
+@PostMapping("/api/sync")
+fun syncOperation(@RequestBody req: SyncRequest): Response {
+  // Check if operation already processed
+  val existing = db.find(
+    "SELECT * FROM processed_ops WHERE operation_id = ?",
+    req.operationId
+  )
+
+  if (existing != null) {
+    return existing.response // Replay cached response
+  }
+
+  // Process operation
+  val result = processOperation(req)
+
+  // Store result for deduplication
+  db.insert("processed_ops", {
+    operation_id = req.operationId
+    response = result
+    timestamp = now()
+  })
+
+  return result
+}
+
+// Client: retry with same operationId
+fun submitWrite(write: WriteOperation) {
+  while (true) {
+    try {
+      api.sync(SyncRequest(
+        operationId = write.id,
+        type = write.type,
+        data = write.data
+      ))
+      return // Success
+    } catch (e: Exception) {
+      // Safe to retry with same operationId
+      // Server deduplicates
+    }
+  }
+}
+```
+</TabItem>
+</Tabs>
+
+### Conflict Resolution Strategies
+
+#### 1. Last-Write-Wins (LWW)
+
+Simplest: newer timestamp overwrites older.
+
+```
+Client write @ 10:00
+Server write @ 10:05
+Result: Server write wins (later timestamp)
+```
+
+**Pros**: Simple, no complex logic
+**Cons**: Data loss (client changes discarded)
+
+```kotlin title="LastWriteWins.kt" showLineNumbers
+fun resolveConflict(client: Document, server: Document): Document {
+  return if (client.timestamp > server.timestamp) client else server
+}
+```
+
+#### 2. Operational Transform (OT)
+
+Google Docs approach: transform operations to account for concurrent edits.
+
+```
+Client: Insert "Hello" at position 0
+Server: Insert "World" at position 0
+Result: Both inserts processed correctly ("HelloWorld" or "WorldHello")
+```
+
+**Pros**: Preserves both changes
+**Cons**: Complex, hard to implement correctly
+
+```kotlin title="OperationalTransform.kt" showLineNumbers
+sealed class Operation {
+  data class Insert(val position: Int, val text: String) : Operation()
+  data class Delete(val position: Int, val length: Int) : Operation()
+}
+
+fun transform(op1: Operation, op2: Operation): Operation {
+  // Adjust op1 to account for op2's position changes
+  return when {
+    op1 is Insert && op2 is Insert ->
+      if (op1.position <= op2.position)
+        op1 // Position unchanged
+      else
+        Insert(op1.position + op2.text.length, op1.text) // Shift position
+    // ... handle other combinations
+    else -> op1
+  }
+}
+```
+
+#### 3. CRDTs (Conflict-free Replicated Data Types)
+
+Structure data so conflicts resolve automatically (no central authority needed).
+
+**Pros**: Decentralized, mathematically guaranteed convergence
+**Cons**: Complex data structures, overhead
+
+```kotlin title="CRDTExample.kt" showLineNumbers
+// Last-Writer-Wins Register (CRDT)
+data class Register<T>(
+  val value: T,
+  val timestamp: Long,
+  val nodeId: String, // Unique node identifier
+)
+
+fun merge(local: Register<String>, remote: Register<String>): Register<String> {
+  return when {
+    remote.timestamp > local.timestamp -> remote // Remote newer
+    remote.timestamp < local.timestamp -> local  // Local newer
+    remote.timestamp == local.timestamp ->
+      // Tie: use node ID as tiebreaker (total order)
+      if (remote.nodeId > local.nodeId) remote else local
+  }
+}
+
+// Client-side merge
+val local = Register("Hello", 10000, "device-1")
+val remote = Register("World", 10000, "device-2")
+val merged = merge(local, remote)
+// Result: deterministic (same on all devices)
+```
+
+## Sync Patterns
+
+### Pattern: Exponential Backoff on Sync Failure
+
+Retry failed syncs with increasing delays:
+
+```kotlin title="SyncBackoff.kt" showLineNumbers
+var retryCount = 0
+val maxRetries = 10
+val baseDelay = 1000L // 1 second
+
+fun retrySyncWithBackoff(write: WriteOperation) {
+  val delay = baseDelay * Math.pow(2.0, retryCount.toDouble()).toLong()
+
+  Handler().postDelayed({
+    try {
+      api.sync(write)
+      retryCount = 0 // Reset on success
+    } catch (e: Exception) {
+      if (retryCount < maxRetries) {
+        retryCount++
+        retrySyncWithBackoff(write)
+      }
+    }
+  }, delay)
+}
+```
+
+### Pattern: Differential Sync
+
+Only sync changed fields, not entire document:
+
+```kotlin title="DifferentialSync.kt" showLineNumbers
+data class Change(
+  val entityId: String,
+  val field: String,
+  val oldValue: Any,
+  val newValue: Any,
+  val timestamp: Long,
+)
+
+// Client tracks field-level changes
+fun trackChange(field: String, oldValue: Any, newValue: Any) {
+  val change = Change(
+    entityId = "doc-1",
+    field = field,
+    oldValue = oldValue,
+    newValue = newValue,
+    timestamp = System.currentTimeMillis()
+  )
+  db.insertChange(change)
+}
+
+// Sync only changed fields
+fun syncChanges() {
+  val changes = db.getPendingChanges()
+  api.syncChanges(changes)
+}
+```
+
+## Pitfalls & Solutions
+
+### Pitfall: Sync Lost on App Crash
+
+**Problem**: App crashes during sync, changes never sent.
+
+**Solution**: Use write queue with persistence. Mark synced after confirmed.
+
+### Pitfall: Duplicate Syncs
+
+**Problem**: Network retry sends same change twice, creates duplicate.
+
+**Solution**: Idempotent operations + deduplication (see earlier code).
+
+### Pitfall: User Confusion on Conflicts
+
+**Problem**: User unaware changes were discarded (LWW).
+
+**Solution**: Notify user explicitly, show conflict resolution UI.
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is all data stored locally (SQLite/Realm)?",
+  "Are writes queued locally before syncing?",
+  "Is sync operation idempotent (safe to retry)?",
+  "Is conflict resolution strategy documented?",
+  "Are edge cases handled (app crash, network flakiness)?",
+  "Is user notified of sync failures/conflicts?",
+  "Can app function fully offline?",
+  "Is sync tested in offline scenarios?",
+  "Are old/stale writes cleaned up (prevent queue bloat)?",
+  "Is performance monitored (sync latency, battery impact)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Use Local-First Sync When:**
+- Mobile users on unreliable networks
+- Offline functionality critical
+- Collaborative editing (multiple users)
+- Responsiveness important (instant writes)
+
+**Simpler Alternatives If:**
+- Web-only, always-online app
+- Stale reads acceptable
+- Data is read-heavy (no offline writes)
+
+## Showcase: Sync Strategies
+
+<Vs
+  title="Conflict Resolution Comparison"
+  columns={["Last-Write-Wins", "Operational Transform", "CRDTs"]}
+  rows={[
+    { aspect: "Complexity", values: ["Low", "High", "Very High"] },
+    { aspect: "Data Loss", values: ["Yes", "No", "No"] },
+    { aspect: "Requires Server", values: ["Yes", "Yes", "No"] },
+    { aspect: "Convergence", values: ["Immediate", "Immediate", "Eventual"] },
+    { aspect: "Real Examples", values: ["Most apps", "Google Docs", "Figma, CRDTs"] },
+  ]}
+/>
+
+## Self-Check
+
+1. **Why use a write queue instead of syncing immediately?**
+2. **What's the difference between LWW and OT conflict resolution?**
+3. **How would you prevent duplicate syncs when network retries occur?**
+
+## Next Steps
+
+- <a href="https://realm.io/docs/" target="_blank" rel="nofollow noopener noreferrer">Realm Database ↗️</a>
+- Study <a href="https://blog.kevinjahns.de/are-crdts-suitable-for-shared-editing/" target="_blank" rel="nofollow noopener noreferrer">CRDTs for Collaborative Apps ↗️</a>
+- Learn about <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/offline-first-and-caching-pwa-concepts" target="_blank" rel="nofollow noopener noreferrer">Offline-First Web Apps ↗️</a>
+- Explore <a href="https://yjs.dev/" target="_blank" rel="nofollow noopener noreferrer">Yjs: CRDT Library ↗️</a>
+
+## One Takeaway
+
+<Callout tone="info">
+Local-first architecture with write queuing enables seamless offline experiences. Choose conflict resolution based on data type: LWW for simple data, OT/CRDTs for collaborative editing. Test sync failures extensively—network flakiness will happen.
+</Callout>
+
+## References
+
+1. <a href="https://realm.io/docs/" target="_blank" rel="nofollow noopener noreferrer">Realm Database</a>
+2. <a href="https://www.sqlite.org/" target="_blank" rel="nofollow noopener noreferrer">SQLite Database</a>
+3. <a href="https://yjs.dev/" target="_blank" rel="nofollow noopener noreferrer">Yjs: Shared Data Types</a>
+4. <a href="https://automerge.org/" target="_blank" rel="nofollow noopener noreferrer">Automerge: CRDT Library</a>
+5. <a href="https://blog.kevinjahns.de/are-crdts-suitable-for-shared-editing/" target="_blank" rel="nofollow noopener noreferrer">CRDTs for Shared Editing</a>
+---

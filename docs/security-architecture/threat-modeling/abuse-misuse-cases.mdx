@@ -1,0 +1,468 @@
+---
+sidebar_position: 3
+title: "Abuse and Misuse Cases"
+description: "Think like an attacker to find vulnerabilities in workflows"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [architect, lead]
+keywords: [abuse cases, misuse cases, malicious actors, threat scenarios, user workflows, adversarial thinking]
+image: /img/archman-social-card.webp
+tags: [threat-modeling, abuse-cases, misuse-cases, adversarial-thinking, threat-scenarios, user-workflows, security-testing]
+hide_title: true
+---
+
+<Hero title="Abuse and Misuse Cases" subtitle="Think like an attacker to find vulnerabilities" imageAlt="Adversarial thinking illustration" size="large" />
+
+## TL;DR
+
+**Use Cases** describe normal user workflows (Actor: User, Goal: Buy product). **Abuse Cases** describe malicious actors exploiting the system (Actor: Fraudster, Goal: Charge credit cards without payment). **Misuse Cases** describe mistakes or negligence (Actor: Employee, Goal: [Accidentally] Delete customer data). Where use cases assume good intent, abuse/misuse cases assume bad intent or mistakes. This complementary view catches vulnerabilities functional requirements miss.
+
+## Learning Objectives
+
+- Distinguish use cases from abuse/misuse cases
+- Identify malicious actors and motivations
+- Design workflows resilient to abuse
+- Think adversarially about features
+- Test for misuse scenarios
+
+## Motivating Scenario
+
+A team designs a photo-sharing feature: "Users upload photos, share with friends, set privacy to public/private." The use case is happy path. But abuse cases:
+- Attacker uploads child exploitation material
+- User impersonates another user's photos
+- Attacker scrapes all public photos at scale
+
+Misuse cases:
+- Employee accidentally deletes all photos due to buggy migration
+- User marks thousands of false DMCA claims to censor content
+
+These scenarios weren't in the use case but deeply affect design.
+
+## Core Concepts
+
+### Use Case vs Abuse Case vs Misuse Case
+
+**Use Case** (Normal):
+```
+Actor: Alice
+Goal: Share vacation photos
+Precondition: Alice has photos
+Main Flow:
+  1. Upload photos to system
+  2. Select friends to share with
+  3. Set privacy to "shared with selected"
+Postcondition: Friends can view photos
+```
+
+**Abuse Case** (Malicious):
+```
+Actor: Bob (Fraudster)
+Goal: Steal payment methods via fake service
+Precondition: Bob has fake website
+Attack Flow:
+  1. Create fake reviews to build reputation
+  2. Trick user into sharing payment method
+  3. Charge unauthorized amounts
+  4. Delete transaction records
+Postcondition: User discovers fraudulent charges; reputation destroyed
+```
+
+**Misuse Case** (Negligent):
+```
+Actor: Carol (Developer)
+Goal: Clear old photos [to reduce storage costs]
+Precondition: Carol has database admin access
+Negligent Flow:
+  1. Runs DELETE from photos WHERE created_at < '2020-01-01'
+  2. Typo: WHERE clause evaluates to true
+  3. Deletes all photos in database
+Postcondition: System down; customer data lost
+```
+
+### Malicious Actors
+
+Common attacker profiles to consider:
+
+| Actor | Motivation | Capabilities | Example Attack |
+|-------|-----------|--------------|-----------------|
+| External Hacker | Steal data, ransom, glory | High technical skill, time | SQL injection, brute force |
+| Fraudster | Financial gain | Medium skill, social engineering | Fake reviews, payment fraud |
+| Competitor | Damage reputation | High motivation, some technical skill | Scrape data, DOS |
+| Disgruntled Employee | Revenge | High access, knowledge of systems | Delete data, steal secrets |
+| Casual Script Kiddy | Entertainment | Low skill, uses existing tools | Automated scanning, exploitation |
+| State Actor | Espionage, sabotage | Unlimited resources | Advanced zero-days, supply chain attacks |
+
+## Practical Example
+
+<Tabs>
+<TabItem value="ecommerce" label="E-commerce Abuse Cases">
+
+```
+NORMAL USE CASE:
+Actor: Customer
+Goal: Purchase product
+Flow: Browse → Select item → Checkout → Pay → Receive
+
+ABUSE CASES:
+
+1. Fraudulent Purchase
+   Actor: Attacker
+   Precondition: Attacker has stolen credit card
+   Goal: Purchase items without owner's permission
+   Attack: Use stolen card, change shipping address
+   Impact: Customer charged, attacker receives goods
+   Mitigation:
+     - Address Verification System (AVS)
+     - CVV verification
+     - Velocity checks (flag sudden location change)
+     - 3D Secure authentication
+
+2. Refund Fraud
+   Actor: Attacker
+   Goal: Keep item and refund money
+   Attack: "Item never arrived" → Return claim
+   Impact: Double-paid (attacker gets item AND refund)
+   Mitigation:
+     - Signature on delivery
+     - Photo proof of condition
+     - Return-to-sender verification
+     - Address matching
+
+3. Inventory Depletion DOS
+   Actor: Competitor
+   Goal: Make limited items unavailable
+   Attack: Bot places orders for all inventory
+   Impact: Legitimate customers can't buy
+   Mitigation:
+     - Rate limiting per IP/account
+     - CAPTCHA after N orders
+     - Account age/verification required
+     - Wait-list for out-of-stock items
+
+MISUSE CASES:
+
+1. Accidental Inventory Deletion
+   Actor: Warehouse employee
+   Precondition: Access to inventory system
+   Goal: [Accidentally] update inventory
+   Negligent Flow: Runs inventory_reset = true globally
+   Impact: All products marked out of stock
+   Mitigation:
+     - Confirmation dialog on destructive actions
+     - Audit logging
+     - Soft deletes (mark inactive, not truly delete)
+     - Role-based permissions (employee can't delete)
+
+2. GDPR Deletion Failure
+   Actor: System
+   Precondition: User requests data deletion
+   Goal: [Accidentally] incomplete deletion
+   Negligent Flow: Deletes customer table, misses referral table
+   Impact: Customer data persists, GDPR violation
+   Mitigation:
+     - Cascade delete rules
+     - Testing of deletion workflows
+     - Audit verification (confirm no traces remain)
+```
+
+</TabItem>
+<TabItem value="healthcare" label="Healthcare Abuse Cases">
+
+```
+NORMAL USE CASE:
+Actor: Patient
+Goal: Access my health records
+Flow: Login → View records → Request delivery
+
+ABUSE CASES:
+
+1. Unauthorized Access
+   Actor: Attacker
+   Goal: Read patient records without permission
+   Attack: Steal patient's login, brute force account
+   Impact: HIPAA violation, privacy breach
+   Mitigation:
+     - MFA required
+     - Account lockout after failed attempts
+     - Session timeout
+     - IP-based anomaly detection
+
+2. Bulk Data Extraction
+   Actor: Competitor researcher
+   Goal: Steal anonymized patient cohorts
+   Attack: Automated requests for large date ranges
+   Impact: Competitive intelligence, privacy violation
+   Mitigation:
+     - Rate limiting
+     - Aggregation (don't expose individual records)
+     - Data access audit
+     - Honeypot records (canaries)
+
+3. Record Tampering
+   Actor: Disgruntled provider
+   Goal: Alter patient diagnosis to harm them
+   Attack: Modify record, delete audit trail
+   Impact: Incorrect treatment, liability
+   Mitigation:
+     - Read-only after 30 days (no edits)
+     - Immutable audit log
+     - Digital signatures on records
+     - Provider-level permissions (can't edit others)
+
+MISUSE CASES:
+
+1. Test Data in Production
+   Actor: Developer
+   Goal: [Accidentally] deploy test data
+   Negligent Flow: Prod database synced from staging, test patient data included
+   Impact: Fake patients in system, confusion
+   Mitigation:
+     - Separate prod and dev databases
+     - Data sanitization on deployments
+     - Prod access restricted to minimal staff
+```
+
+</TabItem>
+</Tabs>
+
+## Brainstorming Abuse Cases
+
+Ask questions systematically:
+
+**Motivation**:
+- What could an attacker gain? (Money, data, reputation, disruption)
+- Who would want to hurt this system? (Competitors, insiders, ideological)
+
+**Capability**:
+- What technical skills required? (Script kiddie vs nation-state)
+- What access required? (None, user account, admin access)
+
+**Attack Vector**:
+- What features could be abused? (Sharing, uploads, permissions, payments)
+- What happens if normal flow bypassed? (Authentication skipped, validation removed)
+
+**Business Impact**:
+- What's the worst outcome? (Data loss, reputation, legal liability)
+- How long could it go undetected? (Hours, weeks, months)
+
+## Design Review Checklist
+
+- [ ] Abuse cases identified for each feature
+- [ ] Common attacker profiles considered (hacker, fraudster, insider, competitor)
+- [ ] Mitigations designed for high-impact abuse cases
+- [ ] Rate limiting in place
+- [ ] Audit logging captures suspicious activity
+- [ ] Anomaly detection or monitoring alerts on abuse patterns
+- [ ] Misuse cases tested (employee mistakes, accidental deletes)
+- [ ] Permissions enforced (user can't exceed role)
+- [ ] Sensitive actions require extra verification (confirm/OTP)
+- [ ] Recovery possible if abuse occurs (backups, audit restore)
+
+## Self-Check
+
+- Name three abuse cases for a social media platform
+- What misuse case could happen if permissions are misconfigured?
+- Which attacker type would be hardest to stop: external hacker or insider?
+
+:::info One Takeaway
+Normal use cases show how users should behave; abuse cases show how attackers will behave. Both matter.
+
+:::
+
+## Advanced Scenarios and Mitigations
+
+### Financial Services Abuse Cases
+
+```
+NORMAL USE CASE:
+Actor: Customer
+Goal: Transfer money between accounts
+Flow: Login → Select recipient → Confirm amount → Transfer complete
+
+ABUSE CASES:
+
+1. Account Takeover via Credential Stuffing
+   Actor: Attacker
+   Precondition: Attacker has list of leaked credentials from other breaches
+   Goal: Access customer account
+   Attack: Try credentials on login endpoint repeatedly
+   Impact: Full account access, fund theft
+   Mitigation:
+     - MFA (blocks 99% of takeovers)
+     - Rate limiting (max 5 attempts per minute)
+     - Velocity checks (flag unusual IP/device)
+     - Lockout after N failed attempts
+     - Monitor for credential stuffing patterns
+
+2. Authorized Push Payment Fraud
+   Actor: Attacker (via social engineering)
+   Goal: Trick user into transferring to attacker's account
+   Attack: Call/SMS impersonating bank, claim fraud, convince customer to "move funds to safe account"
+   Impact: Customer loses money (banks often deny refund)
+   Mitigation:
+     - Customer education (banks never ask to move funds)
+     - Transaction delay (24 hours for new payees)
+     - Payee verification (second factor)
+     - Transaction limits (large transfers require extra verification)
+
+3. API Rate Limiting Bypass
+   Actor: Competitor
+   Goal: Enumerate valid accounts or DOS service
+   Attack: Script automated queries to balance check endpoint
+   Impact: Service overload, privacy disclosure
+   Mitigation:
+     - Per-user rate limits, not just per-IP
+     - Exponential backoff penalties
+     - CAPTCHA after N requests
+     - Audit logging for abuse patterns
+
+MISUSE CASES:
+
+1. Batch Processing Error
+   Actor: Operations team
+   Precondition: Running monthly reconciliation job
+   Goal: [Accidentally] double-process refunds
+   Negligent Flow: Cron job runs twice due to misconfiguration, processes refunds twice
+   Impact: Customers over-refunded, financial liability
+   Mitigation:
+     - Idempotent processing (safe to retry)
+     - Duplicate detection
+     - Cron job monitoring (alert on unexpected runs)
+     - Test refund logic thoroughly
+
+2. Insufficient Access Control on Admin Endpoints
+   Actor: Customer service rep
+   Precondition: CSR account with limited permissions
+   Goal: [Accidentally] escalate own privileges
+   Negligent Flow: CSR can view user admin panel due to missing role check
+   Impact: Rogue CSR can modify accounts, transfer funds
+   Mitigation:
+     - Role-based access control (check role on every operation)
+     - Principle of least privilege (CSR can only view, not modify)
+     - Audit logging of admin actions
+     - Segregation of duties
+```
+
+### IoT/Connected Devices Abuse Cases
+
+```
+NORMAL USE CASE:
+Actor: User
+Goal: Control smart home devices via app
+Flow: Open app → Select device → Send command → Device responds
+
+ABUSE CASES:
+
+1. API Key Leakage
+   Actor: Attacker
+   Precondition: API key found in decompiled app or GitHub
+   Goal: Control devices remotely
+   Attack: Call device control APIs with stolen key
+   Impact: User's home controlled remotely, privacy violation
+   Mitigation:
+     - Keys in secure enclave, not decompiled app
+     - Key rotation on compromise
+     - Per-device tokens (revoke without affecting others)
+     - Rate limiting + anomaly detection on API
+
+2. Man-in-the-Middle Attack
+   Actor: Attacker on local WiFi
+   Goal: Intercept and modify device commands
+   Attack: Downgrade HTTPS to HTTP, inject malicious commands
+   Impact: Device malfunction, potential safety hazard
+   Mitigation:
+     - Certificate pinning
+     - TLS 1.2+ enforced
+     - Command signing (device validates authenticity)
+     - Over-the-air update signing
+
+3. Reverse Engineering Firmware
+   Actor: Competitor
+   Goal: Steal proprietary algorithms
+   Attack: Extract firmware from device, decompile
+   Impact: IP theft, market advantage lost
+   Mitigation:
+     - Code obfuscation
+     - Secure boot (verify firmware signature before execution)
+     - Trusted Platform Module (TPM) for key storage
+     - Regular security audits
+```
+
+## Threat Modeling Workshop
+
+Running an effective abuse/misuse case workshop:
+
+**Preparation** (1 hour):
+- Gather architects, engineers, security team
+- Define system scope (what features to analyze)
+- Create simple architecture diagram
+- List known threat actors relevant to your domain
+
+**Brainstorming** (2-3 hours):
+- Go feature-by-feature through normal use cases
+- Ask: "What if an attacker..."
+- Document all threats (don't filter during brainstorm)
+- Group similar threats (pattern matching)
+
+**Analysis** (1-2 hours):
+- Estimate impact (low, medium, high)
+- Estimate likelihood (low, medium, high)
+- Map to known attack types (STRIDE, LINDDUN)
+- Identify dependencies (fixing threat A prevents threat B)
+
+**Mitigation** (1-2 hours):
+- Brainstorm controls for high-impact threats
+- Assign ownership (who implements?)
+- Set timeline (critical by Q1, important by Q2)
+- Document assumptions and residual risk
+
+**Follow-up**:
+- Threat model is living document, update quarterly
+- Include in design review process for new features
+- Run red team exercises quarterly
+- Share findings with team for learning
+
+## Real-World Examples
+
+### Case Study 1: Instagram Photo Privacy
+
+**Normal Use Case**: User uploads photo, selects privacy (public/followers/private)
+
+**Abuse Case**: Attacker discovers information disclosure via search API
+- API allows searching photos by location metadata
+- Attacker can enumerate all private account photos at a specific location
+- Mitigation: Strip location metadata on upload, rate-limit search API
+
+### Case Study 2: Venmo Payment Visibility
+
+**Normal Use Case**: User sends payment to friend with note
+
+**Privacy Misuse Case**: Transactions are public by default
+- Researchers analyzed Venmo public data to infer drug dealers, salaries, relationships
+- Mitigation: Private by default (changed after publicity), opt-in public sharing
+
+### Case Study 3: Cloud Storage Default Sharing
+
+**Normal Use Case**: User uploads file to cloud storage
+
+**Misuse Case**: Developer accidentally makes file world-readable due to misconfigured bucket permissions
+- Tens of thousands of databases, medical records exposed
+- Mitigation: Default-deny permissions, warnings on public sharing, audit logging
+
+## Next Steps
+
+- Read **STRIDE, LINDDUN, PASTA** for systematic threat analysis
+- Study **Implementation** for specific defenses
+- Explore **Incident Response** for handling breaches when abuse occurs
+- Conduct threat modeling workshop for your system
+- Document findings and share with stakeholders
+
+## References
+
+- Abuse Cases (Gartner)
+- Misuse Cases (Software Assurance)
+- Attack Modeling (OWASP)
+- Threat Actor Types (MITRE ATT&CK)
+- Real-world threat case studies (Google, Amazon security blogs)

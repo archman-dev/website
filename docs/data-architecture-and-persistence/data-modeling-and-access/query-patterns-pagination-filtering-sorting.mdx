@@ -1,0 +1,537 @@
+---
+sidebar_position: 3
+title: "Query Patterns: Pagination, Filtering, Sorting"
+description: "Efficient data retrieval patterns for large result sets with filtering and sorting"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [pagination, filtering, sorting, cursors, offset-limit, search, query optimization]
+image: /img/archman-social-card.webp
+tags: [queries, pagination, filtering, sorting, cursors, offset-limit, performance, scalability]
+hide_title: true
+---
+
+<Hero title="Query Patterns: Pagination, Filtering, Sorting" subtitle="Efficient patterns for large result sets with user controls" size="large" />
+
+## TL;DR
+
+Offset-limit pagination is simple but slow on large offsets. Cursor-based pagination uses ordered unique columns for constant-time fetches. Filtering requires strategic indexes. Sorting is expensive; push to application if possible. Design queries to use indexes on WHERE and ORDER BY clauses.
+
+## Learning Objectives
+
+- Understand pagination trade-offs (offset-limit vs cursor)
+- Design efficient filtering with indexes
+- Optimize sorting in queries
+- Handle common query patterns at scale
+
+## Pagination Strategies
+
+<Vs items={[
+{
+    label: "Offset-Limit",
+    points: ["Simple implementation", "User-facing pagination UI", "Small datasets (&lt;10K rows)", "Unknown total count OK"]
+  },
+{
+    label: "Cursor-Based",
+    points: ["Large datasets (&gt;1M rows)", "Consistent ordering critical", "Real-time feeds (social media)", "Performance at scale"]
+  }
+]} />
+
+## Practical Examples
+
+<Tabs>
+<TabItem value="offset-limit" label="Offset-Limit Pagination">
+
+```sql
+-- Simple pagination: Page 2, 20 per page
+SELECT id, title, author FROM posts
+WHERE status = 'published'
+ORDER BY created_at DESC
+LIMIT 20 OFFSET 40;
+
+-- Problem: As offset grows, MySQL scans all rows up to offset
+-- Offset 1,000,000 scans 1M rows, then returns 20
+
+-- Optimization: Use indexed column for WHERE
+SELECT id, title, author FROM posts
+WHERE status = 'published' AND created_at < '2025-02-10'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+</TabItem>
+<TabItem value="cursor" label="Cursor-Based Pagination">
+
+```python
+# Cursor-based: Use unique ordered column
+def get_posts(cursor=None, limit=20):
+    query = "SELECT id, title, created_at FROM posts WHERE status = 'published'"
+    
+    if cursor:
+        # Cursor is the last created_at value from previous page
+        query += f" AND created_at < '{cursor}'"
+    
+    query += " ORDER BY created_at DESC LIMIT 21"  # +1 to detect if more
+    
+    posts = execute(query)
+    has_more = len(posts) > limit
+    posts = posts[:limit]
+    
+    next_cursor = posts[-1]['created_at'] if has_more else None
+    
+    return {
+        'posts': posts,
+        'next_cursor': next_cursor,
+        'has_more': has_more
+    }
+
+# Usage
+results = get_posts()
+# next results: get_posts(cursor=results['next_cursor'])
+```
+
+</TabItem>
+<TabItem value="filtering" label="Efficient Filtering">
+
+```sql
+-- Create indexes for common filters
+CREATE INDEX idx_posts_status_created ON posts(status, created_at DESC);
+CREATE INDEX idx_posts_author_published ON posts(author_id, status, published_at DESC);
+
+-- Efficient: Uses index
+SELECT * FROM posts
+WHERE status = 'published' AND author_id = 123
+ORDER BY published_at DESC
+LIMIT 20;
+
+-- Inefficient: No index on category
+SELECT * FROM posts
+WHERE category = 'tech' AND status = 'published'
+ORDER BY created_at DESC;
+
+-- Fix: Add index
+CREATE INDEX idx_posts_category_status ON posts(category, status, created_at DESC);
+
+-- Complex filtering: Use explain to verify index usage
+EXPLAIN SELECT * FROM posts
+WHERE status = 'published'
+AND category IN ('tech', 'science')
+AND author_id > 100
+ORDER BY created_at DESC;
+```
+
+</TabItem>
+<TabItem value="sorting" label="Sorting Strategies">
+
+```sql
+-- Efficient: Ordered by indexed column
+SELECT * FROM products
+WHERE category = 'electronics'
+ORDER BY created_at DESC  -- Indexed
+LIMIT 20;
+
+-- Inefficient: Sorting by non-indexed expression
+SELECT * FROM products
+WHERE category = 'electronics'
+ORDER BY price * discount DESC;  -- Costly
+
+-- Better: Precomputed column
+ALTER TABLE products ADD COLUMN discounted_price DECIMAL(10,2);
+UPDATE products SET discounted_price = price * (1 - discount);
+CREATE INDEX idx_products_discounted ON products(discounted_price DESC);
+
+-- Inefficient: Sorting by multiple columns without index
+SELECT * FROM orders
+WHERE customer_id = 1
+ORDER BY status, created_at DESC;
+
+-- Better: Composite index matching order
+CREATE INDEX idx_orders_status_date ON orders(status, created_at DESC);
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js Implementation">
+
+```javascript
+// Cursor-based pagination helper
+async function paginate(query, cursor = null, limit = 20) {
+  let sql = query;
+  const params = [];
+  
+  if (cursor) {
+    sql += ` AND id < ?`;
+    params.push(cursor);
+  }
+  
+  sql += ` ORDER BY id DESC LIMIT ?`;
+  params.push(limit + 1);  // +1 to detect more
+  
+  const rows = await db.query(sql, params);
+  const hasMore = rows.length > limit;
+  
+  return {
+    items: rows.slice(0, limit),
+    nextCursor: hasMore ? rows[limit - 1].id : null,
+    hasMore
+  };
+}
+
+// Filtering with validation
+function buildFilterQuery(filters) {
+  const validFields = ['status', 'author_id', 'category'];
+  const where = [];
+  const params = [];
+  
+  for (const [field, value] of Object.entries(filters)) {
+    if (!validFields.includes(field)) continue;
+    where.push(`${field} = ?`);
+    params.push(value);
+  }
+  
+  const query = 'SELECT * FROM posts WHERE ' + where.join(' AND ');
+  return { query, params };
+}
+
+// Usage
+const { query, params } = buildFilterQuery({
+  status: 'published',
+  author_id: 123
+});
+
+const results = await paginate(
+  query + ` AND (${params.map((_, i) => '?').join(' AND ')})`,
+  cursor,
+  20
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Keyset Pagination",
+      description: "Efficient for time-series: use created_at &lt; last_created_at",
+      tags: ["performance", "patterns"]
+    }, {
+      title: "Covering Indexes",
+      description: "Include all query columns in index to avoid row lookup",
+      tags: ["performance", "indexing"]
+    }, {
+      title: "Filter Early",
+      description: "Apply WHERE filters before pagination. Reduces dataset size",
+      tags: ["performance", "optimization"]
+    }, {
+      title: "Sort Complexity",
+      description: "Complex sorts on non-indexed columns are slow. Compute in application",
+      tags: ["optimization", "design"]
+    }, {
+      title: "Total Count Caching",
+      description: "SELECT COUNT is expensive. Cache count, update periodically",
+      tags: ["performance", "caching"]
+    }, {
+      title: "Explain Plans",
+      description: "Use EXPLAIN to verify indexes are used. Catch full table scans"
+    }]}
+/>
+
+## Common Query Pattern Mistakes
+
+### Mistake 1: No Index on WHERE Clause
+
+```sql
+-- WRONG: Full table scan even with where clause
+SELECT * FROM orders WHERE customer_id = 123;  -- No index
+-- Scans all 10M rows, returns 500
+
+-- RIGHT: Index on WHERE column
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+-- Index lookup: instant
+
+-- Impact: 10 seconds → 10ms (1000x improvement)
+```
+
+### Mistake 2: Sorting Without Index
+
+```sql
+-- WRONG: In-memory sort, expensive
+SELECT * FROM posts WHERE status = 'published'
+ORDER BY created_at DESC
+LIMIT 20;  -- Without index, MySQL sorts 100K results in memory
+
+-- RIGHT: Index supports both WHERE and ORDER
+CREATE INDEX idx_posts_status_created ON posts(status, created_at DESC);
+
+-- Impact: 500ms → 20ms
+```
+
+### Mistake 3: SELECT without LIMIT
+
+```python
+# WRONG: Can return millions of rows
+result = db.query("SELECT * FROM users")
+
+# RIGHT: Always paginate
+result = db.query("SELECT * FROM users LIMIT 20 OFFSET 0")
+
+# Impact: Crashes client, exhausts server memory
+```
+
+### Mistake 4: Sorting by Computed Column
+
+```sql
+-- WRONG: Computes for every row, no index
+SELECT * FROM products
+ORDER BY price * (1 - discount) DESC;  -- Expensive calculation
+
+-- RIGHT: Precompute and index
+CREATE INDEX idx_final_price ON products(final_price DESC);
+
+-- Impact: 2 seconds → 50ms
+```
+
+## Self-Check
+
+- Why is offset pagination slow for large offsets?
+- How does cursor-based pagination maintain consistency?
+- What index would you create for filtering+sorting?
+- When would you cache counts instead of computing?
+- Can you identify which queries in your application lack proper indexes?
+- What's the largest offset your application currently uses?
+- Are you monitoring query performance (explain plans)?
+- Do you know which queries are causing slowness?
+
+:::info
+Use offset-limit for small datasets and simple UIs; switch to cursor-based pagination for large result sets. Always ensure WHERE and ORDER BY clauses use indexes.
+:::
+
+## Next Steps
+
+- Explore **Indexing Strategies** for query optimization
+- Learn **Caching Patterns** for computed values
+- Study **Search Engines** for complex filtering
+- Dive into **Query Performance** monitoring
+
+## Advanced Query Optimization Patterns
+
+### Range Queries with Indexes
+
+```sql
+-- Create composite index for range queries
+CREATE INDEX idx_posts_created_at_status ON posts(created_at DESC, status);
+
+-- Efficient range query using index
+SELECT id, title, created_at
+FROM posts
+WHERE created_at BETWEEN '2025-01-01' AND '2025-02-14'
+AND status = 'published'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Verify index is used
+EXPLAIN ANALYZE
+SELECT * FROM posts
+WHERE created_at > '2025-01-01'
+AND status = 'published'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Without index: sequential scan (slow)
+-- With index: index range scan (fast)
+```
+
+### Full-Text Search Pagination
+
+```sql
+-- Full-text search with pagination
+CREATE INDEX idx_posts_fts ON posts USING GIN(to_tsvector('english', content));
+
+SELECT id, title, ts_rank(to_tsvector('english', content), plainto_tsquery('postgresql')) as rank
+FROM posts
+WHERE to_tsvector('english', content) @@ plainto_tsquery('postgresql')
+ORDER BY rank DESC
+LIMIT 20 OFFSET 0;
+
+-- Cursor-based version (more efficient)
+SELECT id, title, ts_rank(to_tsvector('english', content), plainto_tsquery('postgresql')) as rank
+FROM posts
+WHERE to_tsvector('english', content) @@ plainto_tsquery('postgresql')
+AND (rank, id) < (previous_rank, previous_id)  -- Cursor
+ORDER BY rank DESC, id DESC
+LIMIT 20;
+```
+
+### Complex Filtering with Multiple Conditions
+
+```python
+class AdvancedQueryBuilder:
+    """Build complex queries with multiple filters."""
+
+    def build_product_query(self, filters: dict) -> str:
+        """Build query with flexible filtering."""
+        query = "SELECT * FROM products WHERE 1=1"
+        params = []
+
+        # Dynamic WHERE clauses
+        if 'category' in filters:
+            query += " AND category = %s"
+            params.append(filters['category'])
+
+        if 'price_min' in filters and 'price_max' in filters:
+            query += " AND price BETWEEN %s AND %s"
+            params.extend([filters['price_min'], filters['price_max']])
+
+        if 'in_stock' in filters and filters['in_stock']:
+            query += " AND quantity > 0"
+
+        if 'rating_min' in filters:
+            query += " AND avg_rating >= %s"
+            params.append(filters['rating_min'])
+
+        if 'search' in filters:
+            # Full-text search
+            query += " AND to_tsvector(title || ' ' || description) @@ plainto_tsquery(%s)"
+            params.append(filters['search'])
+
+        # Sorting
+        sort_field = filters.get('sort', 'created_at')
+        sort_dir = filters.get('sort_dir', 'DESC')
+        query += f" ORDER BY {sort_field} {sort_dir}"
+
+        # Pagination
+        limit = min(int(filters.get('limit', 20)), 100)  # Max 100
+        offset = int(filters.get('offset', 0))
+        query += f" LIMIT {limit} OFFSET {offset}"
+
+        return query, params
+
+# Usage
+builder = AdvancedQueryBuilder()
+query, params = builder.build_product_query({
+    'category': 'electronics',
+    'price_min': 50,
+    'price_max': 500,
+    'in_stock': True,
+    'rating_min': 4.0,
+    'search': 'laptop',
+    'sort': 'price',
+    'sort_dir': 'ASC',
+    'limit': 20,
+    'offset': 0
+})
+```
+
+### Lazy Loading and N+1 Prevention
+
+```python
+class LazyLoadingOptimization:
+    """Avoid N+1 query problem."""
+
+    # WRONG: N+1 queries
+    def get_users_with_posts_bad(self):
+        users = self.db.query("SELECT * FROM users")
+        for user in users:
+            user.posts = self.db.query(
+                "SELECT * FROM posts WHERE user_id = %s", [user.id]
+            )  # N queries!
+        return users
+
+    # RIGHT: Single query with JOIN
+    def get_users_with_posts_good(self):
+        return self.db.query("""
+            SELECT u.*, p.*
+            FROM users u
+            LEFT JOIN posts p ON u.id = p.user_id
+            ORDER BY u.id, p.created_at DESC
+        """)
+
+    # RIGHT with cursor-based pagination
+    def get_users_paginated_with_posts(self, cursor=None, limit=20):
+        query = """
+            SELECT u.id, u.name, p.id as post_id, p.title
+            FROM users u
+            LEFT JOIN posts p ON u.id = p.user_id
+        """
+
+        if cursor:
+            query += f" WHERE u.id > {cursor}"
+
+        query += " ORDER BY u.id, p.created_at DESC"
+        query += f" LIMIT {limit + 1}"
+
+        rows = self.db.query(query)
+
+        # Group by user
+        result = {}
+        for row in rows:
+            if row['id'] not in result:
+                result[row['id']] = {
+                    'id': row['id'],
+                    'name': row['name'],
+                    'posts': []
+                }
+            if row['post_id']:
+                result[row['id']]['posts'].append({
+                    'id': row['post_id'],
+                    'title': row['title']
+                })
+
+        return list(result.values())[:limit]
+```
+
+## Performance Benchmarking
+
+```python
+import time
+import statistics
+
+class QueryBenchmark:
+    """Benchmark query performance."""
+
+    def benchmark_pagination_strategy(self, strategy_name: str, query_func):
+        """Measure latency and throughput."""
+        times = []
+
+        for _ in range(10):
+            start = time.time()
+            result = query_func()
+            elapsed = time.time() - start
+            times.append(elapsed)
+
+        return {
+            'strategy': strategy_name,
+            'min_ms': min(times) * 1000,
+            'max_ms': max(times) * 1000,
+            'avg_ms': statistics.mean(times) * 1000,
+            'p99_ms': sorted(times)[9] * 1000
+        }
+
+    def compare_pagination_strategies(self):
+        """Compare offset vs cursor pagination."""
+        offset_result = self.benchmark_pagination_strategy(
+            'offset-limit',
+            lambda: self._query_offset_pagination()
+        )
+
+        cursor_result = self.benchmark_pagination_strategy(
+            'cursor-based',
+            lambda: self._query_cursor_pagination()
+        )
+
+        print(f"Offset: {offset_result['avg_ms']:.2f}ms (p99: {offset_result['p99_ms']:.2f}ms)")
+        print(f"Cursor: {cursor_result['avg_ms']:.2f}ms (p99: {cursor_result['p99_ms']:.2f}ms)")
+
+        if cursor_result['avg_ms'] < offset_result['avg_ms']:
+            print("✓ Cursor pagination is faster")
+```
+
+## References
+
+- PostgreSQL Documentation on Indexes
+- MySQL Optimization Guide
+- "Use the Index, Luke" by Markus Winand
+- "High Performance MySQL" by Schwartz, Zaitsev, Tkachenko
+- "Designing Data-Intensive Applications" by Martin Kleppmann

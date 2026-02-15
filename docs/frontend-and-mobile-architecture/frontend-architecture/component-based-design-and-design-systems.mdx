@@ -1,0 +1,569 @@
+---
+sidebar_position: 2
+title: Component-Based Design & Design Systems
+description: Reusable components, design tokens, and living documentation
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","designer"]
+keywords: ["components","design-system","design-tokens","storybook","atomic-design"]
+image: /img/archman-social-card.webp
+tags: ["frontend","design","architecture"]
+hide_title: true
+---
+
+<Hero
+  title="Component-Based Design & Design Systems"
+  description="Create reusable, documented components with design tokens for consistent user experience"
+  size="large"
+/>
+
+### TL;DR
+
+**Components**: Reusable, self-contained UI building blocks with defined props, slots, and events. Enable consistency and reduce duplication.
+
+**Design Tokens**: Semantic variables (colors, typography, spacing, shadows) that encode design decisions. Source of truth for visual consistency.
+
+**Design Systems**: Documented collection of components, tokens, patterns, and guidelines. Single source of truth for UI across products.
+
+**Atomic Design**: Hierarchy of components (atoms → molecules → organisms → templates → pages) for scalable composition.
+
+**Storybook**: Interactive documentation tool for developing, testing, and showcasing components in isolation.
+
+### Learning Objectives
+
+You will be able to:
+- Design component APIs (props, slots, events) for flexibility, clarity, and type safety.
+- Implement design tokens and token systems for visual consistency.
+- Document components and patterns in Storybook for discoverability and collaboration.
+- Version design systems and manage breaking changes.
+- Scale design systems across multiple products and teams.
+
+### Motivating Scenario
+
+Your company has 5 products: web app, mobile app, admin dashboard, marketing site, and partner portal. Each team rebuilds the same components (Button, Card, Modal, Form Input) slightly differently. Button styling differs across products. Form validation logic is reimplemented 5 times. A "danger" red is #ff0000 in web, #dd0000 in mobile, #ff3333 in partner portal. Marketing site has completely different Button component.
+
+Users experience inconsistency. Designers maintain 5 separate design files. Engineers duplicate code. Simple feature (add tooltip to Button) requires changes in 5 places.
+
+A design system solves this: single source of truth for all UI across all products. Teams use same Button, same color palette, same spacing rules. Changes cascade automatically. New team onboards in days, not weeks, by consuming the design system.
+
+## Core Concepts
+
+### What Are Components?
+
+Components are encapsulated, reusable UI elements with:
+
+1. **Defined Props**: Inputs that configure appearance and behavior
+2. **Slots/Children**: Flexible content areas for composition
+3. **Events**: Callbacks for user interactions
+4. **Styling**: Internal styling, ideally scoped
+
+Example: Button component
+
+```jsx title="Button.jsx" showLineNumbers
+interface ButtonProps {
+  variant: 'primary' | 'secondary' | 'danger';
+  size: 'sm' | 'md' | 'lg';
+  disabled?: boolean;
+  loading?: boolean;
+  onClick?: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+}
+
+export function Button({
+  variant = 'primary',
+  size = 'md',
+  disabled = false,
+  loading = false,
+  onClick,
+  children,
+}: ButtonProps) {
+  return (
+    <button
+      className={`btn btn-${variant} btn-${size}`}
+      disabled={disabled || loading}
+      onClick={onClick}
+      aria-busy={loading}
+    >
+      {loading && <Spinner size={size} />}
+      {children}
+    </button>
+  );
+}
+```
+
+Benefits:
+- **Consistency**: All buttons follow same visual rules
+- **Reusability**: Import and use everywhere
+- **Maintainability**: Change button logic in one place, applies globally
+- **Accessibility**: Accessibility features built once, inherited everywhere
+
+### What Are Design Tokens?
+
+Design tokens are semantic variables encoding design decisions:
+
+```json title="tokens/colors.json" showLineNumbers
+{
+  "color": {
+    "primary": {
+      "50": "#f0f9ff",
+      "100": "#e0f2fe",
+      "500": "#0ea5e9",
+      "600": "#0284c7",
+      "900": "#0c2d6b"
+    },
+    "neutral": {
+      "50": "#fafafa",
+      "500": "#737373",
+      "900": "#171717"
+    },
+    "semantic": {
+      "success": "#10b981",
+      "warning": "#f59e0b",
+      "error": "#ef4444",
+      "info": "#3b82f6"
+    }
+  }
+}
+```
+
+Instead of hardcoding colors:
+
+```css
+/* Before: hardcoded */
+.button {
+  background-color: #0ea5e9;
+}
+
+.button:hover {
+  background-color: #0284c7;
+}
+
+/* After: token-based */
+.button {
+  background-color: var(--color-primary-500);
+}
+
+.button:hover {
+  background-color: var(--color-primary-600);
+}
+```
+
+Benefits:
+- **Consistency**: All buttons use same primary color
+- **Maintainability**: Change primary color once, updates everywhere
+- **Scalability**: Add dark mode by swapping token values
+- **Traceability**: Know exactly where each color is defined
+
+### What Are Design Systems?
+
+Design systems codify all design and component decisions into documentation:
+
+Components + Tokens + Patterns + Guidelines = Design System
+
+A design system includes:
+
+1. **Component Library**: Buttons, cards, modals, forms, etc.
+2. **Design Tokens**: Colors, typography, spacing, shadows
+3. **Patterns**: Common UI patterns (forms, tables, navigation)
+4. **Documentation**: Usage guidelines, do's/don'ts, accessibility notes
+5. **Examples**: Real-world usage of components
+
+Popular design systems:
+- **Material Design** (Google): Comprehensive, design-token-first
+- **Fluent Design** (Microsoft): Focus on productivity
+- **Carbon** (IBM): Enterprise-focused, accessible
+
+## Building Design Systems
+
+### Atomic Design Hierarchy
+
+<Figure caption="Atomic design: atoms → molecules → organisms → templates → pages">
+```
+Atoms
+├─ Button
+├─ Input
+├─ Label
+├─ Icon
+└─ Typography
+
+Molecules
+├─ Form Group (Label + Input)
+├─ Card (Heading + Body + Actions)
+├─ Breadcrumb (Link + Separator)
+└─ Toast Notification
+
+Organisms
+├─ Form (Multiple Form Groups)
+├─ Header (Nav + Search + User Menu)
+├─ Table (Header + Rows + Pagination)
+└─ Modal (Title + Body + Footer)
+
+Templates
+├─ Login Page Template
+├─ Product List Template
+└─ Dashboard Template
+
+Pages
+├─ Login Page (instance of template with real data)
+├─ Product Listing (instance of template)
+└─ Dashboard (instance of template)
+```
+</Figure>
+
+This hierarchy enables:
+- **Composition**: Complex UI from simple pieces
+- **Reusability**: Molecules use atoms, organisms use molecules
+- **Testing**: Test atoms first, then molecules, then organisms
+- **Team scaling**: Teams work at different levels of abstraction
+
+### Implementing Design Tokens
+
+Use a token framework to generate code from tokens:
+
+<Tabs>
+<TabItem value="tokens-json" label="Design Tokens (JSON)">
+```json title="design-tokens/tokens.json" showLineNumbers
+{
+  "color": {
+    "primary": {
+      "base": { "value": "#0ea5e9", "type": "color" }
+    }
+  },
+  "spacing": {
+    "xs": { "value": "4px", "type": "dimension" },
+    "sm": { "value": "8px", "type": "dimension" },
+    "md": { "value": "16px", "type": "dimension" },
+    "lg": { "value": "24px", "type": "dimension" }
+  },
+  "typography": {
+    "body": {
+      "fontSize": { "value": "14px", "type": "dimension" },
+      "lineHeight": { "value": "1.5", "type": "number" },
+      "fontWeight": { "value": "400", "type": "fontWeight" }
+    }
+  }
+}
+```
+</TabItem>
+<TabItem value="tokens-css" label="Generated CSS">
+```css title="generated/tokens.css" showLineNumbers
+:root {
+  --color-primary-base: #0ea5e9;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --typography-body-fontSize: 14px;
+  --typography-body-lineHeight: 1.5;
+}
+```
+</TabItem>
+<TabItem value="tokens-tsx" label="Generated TypeScript">
+```tsx title="generated/tokens.ts" showLineNumbers
+export const tokens = {
+  color: {
+    primary: {
+      base: '#0ea5e9',
+    },
+  },
+  spacing: {
+    xs: '4px',
+    sm: '8px',
+    md: '16px',
+    lg: '24px',
+  },
+  typography: {
+    body: {
+      fontSize: '14px',
+      lineHeight: '1.5',
+      fontWeight: '400',
+    },
+  },
+} as const;
+```
+</TabItem>
+</Tabs>
+
+Use tools like <a href="https://www.designtokens.org/" target="_blank" rel="nofollow noopener noreferrer">Tokens Studio</a>, <a href="https://amzn.github.io/style-dictionary/" target="_blank" rel="nofollow noopener noreferrer">Amazon Style Dictionary</a>, or <a href="https://tokens.studio/" target="_blank" rel="nofollow noopener noreferrer">Figma Tokens</a> to generate tokens from design files.
+
+### Building a Component Library with Storybook
+
+Storybook is interactive documentation for components:
+
+<Tabs>
+<TabItem value="button-component" label="Button Component">
+```jsx title="Button.jsx" showLineNumbers
+export function Button({
+  variant = 'primary',
+  size = 'md',
+  disabled = false,
+  children,
+  onClick,
+}) {
+  return (
+    <button
+      className={`btn btn-${variant} btn-${size}`}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+```
+</TabItem>
+<TabItem value="button-stories" label="Storybook Stories">
+```jsx title="Button.stories.jsx" showLineNumbers
+export default {
+  title: 'Components/Button',
+  component: Button,
+  argTypes: {
+    variant: {
+      control: 'select',
+      options: ['primary', 'secondary', 'danger'],
+    },
+    size: {
+      control: 'select',
+      options: ['sm', 'md', 'lg'],
+    },
+    disabled: {
+      control: 'boolean',
+    },
+  },
+};
+
+export const Primary = {
+  args: { variant: 'primary', children: 'Click me' },
+};
+
+export const Secondary = {
+  args: { variant: 'secondary', children: 'Click me' },
+};
+
+export const Disabled = {
+  args: { disabled: true, children: 'Disabled' },
+};
+
+export const AllSizes = {
+  render: () => (
+    <div style={{ display: 'flex', gap: '10px' }}>
+      <Button size="sm">Small</Button>
+      <Button size="md">Medium</Button>
+      <Button size="lg">Large</Button>
+    </div>
+  ),
+};
+```
+</TabItem>
+</Tabs>
+
+Benefits of Storybook:
+- **Visual regression testing**: Detect unintended style changes
+- **Documentation**: Auto-generated from props and stories
+- **Development**: Develop components in isolation
+- **Collaboration**: Designers and engineers review components together
+- **Testing**: Snapshot tests, accessibility checks
+
+### Versioning and Deprecations
+
+Manage breaking changes carefully:
+
+```tsx title="Button.tsx" showLineNumbers
+/**
+ * @deprecated Use `ButtonV2` instead. Will be removed in v3.0.0.
+ * @example
+ * // OLD
+ * <Button appearance="primary" />
+ *
+ * // NEW
+ * <Button variant="primary" />
+ */
+export function Button({ appearance, ...props }) {
+  return <ButtonV2 variant={appearance} {...props} />;
+}
+
+export function ButtonV2({ variant, ...props }) {
+  return <button className={`btn-${variant}`} {...props} />;
+}
+```
+
+Semantic versioning for design systems:
+- **Major**: Breaking changes to API or tokens (Button prop rename)
+- **Minor**: New components or tokens (new color added)
+- **Patch**: Bug fixes, documentation (typo correction)
+
+## Patterns & Pitfalls
+
+### Pattern: Compound Components
+
+Allow flexible composition:
+
+```jsx title="Form.jsx" showLineNumbers
+// Allow flexible layout
+export function Form({ children }) {
+  return <form>{children}</form>;
+}
+
+Form.Group = function FormGroup({ label, children }) {
+  return (
+    <div className="form-group">
+      <label>{label}</label>
+      {children}
+    </div>
+  );
+};
+
+Form.Input = function FormInput(props) {
+  return <input {...props} />;
+};
+
+Form.Error = function FormError({ message }) {
+  return <span className="form-error">{message}</span>;
+};
+
+// Usage
+<Form>
+  <Form.Group label="Email">
+    <Form.Input type="email" />
+    <Form.Error message="Invalid email" />
+  </Form.Group>
+</Form>
+```
+
+### Pitfall: Over-Engineering
+
+**Problem**: Adding too many props/variants. Button with 50 combinations.
+
+**Mitigation**: Limit variants to real use cases. Delete unused props annually.
+
+```jsx
+// Too many props
+<Button variant="secondary" size="lg" loading disabled shape="rounded" />
+
+// Better: constrain to real use cases
+<Button variant="secondary" size="lg" loading />
+```
+
+### Pitfall: Design System Fragmentation
+
+**Problem**: Teams ignore design system, build custom components.
+
+**Mitigation**:
+- Make design system easy to use (good DX)
+- Enforce via linting rules
+- Educate teams on benefits
+- Gather feedback and iterate
+
+## Operational Considerations
+
+### Maintenance and Updates
+
+Design systems require active maintenance:
+
+1. **Update cycle**: Review and update tokens quarterly
+2. **Component feedback**: Track issues, deprecate, sunset old versions
+3. **Documentation**: Keep examples and patterns current
+4. **Testing**: Visual regression tests on every change
+
+### Scaling to Multiple Platforms
+
+Use <a href="https://www.designtokens.org/" target="_blank" rel="nofollow noopener noreferrer">design tokens</a> to generate code for web, iOS, Android:
+
+```json title="tokens/colors.json" showLineNumbers
+{
+  "color": {
+    "primary": "#0ea5e9"
+  }
+}
+```
+
+Generate:
+
+```swift
+// iOS
+let primaryColor = UIColor(red: 0.06, green: 0.65, blue: 0.92, alpha: 1.0)
+```
+
+```kotlin
+// Android
+val primaryColor = Color(0xFF0EA5E9)
+```
+
+```css
+/* Web */
+--color-primary: #0ea5e9;
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is component API clear and well-documented (props, slots, events)?",
+  "Are all design tokens defined and used consistently?",
+  "Does Storybook cover all component variants and states?",
+  "Are accessibility features built into components (ARIA, keyboard nav)?",
+  "Is component library versioned (semver)?",
+  "Are deprecated components clearly marked with migration paths?",
+  "Is styling scoped (CSS Modules, BEM, CSS-in-JS) to prevent conflicts?",
+  "Are type definitions complete (TypeScript interfaces)?",
+  "Are visual regression tests configured?",
+  "Is documentation current and helpful?",
+  "Are tokens generated for all platforms (web, iOS, Android)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Build a Design System When:**
+- Multiple products/teams (3+) sharing UI
+- Need consistency across platforms
+- Team size large enough to maintain (5+ engineers)
+- Long-term product (multi-year roadmap)
+
+**Skip Design System If:**
+- Single product, single team
+- Short-lived project
+- One-off internal tool
+- Rapidly changing design (prototyping phase)
+
+## Showcase: Design System Maturity Levels
+
+<Vs
+  title="Design System Maturity"
+  columns={["Level 0: No System", "Level 1: Scattered Components", "Level 2: Library", "Level 3: Mature System"]}
+  rows={[
+    { aspect: "Components", values: ["Ad-hoc UI", "Some reuse", "Organized library", "Comprehensive + versioned"] },
+    { aspect: "Tokens", values: ["Hardcoded", "Partial list", "Complete tokens", "Multi-platform tokens"] },
+    { aspect: "Documentation", values: ["None", "Code comments", "Storybook", "Storybook + patterns guide"] },
+    { aspect: "Versioning", values: ["None", "None", "Semantic versioning", "Planned deprecations"] },
+    { aspect: "Testing", values: ["Manual", "Unit tests", "Visual regression", "VRT + accessibility + a11y"] },
+  ]}
+/>
+
+## Self-Check
+
+1. **Why is atomic design useful? What problems does it solve?**
+2. **How would you handle a breaking change to the Button component (e.g., renaming `appearance` to `variant`) across 5 products?**
+3. **What are the benefits and drawbacks of design tokens vs. hardcoded CSS values?**
+
+## Next Steps
+
+- <a href="https://storybook.js.org/" target="_blank" rel="nofollow noopener noreferrer">Storybook: Develop Components in Isolation ↗️</a>
+- Learn about <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/performance-ttfb-tti-core-web-vitals-conceptual" target="_blank" rel="nofollow noopener noreferrer">Performance & Core Web Vitals ↗️</a>
+- Explore <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/state-management-conceptual" target="_blank" rel="nofollow noopener noreferrer">State Management ↗️</a>
+- Study <a href="https://www.designtokens.org/" target="_blank" rel="nofollow noopener noreferrer">Design Tokens Format Specification ↗️</a>
+
+### One Takeaway
+
+<Callout tone="info">
+Design systems are investments in consistency and velocity. Start with a small component library (Button, Card, Input). Document in Storybook. Use design tokens for visual consistency. As teams scale, the system becomes more valuable and required.
+</Callout>
+
+## References
+
+1. <a href="https://storybook.js.org/" target="_blank" rel="nofollow noopener noreferrer">Storybook: UI Component Development Environment</a>
+2. <a href="https://www.designtokens.org/" target="_blank" rel="nofollow noopener noreferrer">Design Tokens Format Specification</a>
+3. <a href="https://bradfrost.com/blog/post/atomic-web-design/" target="_blank" rel="nofollow noopener noreferrer">Atomic Design by Brad Frost</a>
+4. <a href="https://amzn.github.io/style-dictionary/" target="_blank" rel="nofollow noopener noreferrer">Amazon Style Dictionary: Design Token Generator</a>
+5. <a href="https://www.nngroup.com/articles/design-systems-101/" target="_blank" rel="nofollow noopener noreferrer">Design Systems 101 - Nielsen Norman</a>
+---

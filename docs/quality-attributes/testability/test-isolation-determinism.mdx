@@ -1,0 +1,1137 @@
+---
+sidebar_position: 1
+title: "Test Isolation and Determinism"
+description: "Write tests that are independent, repeatable, and not flaky."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, qa]
+keywords: [test isolation, determinism, flaky tests, test independence, mocking, stubs, fixtures]
+image: /img/archman-social-card.webp
+tags: [quality-attributes, testability, testing, flakiness]
+hide_title: true
+---
+
+<Hero title="Test Isolation and Determinism" subtitle="Write repeatable tests that pass consistently, independent of timing and state." size="large" />
+
+## TL;DR
+
+Flaky tests (sometimes pass, sometimes fail) erode trust and slow development. Isolation: each test runs independently; test A's failure doesn't affect test B. Determinism: same input always produces same output. Avoid: global state, time-dependent code, external services without mocking, non-deterministic ordering. Use fixtures for setup, mocks for dependencies, time travel libraries for deterministic time. If a test is flaky, fix it immediately—don't ignore or quarantine. Flakiness is a design problem, not a test problem.
+
+## Learning Objectives
+
+- Understand causes of flakiness and how to eliminate them
+- Design tests with clear setup/teardown (fixtures)
+- Mock external dependencies consistently
+- Control time in tests (don't rely on system clock)
+- Detect and fix flaky tests
+- Measure test reliability (re-run percentage, pass rate)
+- Apply test isolation patterns across multiple languages
+- Design fixtures for complex integration scenarios
+- Implement deterministic testing in distributed systems
+
+## Motivating Scenario
+
+Tests pass locally but fail in CI. A test depends on execution order (test A must run before test B). Another test fails randomly because it checks the system clock (time.now()). A third test creates shared database state that interferes with other tests. Flakiness causes developers to ignore test failures ("it failed again, rerun it"), defeating the purpose of tests. In a microservices environment, flaky tests become worse: they block deployments, erode confidence, and mask real bugs. Your CI/CD pipeline becomes unreliable, and teams start to distrust test results—the worst outcome for code quality.
+
+## Core Concepts
+
+### Sources of Flakiness
+
+| Source | Example | Fix |
+|--------|---------|-----|
+| Shared state | Tests modify global variable | Use setup/teardown; reset state |
+| Execution order | Test B depends on test A running first | Use independent fixtures |
+| Time-dependent | Test checks if time.now() < deadline | Use dependency injection; mock time |
+| External services | Test calls real API (sometimes flakes) | Mock/stub API responses |
+| Randomness | Test uses random IDs without seeding | Seed RNG; use deterministic data |
+| Threading | Race condition in async code | Use deterministic threading; avoid timeouts |
+| Network latency | Test assumes fast network | Use synchronous test doubles |
+| Floating point | == comparison on floats | Use approximate equality or decimal arithmetic |
+| File system | Tests write to shared temp directory | Use isolated temp directories per test |
+| Database state | Tests share connection pool | Use transactions rolled back per test |
+
+### Isolation Levels
+
+**Unit Test Isolation**: Single function/method, no external dependencies. Each test is independent; can run in any order.
+
+**Integration Test Isolation**: Multiple components, minimal external dependencies. Uses databases, caches in-memory. Clean up after each test.
+
+**End-to-End Test Isolation**: Full system, external services. Harder to isolate; use test doubles (mocks, stubs) for external APIs.
+
+### Determinism Guarantees
+
+**Deterministic Input**: Same input always produces same output. No randomness, no system clock.
+
+**Deterministic Execution**: No race conditions, no non-deterministic ordering, no timeouts.
+
+**Deterministic Assertions**: Assertions always pass or fail the same way. No floating-point comparisons, no time-dependent checks.
+
+## Practical Examples
+
+### Python: Fixture-Based Isolation
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+import pytest
+import freezegun
+from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timedelta
+
+# ❌ FLAKY: Depends on time, shared state
+class BadOrderService:
+    def __init__(self):
+        self.orders = {}  # Shared state across tests!
+    
+    def create_order(self, order_id, deadline):
+        self.orders[order_id] = {
+            "deadline": deadline
+        }
+        return self.orders[order_id]
+    
+    def is_expired(self, order_id):
+        # Relies on system time - will fail at wrong times!
+        return datetime.now() > self.orders[order_id]["deadline"]
+
+# FLAKY TEST: Will fail randomly depending on timing
+def test_bad_order_creation():
+    service = BadOrderService()
+    deadline = datetime.now() + timedelta(seconds=2)
+    order = service.create_order("order-1", deadline)
+    
+    # This sleep won't reliably work - system might lag
+    import time
+    time.sleep(2)
+    
+    # Flaky: time.sleep might not be exactly 2 seconds
+    assert service.is_expired("order-1")
+
+# ✅ RELIABLE: Deterministic, isolated with fixtures
+class GoodOrderService:
+    def __init__(self, clock):
+        self.orders = {}
+        self.clock = clock  # Injected clock for testing
+    
+    def create_order(self, order_id, deadline):
+        self.orders[order_id] = {
+            "deadline": deadline,
+            "created_at": self.clock.now()
+        }
+        return self.orders[order_id]
+    
+    def is_expired(self, order_id):
+        # Uses injected clock, not system time
+        return self.clock.now() > self.orders[order_id]["deadline"]
+
+class TestClock:
+    def __init__(self, current_time):
+        self._current_time = current_time
+    
+    def now(self):
+        return self._current_time
+    
+    def advance(self, delta):
+        self._current_time += delta
+        return self._current_time
+
+@pytest.fixture
+def order_service():
+    """Fixture: clean state before each test"""
+    clock = TestClock(datetime(2024, 1, 1, 12, 0, 0))
+    service = GoodOrderService(clock)
+    yield service
+    # Cleanup happens automatically
+
+@pytest.fixture
+def frozen_time():
+    """Fixture: deterministic time"""
+    with freezegun.freeze_time("2024-01-01 12:00:00") as frozen:
+        yield frozen
+
+def test_order_not_expired_before_deadline(order_service):
+    """Deterministic test: no flakiness"""
+    deadline = datetime(2024, 1, 1, 12, 30, 0)
+    order = order_service.create_order("order-1", deadline)
+    
+    # No sleep needed - test clock is deterministic
+    assert not order_service.is_expired("order-1")
+    assert order["created_at"] == datetime(2024, 1, 1, 12, 0, 0)
+
+def test_order_expired_after_deadline(order_service):
+    """Completely isolated from previous test"""
+    deadline = datetime(2024, 1, 1, 12, 10, 0)
+    order_service.create_order("order-2", deadline)
+    
+    # Advance the clock deterministically
+    order_service.clock.advance(timedelta(minutes=11))
+    
+    assert order_service.is_expired("order-2")
+
+def test_multiple_orders_independent(order_service):
+    """Tests with multiple orders - all isolated"""
+    order_service.create_order("order-A", datetime(2024, 1, 1, 12, 5, 0))
+    order_service.create_order("order-B", datetime(2024, 1, 1, 12, 15, 0))
+    order_service.create_order("order-C", datetime(2024, 1, 1, 12, 25, 0))
+    
+    # Advance past first deadline
+    order_service.clock.advance(timedelta(minutes=10))
+    
+    assert order_service.is_expired("order-A")
+    assert not order_service.is_expired("order-B")
+    assert not order_service.is_expired("order-C")
+
+# Database isolation pattern
+class TestDatabaseIsolation:
+    @pytest.fixture(autouse=True)
+    def db_transaction(self):
+        """Auto-rollback database changes after each test"""
+        from contextlib import contextmanager
+        
+        @contextmanager
+        def transaction():
+            db = get_test_database()
+            db.begin_transaction()
+            yield db
+            db.rollback_transaction()  # Clean up!
+        
+        yield transaction
+    
+    def test_user_creation(self, db_transaction):
+        """Users created in this test are rolled back"""
+        with db_transaction() as db:
+            user = User(email="test@example.com")
+            db.session.add(user)
+            db.session.commit()
+            
+            result = db.session.query(User).filter_by(
+                email="test@example.com"
+            ).first()
+            assert result is not None
+        
+        # After test, transaction is rolled back
+        # Database returns to clean state
+
+    def test_different_user_creation(self, db_transaction):
+        """This test doesn't see users from previous test"""
+        with db_transaction() as db:
+            users = db.session.query(User).all()
+            assert len(users) == 0  # Previous test's users are gone!
+
+# Mock external services
+class PaymentService:
+    def __init__(self, gateway):
+        self.gateway = gateway
+    
+    def charge_order(self, order_id, amount):
+        # Calls external payment gateway
+        try:
+            response = self.gateway.charge(amount, order_id)
+            return response
+        except Exception as e:
+            raise PaymentError(f"Failed to charge: {e}")
+
+def test_payment_success_with_mock():
+    """Mock external service - no real API calls!"""
+    mock_gateway = Mock()
+    mock_gateway.charge.return_value = {
+        "status": "success",
+        "transaction_id": "txn-123"
+    }
+    
+    service = PaymentService(mock_gateway)
+    result = service.charge_order("order-1", 99.99)
+    
+    assert result["status"] == "success"
+    # Verify the mock was called correctly
+    mock_gateway.charge.assert_called_once_with(99.99, "order-1")
+
+def test_payment_failure_with_mock():
+    """Test error handling without real API"""
+    mock_gateway = Mock()
+    mock_gateway.charge.side_effect = ConnectionError("Gateway unreachable")
+    
+    service = PaymentService(mock_gateway)
+    
+    with pytest.raises(PaymentError) as exc_info:
+        service.charge_order("order-1", 99.99)
+    
+    assert "Failed to charge" in str(exc_info.value)
+
+# Randomness isolation
+class OrderIDGenerator:
+    def __init__(self, rng):
+        self.rng = rng  # Injected RNG
+    
+    def generate_order_id(self):
+        random_part = self.rng.randint(1000000, 9999999)
+        return f"ORD-{random_part}"
+
+def test_order_id_generation_deterministic():
+    """Deterministic RNG - same sequence every time"""
+    import random
+    rng = random.Random(42)  # Seed!
+    
+    generator = OrderIDGenerator(rng)
+    
+    # Same seed always produces same IDs
+    id1 = generator.generate_order_id()
+    id2 = generator.generate_order_id()
+    
+    # Reset and verify
+    rng = random.Random(42)
+    generator = OrderIDGenerator(rng)
+    
+    assert id1 == generator.generate_order_id()
+    assert id2 == generator.generate_order_id()
+
+def test_order_id_uniqueness():
+    """Test uniqueness property"""
+    import random
+    rng = random.Random(123)
+    
+    generator = OrderIDGenerator(rng)
+    ids = set()
+    
+    for _ in range(1000):
+        id = generator.generate_order_id()
+        ids.add(id)
+    
+    # All IDs should be unique
+    assert len(ids) == 1000
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package order
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+// ❌ FLAKY: Shared state, system time dependency
+var globalOrders = make(map[string]*Order)  // Global state!
+
+type FlakyClock struct{}
+
+func (c *FlakyClock) Now() time.Time {
+	return time.Now()  // System time - flaky!
+}
+
+func (c *FlakyClock) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}
+
+// ✅ RELIABLE: Injected clock, isolated state
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+type TestClock struct {
+	current time.Time
+	timers  []*TestTimer
+}
+
+type TestTimer struct {
+	deadline time.Time
+	ch       chan time.Time
+}
+
+func NewTestClock(t time.Time) *TestClock {
+	return &TestClock{current: t}
+}
+
+func (tc *TestClock) Now() time.Time {
+	return tc.current
+}
+
+func (tc *TestClock) After(d time.Duration) <-chan time.Time {
+	timer := &TestTimer{
+		deadline: tc.current.Add(d),
+		ch:       make(chan time.Time, 1),
+	}
+	tc.timers = append(tc.timers, timer)
+	return timer.ch
+}
+
+func (tc *TestClock) Advance(d time.Duration) {
+	tc.current = tc.current.Add(d)
+	// Fire timers that have passed
+	for _, timer := range tc.timers {
+		if tc.current.After(timer.deadline) {
+			select {
+			case timer.ch <- tc.current:
+			default:
+			}
+		}
+	}
+}
+
+type Order struct {
+	ID       string
+	Deadline time.Time
+	Status   string
+}
+
+type OrderService struct {
+	orders map[string]*Order
+	clock  Clock
+}
+
+func NewOrderService(clock Clock) *OrderService {
+	return &OrderService{
+		orders: make(map[string]*Order),
+		clock:  clock,
+	}
+}
+
+func (os *OrderService) CreateOrder(id string, deadline time.Time) *Order {
+	order := &Order{
+		ID:       id,
+		Deadline: deadline,
+		Status:   "active",
+	}
+	os.orders[id] = order
+	return order
+}
+
+func (os *OrderService) IsExpired(id string) bool {
+	order, exists := os.orders[id]
+	if !exists {
+		return false
+	}
+	return os.clock.Now().After(order.Deadline)
+}
+
+// Isolated test fixtures
+func TestOrderNotExpiredBeforeDeadline(t *testing.T) {
+	clock := NewTestClock(time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
+	service := NewOrderService(clock)
+	
+	deadline := time.Date(2024, 1, 1, 12, 30, 0, 0, time.UTC)
+	service.CreateOrder("order-1", deadline)
+	
+	if service.IsExpired("order-1") {
+		t.Error("Order should not be expired before deadline")
+	}
+}
+
+func TestOrderExpiredAfterDeadline(t *testing.T) {
+	clock := NewTestClock(time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
+	service := NewOrderService(clock)
+	
+	deadline := time.Date(2024, 1, 1, 12, 10, 0, 0, time.UTC)
+	service.CreateOrder("order-2", deadline)
+	
+	// Advance clock deterministically
+	clock.Advance(11 * time.Minute)
+	
+	if !service.IsExpired("order-2") {
+		t.Error("Order should be expired after deadline")
+	}
+}
+
+func TestMultipleOrdersIsolated(t *testing.T) {
+	clock := NewTestClock(time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC))
+	service := NewOrderService(clock)
+	
+	service.CreateOrder("order-A", time.Date(2024, 1, 1, 12, 5, 0, 0, time.UTC))
+	service.CreateOrder("order-B", time.Date(2024, 1, 1, 12, 15, 0, 0, time.UTC))
+	service.CreateOrder("order-C", time.Date(2024, 1, 1, 12, 25, 0, 0, time.UTC))
+	
+	clock.Advance(10 * time.Minute)
+	
+	tests := []struct {
+		id       string
+		expected bool
+	}{
+		{"order-A", true},
+		{"order-B", false},
+		{"order-C", false},
+	}
+	
+	for _, tt := range tests {
+		if result := service.IsExpired(tt.id); result != tt.expected {
+			t.Errorf("Order %s: expected expired=%v, got %v", tt.id, tt.expected, result)
+		}
+	}
+}
+
+// Mock payment gateway
+type PaymentGateway interface {
+	Charge(ctx context.Context, amount float64, orderID string) (string, error)
+}
+
+type MockGateway struct {
+	chargeFunc func(ctx context.Context, amount float64, orderID string) (string, error)
+	calls      int
+}
+
+func (mg *MockGateway) Charge(ctx context.Context, amount float64, orderID string) (string, error) {
+	mg.calls++
+	return mg.chargeFunc(ctx, amount, orderID)
+}
+
+type PaymentService struct {
+	gateway PaymentGateway
+}
+
+func (ps *PaymentService) ChargeOrder(ctx context.Context, orderID string, amount float64) (string, error) {
+	return ps.gateway.Charge(ctx, amount, orderID)
+}
+
+func TestPaymentSuccess(t *testing.T) {
+	mock := &MockGateway{
+		chargeFunc: func(ctx context.Context, amount float64, orderID string) (string, error) {
+			return "txn-123", nil
+		},
+	}
+	
+	service := &PaymentService{gateway: mock}
+	txnID, err := service.ChargeOrder(context.Background(), "order-1", 99.99)
+	
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	
+	if txnID != "txn-123" {
+		t.Errorf("Expected txn-123, got %s", txnID)
+	}
+	
+	if mock.calls != 1 {
+		t.Errorf("Expected 1 call to gateway, got %d", mock.calls)
+	}
+}
+
+func TestPaymentFailure(t *testing.T) {
+	mock := &MockGateway{
+		chargeFunc: func(ctx context.Context, amount float64, orderID string) (string, error) {
+			return "", errors.New("gateway unreachable")
+		},
+	}
+	
+	service := &PaymentService{gateway: mock}
+	_, err := service.ChargeOrder(context.Background(), "order-1", 99.99)
+	
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+	
+	if err.Error() != "gateway unreachable" {
+		t.Errorf("Expected 'gateway unreachable', got '%s'", err.Error())
+	}
+}
+
+// Database transaction isolation
+type DatabaseTx interface {
+	Query(sql string, args ...interface{}) ([]map[string]interface{}, error)
+	Exec(sql string, args ...interface{}) error
+	Commit() error
+	Rollback() error
+}
+
+type TestDatabase struct {
+	data map[string][]map[string]interface{}
+	tx   *TestDatabaseTx
+}
+
+type TestDatabaseTx struct {
+	data map[string][]map[string]interface{}
+}
+
+func NewTestDatabase() *TestDatabase {
+	return &TestDatabase{
+		data: make(map[string][]map[string]interface{}),
+	}
+}
+
+func (db *TestDatabase) Begin() DatabaseTx {
+	return &TestDatabaseTx{
+		data: make(map[string][]map[string]interface{}),
+	}
+}
+
+func (tx *TestDatabaseTx) Query(sql string, args ...interface{}) ([]map[string]interface{}, error) {
+	// Simplified query execution
+	return tx.data["users"], nil
+}
+
+func (tx *TestDatabaseTx) Exec(sql string, args ...interface{}) error {
+	// Simplified insert
+	user := map[string]interface{}{"email": args[0]}
+	tx.data["users"] = append(tx.data["users"], user)
+	return nil
+}
+
+func (tx *TestDatabaseTx) Commit() error {
+	return nil
+}
+
+func (tx *TestDatabaseTx) Rollback() error {
+	return nil
+}
+
+func TestUserCreationWithRollback(t *testing.T) {
+	db := NewTestDatabase()
+	
+	// First test creates a user
+	tx1 := db.Begin()
+	tx1.Exec("INSERT INTO users VALUES (?)", "test@example.com")
+	users, _ := tx1.Query("SELECT * FROM users")
+	
+	if len(users) != 1 {
+		t.Error("Expected 1 user")
+	}
+	
+	// Simulate rollback
+	tx1.Rollback()
+	
+	// Second test should not see the user
+	tx2 := db.Begin()
+	users, _ = tx2.Query("SELECT * FROM users")
+	
+	if len(users) != 0 {
+		t.Error("Expected 0 users after rollback")
+	}
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// ❌ FLAKY: Shared state, no isolation
+let globalOrders = {};  // Shared global state!
+
+class FlakyClock {
+  now() {
+    return new Date();  // System time - flaky!
+  }
+}
+
+// ✅ RELIABLE: Injected clock, isolated fixtures
+class TestClock {
+  constructor(initialTime) {
+    this.current = initialTime;
+    this.timers = [];
+  }
+
+  now() {
+    return this.current;
+  }
+
+  advance(ms) {
+    this.current = new Date(this.current.getTime() + ms);
+    // Fire scheduled timers
+    this.timers = this.timers.filter(timer => {
+      if (this.current >= timer.deadline) {
+        clearTimeout(timer.timeout);
+        return false;
+      }
+      return true;
+    });
+  }
+}
+
+class Order {
+  constructor(id, deadline) {
+    this.id = id;
+    this.deadline = deadline;
+    this.status = 'active';
+  }
+}
+
+class OrderService {
+  constructor(clock) {
+    this.orders = {};  // Local state, not global!
+    this.clock = clock;
+  }
+
+  createOrder(id, deadline) {
+    const order = new Order(id, deadline);
+    this.orders[id] = order;
+    return order;
+  }
+
+  isExpired(id) {
+    const order = this.orders[id];
+    if (!order) return false;
+    return this.clock.now() > order.deadline;
+  }
+
+  getOrderCount() {
+    return Object.keys(this.orders).length;
+  }
+}
+
+// Test isolation using Jest fixtures
+describe('OrderService', () => {
+  let service;
+  let clock;
+
+  // ✅ Setup before each test - ensures isolation
+  beforeEach(() => {
+    clock = new TestClock(new Date('2024-01-01T12:00:00Z'));
+    service = new OrderService(clock);
+  });
+
+  // ✅ Cleanup after each test
+  afterEach(() => {
+    service = null;
+    clock = null;
+  });
+
+  test('order is not expired before deadline', () => {
+    const deadline = new Date('2024-01-01T12:30:00Z');
+    service.createOrder('order-1', deadline);
+
+    expect(service.isExpired('order-1')).toBe(false);
+  });
+
+  test('order is expired after deadline', () => {
+    const deadline = new Date('2024-01-01T12:10:00Z');
+    service.createOrder('order-2', deadline);
+
+    // Advance clock deterministically
+    clock.advance(11 * 60 * 1000);  // 11 minutes
+
+    expect(service.isExpired('order-2')).toBe(true);
+  });
+
+  test('multiple orders are independent', () => {
+    service.createOrder('order-A', new Date('2024-01-01T12:05:00Z'));
+    service.createOrder('order-B', new Date('2024-01-01T12:15:00Z'));
+    service.createOrder('order-C', new Date('2024-01-01T12:25:00Z'));
+
+    clock.advance(10 * 60 * 1000);  // 10 minutes
+
+    expect(service.isExpired('order-A')).toBe(true);
+    expect(service.isExpired('order-B')).toBe(false);
+    expect(service.isExpired('order-C')).toBe(false);
+  });
+
+  test('each test gets fresh state', () => {
+    service.createOrder('order-1', new Date('2024-01-02'));
+    expect(service.getOrderCount()).toBe(1);
+  });
+
+  test('previous test state is not visible', () => {
+    // Fresh service instance - previous test's orders are gone!
+    expect(service.getOrderCount()).toBe(0);
+  });
+});
+
+// Mock external services
+class PaymentGateway {
+  async charge(amount, orderId) {
+    // Real implementation calls external API
+    throw new Error("Not implemented");
+  }
+}
+
+class PaymentService {
+  constructor(gateway) {
+    this.gateway = gateway;
+  }
+
+  async chargeOrder(orderId, amount) {
+    try {
+      const response = await this.gateway.charge(amount, orderId);
+      return response;
+    } catch (error) {
+      throw new Error(`Failed to charge: ${error.message}`);
+    }
+  }
+}
+
+describe('PaymentService with Mocks', () => {
+  let paymentService;
+  let mockGateway;
+
+  beforeEach(() => {
+    // Create a mock gateway - no real API calls!
+    mockGateway = {
+      charge: jest.fn(),
+      calls: 0
+    };
+    paymentService = new PaymentService(mockGateway);
+  });
+
+  test('charges order successfully', async () => {
+    mockGateway.charge.mockResolvedValue({
+      status: 'success',
+      transactionId: 'txn-123'
+    });
+
+    const result = await paymentService.chargeOrder('order-1', 99.99);
+
+    expect(result.status).toBe('success');
+    expect(mockGateway.charge).toHaveBeenCalledWith(99.99, 'order-1');
+    expect(mockGateway.charge).toHaveBeenCalledTimes(1);
+  });
+
+  test('handles payment failure', async () => {
+    mockGateway.charge.mockRejectedValue(
+      new Error('Gateway unreachable')
+    );
+
+    await expect(
+      paymentService.chargeOrder('order-1', 99.99)
+    ).rejects.toThrow('Failed to charge');
+
+    expect(mockGateway.charge).toHaveBeenCalledWith(99.99, 'order-1');
+  });
+
+  test('retries on temporary failure', async () => {
+    mockGateway.charge
+      .mockRejectedValueOnce(new Error('Timeout'))
+      .mockResolvedValueOnce({
+        status: 'success',
+        transactionId: 'txn-456'
+      });
+
+    // Simple retry logic
+    let result;
+    try {
+      result = await paymentService.chargeOrder('order-1', 99.99);
+    } catch (error) {
+      result = await paymentService.chargeOrder('order-1', 99.99);
+    }
+
+    expect(result.transactionId).toBe('txn-456');
+    expect(mockGateway.charge).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Database transaction isolation
+class TestDatabase {
+  constructor() {
+    this.data = { users: [] };
+  }
+
+  async beginTransaction() {
+    const tx = new TestTransaction(JSON.parse(JSON.stringify(this.data)));
+    return tx;
+  }
+}
+
+class TestTransaction {
+  constructor(initialData) {
+    this.data = initialData;
+  }
+
+  async query(sql) {
+    return this.data.users;
+  }
+
+  async exec(sql, params) {
+    const user = { email: params[0] };
+    this.data.users.push(user);
+  }
+
+  async commit() {
+    // In real DB, persist changes
+  }
+
+  async rollback() {
+    // Changes discarded!
+  }
+}
+
+describe('Database Isolation', () => {
+  let db;
+
+  beforeEach(() => {
+    db = new TestDatabase();
+  });
+
+  test('user creation in transaction', async () => {
+    const tx = await db.beginTransaction();
+
+    await tx.exec('INSERT INTO users VALUES (?)', ['test@example.com']);
+    const users = await tx.query('SELECT * FROM users');
+
+    expect(users).toHaveLength(1);
+    await tx.rollback();  // Discard changes
+  });
+
+  test('subsequent test does not see previous changes', async () => {
+    const tx = await db.beginTransaction();
+    const users = await tx.query('SELECT * FROM users');
+
+    // Previous test's changes are rolled back!
+    expect(users).toHaveLength(0);
+  });
+});
+
+// Deterministic randomness
+class OrderIDGenerator {
+  constructor(seed = 42) {
+    this.seed = seed;
+  }
+
+  next() {
+    // Deterministic pseudo-random using seed
+    this.seed = (this.seed * 9301 + 49297) % 233280;
+    return this.seed;
+  }
+
+  generateOrderId() {
+    const randomPart = Math.abs(this.next()) % 10000000;
+    return `ORD-${randomPart}`;
+  }
+}
+
+describe('Order ID Generation', () => {
+  test('same seed produces same IDs', () => {
+    const gen1 = new OrderIDGenerator(42);
+    const id1 = gen1.generateOrderId();
+    const id2 = gen1.generateOrderId();
+
+    const gen2 = new OrderIDGenerator(42);
+    expect(gen2.generateOrderId()).toBe(id1);
+    expect(gen2.generateOrderId()).toBe(id2);
+  });
+
+  test('different seeds produce different IDs', () => {
+    const gen1 = new OrderIDGenerator(42);
+    const gen2 = new OrderIDGenerator(123);
+
+    expect(gen1.generateOrderId()).not.toBe(gen2.generateOrderId());
+  });
+
+  test('IDs are unique within same sequence', () => {
+    const gen = new OrderIDGenerator(999);
+    const ids = new Set();
+
+    for (let i = 0; i < 100; i++) {
+      ids.add(gen.generateOrderId());
+    }
+
+    expect(ids.size).toBe(100);  // All unique
+  });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### E-Commerce Platform: Order Processing Tests
+
+In a high-traffic e-commerce system, order tests need strict isolation and determinism:
+
+- **Payment Processing**: Mock payment gateways to avoid real charges during testing. Use seeded random order IDs to make transactions reproducible.
+- **Inventory Management**: Each test needs its own inventory state. Use fixtures to reset stock levels.
+- **Time-Sensitive Discounts**: Flash sales expire at specific times. Use test clocks to advance time without waiting.
+
+**Problem**: Tests sometimes fail because two tests create orders with the same ID, causing key collisions. Solution: Use deterministic ID generation with seeded randomness. Each test uses a different seed.
+
+**Problem**: Payment tests sometimes timeout waiting for the real payment gateway. Solution: Always mock external services. Keep integration tests separate with `@integration` tag.
+
+### Microservices: Service-to-Service Tests
+
+When testing microservices communication:
+
+- **Stub dependent services**: Use test doubles (mocks, stubs) for other services. Don't call real services.
+- **Use contract testing**: Define expected request/response format. Both services test against the contract.
+- **Isolated databases**: Each service test uses its own test database. No shared data.
+
+**Problem**: Service A test fails because Service B is down. Solution: Mock Service B responses. Use contract testing to ensure compatibility.
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: Relying on Test Execution Order
+
+```python
+# ❌ WRONG: Test B depends on Test A
+def test_a_create_user():
+    global current_user
+    current_user = User(email="test@example.com")
+    assert current_user is not None
+
+def test_b_update_user():
+    # BUG: current_user not defined if tests run in reverse order!
+    current_user.name = "Updated"
+    assert current_user.name == "Updated"
+
+# ✅ CORRECT: Each test is independent
+def test_create_user():
+    user = User(email="test@example.com")
+    assert user is not None
+
+def test_update_user():
+    # Fresh user, no dependency on other tests
+    user = User(email="test@example.com")
+    user.name = "Updated"
+    assert user.name == "Updated"
+```
+
+### Mistake 2: Assertions on Floating-Point Numbers
+
+```python
+# ❌ WRONG: Floating-point precision issues
+def test_discount_calculation():
+    price = 99.99
+    discount = 0.1
+    result = price * (1 - discount)
+    assert result == 89.991  # Might fail due to precision!
+
+# ✅ CORRECT: Use approximate equality
+def test_discount_calculation():
+    price = 99.99
+    discount = 0.1
+    result = price * (1 - discount)
+    assert abs(result - 89.991) < 0.001  # Allow small epsilon
+```
+
+### Mistake 3: Using time.sleep() in Tests
+
+```python
+# ❌ WRONG: Fragile sleep-based tests
+def test_cache_expiration():
+    cache.set("key", "value", ttl=1)
+    time.sleep(1.1)  # Unreliable!
+    assert cache.get("key") is None
+
+# ✅ CORRECT: Mock time or use test clocks
+def test_cache_expiration(frozen_time):
+    with frozen_time.freeze_time("2024-01-01 12:00:00"):
+        cache.set("key", "value", ttl=1)
+        frozen_time.move_to("2024-01-01 12:00:01.1")
+        assert cache.get("key") is None
+```
+
+### Mistake 4: Shared Database Connections
+
+```python
+# ❌ WRONG: Tests share database connection
+@pytest.fixture(scope="module")
+def db():
+    return Database.connect()  # Shared across all tests!
+
+def test_user_a(db):
+    db.create_user("user-a@example.com")
+
+def test_user_b(db):
+    # Sees user from test_user_a!
+    users = db.query("SELECT * FROM users")
+    assert len(users) == 2  # Flaky!
+
+# ✅ CORRECT: Transaction rollback per test
+@pytest.fixture
+def db():
+    connection = Database.connect()
+    connection.begin_transaction()
+    yield connection
+    connection.rollback_transaction()  # Clean up
+```
+
+### Mistake 5: Non-Deterministic Randomness
+
+```python
+# ❌ WRONG: Random behavior is unrepeatable
+def test_shuffle_algorithm():
+    items = list(range(100))
+    random.shuffle(items)
+    # Different order every time!
+    assert items[0] == 42  # Flaky!
+
+# ✅ CORRECT: Seed randomness
+def test_shuffle_algorithm():
+    items = list(range(100))
+    random.seed(42)
+    random.shuffle(items)
+    # Same order every time
+    assert items[0] == 42  # Reliable
+```
+
+## Production Considerations
+
+### Testing in Multi-Threaded/Async Code
+
+Async and concurrent code make flakiness worse. Deterministic testing is even more critical:
+
+- **Use deterministic schedulers**: For Goroutines, use `select` carefully. For async/await, use `FakeTimers`.
+- **Avoid real sleep/timers**: Use mock clocks.
+- **Test race conditions explicitly**: Don't rely on timing; structure code to avoid races.
+
+### Testing Distributed Systems
+
+Tests of distributed systems are inherently flaky (network delays, partial failures):
+
+- **Use test containers**: Spin up real services in Docker for integration tests.
+- **Mock failure scenarios**: Test network partitions, timeouts, service crashes.
+- **Use chaos testing**: Deliberately inject failures to test resilience.
+
+### Measuring Test Reliability
+
+Track test reliability metrics:
+
+- **Flakiness Rate**: Percentage of tests that fail intermittently.
+- **Re-run Success Rate**: Does test pass on re-run? High rate = flaky.
+- **Test Stability Index**: 1.0 = 100% reliable, 0.9 = 1 in 10 failures.
+
+### Continuous Integration Pipeline
+
+- **Fail on flaky tests**: Don't allow flaky tests to merge.
+- **Quarantine tests**: Temporarily disable flaky tests while fixing.
+- **Re-run before merge**: Run tests multiple times to catch flakiness.
+- **Monitor test metrics**: Track flakiness over time.
+
+## Self-Check
+
+- Why are flaky tests worse than failing tests?
+- How do fixtures improve test isolation?
+- Why can't you rely on system time in tests?
+- What's a deterministic test vs. a flaky test?
+- How would you fix a test that depends on execution order?
+- How do you mock external services without making tests brittle?
+- What's the difference between a stub and a mock?
+- How do you test time-sensitive code?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Tests independent (no setup/teardown dependencies)?",
+  "Shared state eliminated (databases, files, globals)?",
+  "Time mocked consistently (not system clock)?",
+  "External services mocked (not real APIs)?",
+  "Randomness seeded deterministically?",
+  "Test execution order doesn't matter?",
+  "Timeout values reasonable (not race conditions)?",
+  "Fixtures clear setup/teardown?",
+  "Tests re-runnable 100% pass rate?",
+  "Coverage metrics tracked?",
+  "Flakiness metrics monitored?",
+  "CI pipeline fails on flaky tests?",
+  "Mock objects verified for correct calls?",
+  "Database transactions rolled back per test?",
+  "Clock/time mocking tested in isolation?"
+]} />
+
+## Next Steps
+
+1. **Run tests multiple times** — Identify flaky tests
+2. **Root cause analysis** — Global state? Time? Randomness? Ordering?
+3. **Fix flakiness** — Remove global state, mock time, use fixtures
+4. **Measure reliability** — Track pass rate, flakiness over time
+5. **Enforce isolation** — Code review, linting, standards
+6. **Monitor CI** — Alert on test failures, quarantine flaky tests
+
+## References
+
+- <a href="https://google.github.io/styleguide/pyguide.html" target="_blank" rel="nofollow noopener noreferrer">Google Python Style Guide ↗</a>
+- <a href="https://testing.googleblog.com/2017/07/flaky-tests-at-google-and-how-we.html" target="_blank" rel="nofollow noopener noreferrer">Google Testing Blog: Flaky Tests ↗</a>
+- <a href="https://www.youtube.com/watch?v=VDfX44fZoMc" target="_blank" rel="nofollow noopener noreferrer">Test Isolation Best Practices ↗</a>
+- <a href="https://martinfowler.com/bliki/TestDouble.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Test Doubles ↗</a>
+- <a href="https://jestjs.io/docs/timer-mocks" target="_blank" rel="nofollow noopener noreferrer">Jest: Timer Mocks ↗</a>

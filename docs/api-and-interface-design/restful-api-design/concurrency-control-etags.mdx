@@ -1,0 +1,436 @@
+---
+sidebar_position: 5
+title: "Concurrency Control and ETags"
+description: "Prevent lost updates in concurrent environments with optimistic locking via ETags"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [ETags, concurrency control, optimistic locking, conditional requests, If-Match, If-None-Match]
+image: /img/archman-social-card.webp
+tags: [REST, API-design, concurrency, ETags, optimistic-locking, conditional-requests, data-consistency, conflict-resolution]
+hide_title: true
+---
+
+<Hero title="Concurrency Control and ETags" subtitle="Prevent lost updates with HTTP conditional requests and ETags" imageAlt="ETags illustration" size="large" />
+
+## TL;DR
+
+When multiple clients update the same resource concurrently, lost updates occur: Alice reads a document, Bob reads the same document, Bob saves changes, Alice saves changes (overwriting Bob's work). ETags solve this via **optimistic locking**. The server includes an `ETag` header (a version/hash) in GET responses. Clients include the ETag in PUT/PATCH requests via `If-Match` header. If the resource changed, the server returns 412 Precondition Failed. Clients retry, re-read the latest version, and try again. This prevents silent data loss.
+
+## Learning Objectives
+
+- Understand optimistic vs pessimistic locking strategies
+- Design ETag schemes for your resources
+- Implement conditional requests correctly
+- Handle 412 conflicts in client applications
+- Recognize when optimistic locking is insufficient
+
+## Motivating Scenario
+
+A shared document editor: Alice and Bob both open a task's description. Alice changes "Review proposal" to "Review final proposal" and saves. Bob changes "Review proposal" to "Review presentation and proposal" and saves. Bob's change overwrites Alice's. Neither sees the other's edits.
+
+With ETags: Alice's save includes her ETag. If Bob saved first, Alice receives 412 Conflict. She reloads the latest version (with Bob's edit), merges her change, and saves again. Both edits survive.
+
+## Core Concepts
+
+### Optimistic vs Pessimistic Locking
+
+**Optimistic Locking** (ETags): Assume conflicts are rare. Read data with version info. On write, verify version hasn't changed. If it has, reject and let client retry. Works well for low-contention resources.
+
+**Pessimistic Locking**: Acquire an exclusive lock before reading, hold it through update. Prevents all conflicts but risks deadlocks and reduces concurrency. Rarely used in REST APIs.
+
+REST APIs use **optimistic locking** because HTTP is stateless and clients are distributed.
+
+### ETags and Conditional Requests
+
+**ETag**: Opaque string (hash, version number, timestamp) representing resource state. Server includes it in GET responses via `ETag` header.
+
+```
+GET /users/123
+ETag: "abc123"
+```
+
+**If-Match**: Client includes ETag in PUT/PATCH. Server only proceeds if current ETag matches.
+
+```
+PUT /users/123
+If-Match: "abc123"
+{ "name": "Alice Johnson" }
+```
+
+**If-None-Match**: Client includes ETag. Server only returns 200 if ETag is different (resource changed).
+
+```
+GET /users/123
+If-None-Match: "abc123"
+# Returns 304 Not Modified if ETag hasn't changed
+```
+
+### Conflict Resolution
+
+When 412 Precondition Failed occurs, clients should:
+1. Fetch the latest version with current ETag
+2. Reapply their changes
+3. Retry the PUT/PATCH with new ETag
+4. Optionally merge changes if simultaneous edits occurred
+
+## Practical Example
+
+<Tabs>
+<TabItem value="without" label="❌ Without ETags (Lost Update)">
+
+```bash
+# Alice reads
+GET /tasks/1
+Response: { "id": 1, "title": "Review proposal", "assignee": "Alice" }
+
+# Bob reads (same resource)
+GET /tasks/1
+Response: { "id": 1, "title": "Review proposal", "assignee": "Alice" }
+
+# Bob saves first
+PUT /tasks/1
+{ "title": "Review presentation and proposal", "assignee": "Alice" }
+Response: 200 OK
+
+# Alice saves (overwrites Bob's change - LOST UPDATE)
+PUT /tasks/1
+{ "title": "Review final proposal", "assignee": "Alice" }
+Response: 200 OK
+
+# Final state has only Alice's change, Bob's is lost
+```
+
+</TabItem>
+<TabItem value="with" label="✅ With ETags (Conflict Detected)">
+
+```bash
+# Alice reads
+GET /tasks/1
+Response:
+  ETag: "v1-abc123"
+  { "id": 1, "title": "Review proposal", "assignee": "Alice" }
+
+# Bob reads (same resource)
+GET /tasks/1
+Response:
+  ETag: "v1-abc123"
+  { "id": 1, "title": "Review proposal", "assignee": "Alice" }
+
+# Bob saves first
+PUT /tasks/1
+If-Match: "v1-abc123"
+{ "title": "Review presentation and proposal", "assignee": "Alice" }
+Response: 200 OK
+  ETag: "v2-def456"
+
+# Alice attempts to save
+PUT /tasks/1
+If-Match: "v1-abc123"
+{ "title": "Review final proposal", "assignee": "Alice" }
+Response: 412 Precondition Failed
+  ETag: "v2-def456"
+{
+  "type": "https://api.example.com/errors/resource-conflict",
+  "title": "Resource Version Mismatch",
+  "status": 412,
+  "detail": "The resource has been modified since you last read it",
+  "current_etag": "v2-def456"
+}
+
+# Alice reloads latest version
+GET /tasks/1
+Response:
+  ETag: "v2-def456"
+  { "id": 1, "title": "Review presentation and proposal", "assignee": "Alice" }
+
+# Alice re-applies her change
+PUT /tasks/1
+If-Match: "v2-def456"
+{ "title": "Review final presentation and proposal", "assignee": "Alice" }
+Response: 200 OK
+  ETag: "v3-ghi789"
+```
+
+Benefits: Both changes incorporated. No silent data loss.
+
+</TabItem>
+</Tabs>
+
+## ETag Generation Strategies
+
+**Content-Hash**: Hash of resource content. Example: `"0a4d55a8d778e5022fab701977c5d840bbc486d0"` (SHA-1 of JSON). If content identical, hash identical. Stateless, deterministic.
+
+**Version Counter**: Increment on each update. Example: `"42"`. Simple, but requires server state.
+
+**Timestamp + Hash**: Combination for added safety. Example: `"1707906000-abc123"`. Server can validate format.
+
+**UUID per Write**: Generate UUID on each modification. Example: `"550e8400-e29b-41d4-a716-446655440000"`. Unique, but doesn't indicate if clients are in sync.
+
+### ETag Quality
+
+- **Weak vs Strong**: Strong ETags must be identical for equivalent representations. Weak ETags (prefixed `W/`) may differ for semantically identical content. Use strong ETags for most APIs.
+- **Deterministic**: Identical content should always produce identical ETag. Hash-based ETags are deterministic; UUID-based aren't.
+
+## Patterns and Pitfalls
+
+**Pitfall**: Weak ETags when strong needed. Clients won't recognize content as identical, defeating the purpose.
+
+**Pitfall**: Inconsistent ETag generation. Monday's ETag for `{"name":"Alice"}` differs from Tuesday's (UUIDs). Clients can't use yesterday's ETag reliably.
+
+**Pitfall**: Forgetting to return ETag on POST (create). After creating a resource, clients need its ETag for future updates.
+
+**Pitfall**: Returning 200 OK instead of 204 No Content with 409 Conflict. Clients expect specific status codes.
+
+**Pattern**: Return latest ETag in 412 response. Clients know current state without extra fetch.
+
+**Pattern**: Use ETags for GET caching too. `If-None-Match` returns 304 Not Modified, saving bandwidth.
+
+## When to Use ETags
+
+**Use when:**
+- Concurrent updates possible (web apps, distributed teams)
+- Stale data problematic (financial, medical, operational)
+- Simple conflict resolution sufficient (retry with latest version)
+
+**Don't use when:**
+- Single writer per resource
+- Conflict acceptable (logs, analytics)
+- Pessimistic locks necessary (critical sections)
+- Real-time collaboration required (needs different approach)
+
+## Design Review Checklist
+
+- [ ] GET responses include ETag header
+- [ ] POST create responses include ETag of new resource
+- [ ] PUT/PATCH require If-Match header with ETag
+- [ ] 412 Precondition Failed returned when ETag mismatch
+- [ ] ETag scheme documented (hash, version, etc.)
+- [ ] ETags are deterministic (identical content = identical ETag)
+- [ ] Last-Modified header optional, but complements ETags well
+- [ ] Client retry logic handles 412 gracefully
+- [ ] Caching leverages ETags and If-None-Match
+
+## Advanced ETag Patterns
+
+### Weak ETags for Caching
+
+Weak ETags are used for caching and allow "equivalent" representations:
+
+```
+Strong ETag: "abc123"    (exact match only)
+Weak ETag:   W/"abc123"  (equivalent match allowed)
+
+Strong use case: Concurrency control (must be exact same)
+Weak use case: Caching (can be slightly different encoding)
+
+Example:
+GET /document/1
+Strong ETag: "5c9f7b2d" (specific hash of exact content)
+Weak ETag: W/"doc:1:v2" (any representation of doc:1 version 2)
+
+For concurrency control, always use strong ETags
+For caching/bandwidth saving, weak ETags acceptable
+```
+
+### Conditional Requests for Caching
+
+Use ETags to reduce bandwidth:
+
+```bash
+# First request: full response
+GET /users/123
+Response:
+  ETag: "abc123"
+  Content: { "id": 123, "name": "Alice", "email": "alice@example.com" }
+
+# Later request: client includes If-None-Match
+GET /users/123
+If-None-Match: "abc123"
+
+Response: 304 Not Modified
+# Client uses cached response; no bandwidth wasted
+```
+
+## Complex Conflict Resolution
+
+When Alice and Bob edit overlapping fields, simple "retry" won't work:
+
+```python
+# Scenario: Task with title and assignee
+Initial state:
+  { "id": 1, "title": "Fix bug #123", "assignee": "alice", "etag": "v1" }
+
+Alice wants to change: title → "Fix critical bug #123"
+Bob wants to change: assignee → "bob"
+
+Timeline:
+1. Both read task (ETag: v1)
+2. Alice saves: title = "Fix critical bug #123"
+   Server: accepts, creates ETag: v2
+3. Bob saves: assignee = "bob" (with old ETag: v1)
+   Server: returns 412 Conflict with current ETag: v2
+
+Bob's simple retry:
+  Re-read task (get v2 with Alice's title change)
+  Re-apply: assignee = "bob"
+  Save with new ETag: v2
+  Result: BOTH changes applied successfully!
+  Final: { "title": "Fix critical bug #123", "assignee": "bob" }
+
+Lesson: Simple retry works if changes are independent.
+If changes overlap on same field, need manual merge.
+```
+
+### Merging Overlapping Changes
+
+```python
+# Complex case: Both edit title
+Initial: { "title": "Fix bug", "etag": "v1" }
+
+Alice: title = "Fix critical bug"
+Bob: title = "Fix urgent bug"
+
+Timeline:
+1. Alice saves: title = "Fix critical bug", etag: v1 → v2
+2. Bob tries: title = "Fix urgent bug", etag: v1 → 412 Conflict
+
+Bob's retry:
+  Re-read: { "title": "Fix critical bug", "etag": "v2" }
+  Bob applies his change: title = "Fix urgent bug"
+  But this overwrites Alice's "critical" → only has "urgent"
+
+Solution: Three-way merge
+  Base version: "Fix bug"
+  Alice version: "Fix critical bug"
+  Bob version: "Fix urgent bug"
+  Merged: "Fix critical urgent bug"
+
+This requires client to track edits or server to compute diffs.
+Often not practical; instead:
+- Accept concurrent edits (last write wins, but log conflict)
+- Force user to re-resolve (show both versions, let user pick)
+- Operational transform or CRDT (advanced conflict-free algorithms)
+```
+
+## ETag Implementation in Common Frameworks
+
+### Express.js (Node.js)
+
+```javascript
+const express = require('express');
+const crypto = require('crypto');
+const app = express();
+
+app.get('/documents/:id', (req, res) => {
+  const doc = { id: req.params.id, content: 'Hello' };
+
+  // Generate ETag from content hash
+  const etag = crypto
+    .createHash('md5')
+    .update(JSON.stringify(doc))
+    .digest('hex');
+
+  // Client included If-None-Match?
+  if (req.headers['if-none-match'] === etag) {
+    res.status(304).send();  // Not Modified
+    return;
+  }
+
+  res.set('ETag', etag);
+  res.json(doc);
+});
+
+app.put('/documents/:id', (req, res) => {
+  const clientEtag = req.headers['if-match'];
+  const doc = { id: req.params.id, ...req.body };
+  const newEtag = crypto
+    .createHash('md5')
+    .update(JSON.stringify(doc))
+    .digest('hex');
+
+  const serverEtag = getCurrentEtag(req.params.id);
+
+  if (clientEtag !== serverEtag) {
+    return res.status(412).json({
+      error: 'Conflict',
+      current_etag: serverEtag
+    });
+  }
+
+  saveDocument(req.params.id, doc);
+  res.set('ETag', newEtag);
+  res.json(doc);
+});
+```
+
+### Django (Python)
+
+```python
+from django.http import HttpResponse
+from django.views.decorators.http import condition
+import hashlib
+
+def get_document_etag(request, doc_id):
+    """Compute ETag for document."""
+    doc = Document.objects.get(id=doc_id)
+    return hashlib.md5(
+        json.dumps(doc.to_dict(), sort_keys=True).encode()
+    ).hexdigest()
+
+@condition(etag_func=get_document_etag)
+def retrieve_document(request, doc_id):
+    """Django automatically handles If-None-Match and returns 304 if matched."""
+    doc = Document.objects.get(id=doc_id)
+    return JsonResponse(doc.to_dict())
+
+def update_document(request, doc_id):
+    """Manually handle If-Match for PUT."""
+    client_etag = request.headers.get('If-Match')
+    doc = Document.objects.get(id=doc_id)
+
+    server_etag = get_document_etag(request, doc_id)
+
+    if client_etag != server_etag:
+        return JsonResponse(
+            {'error': 'Conflict', 'current_etag': server_etag},
+            status=412
+        )
+
+    # Update
+    doc.update(json.loads(request.body))
+    doc.save()
+
+    new_etag = get_document_etag(request, doc_id)
+    response = JsonResponse(doc.to_dict())
+    response['ETag'] = new_etag
+    return response
+```
+
+## Self-Check
+
+- What HTTP status code indicates an ETag mismatch?
+- Why is content-based ETag hashing better than random UUIDs?
+- How would you handle the scenario where Alice and Bob edit overlapping fields?
+- What's the difference between weak and strong ETags?
+- How do ETags help with bandwidth reduction (caching)?
+- What's the downside of optimistic locking (ETags) vs pessimistic (locks)?
+
+:::info One Takeaway
+ETags prevent silent data loss by detecting concurrent modifications. Always include them when clients may update concurrently. For simple independent edits, retry with re-read handles conflicts automatically. For overlapping edits, require manual merge or use advanced conflict-free algorithms (CRDT, OT).
+
+:::
+
+## Next Steps
+
+- Read **Versioning Strategies** for evolving APIs while maintaining backward compatibility
+- Study **Error Formats** for handling 412 Conflict responses
+- Explore **API Security** for authentication on updates
+
+## References
+
+- RFC 7232: HTTP Conditional Requests (ETags, Last-Modified)
+- Optimistic Concurrency Control (Database concepts)
+- Lost Updates Problem (Distributed Systems)

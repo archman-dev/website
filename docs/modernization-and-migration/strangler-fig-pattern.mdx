@@ -1,0 +1,469 @@
+---
+sidebar_position: 1
+title: "Strangler Fig Pattern"
+description: "Incrementally replace legacy systems by growing new functionality alongside the old."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: [modernization, migration, patterns, refactoring]
+image: /img/archman-social-card.webp
+tags: [modernization, migration, patterns, refactoring]
+hide_title: true
+---
+
+<Hero title="Strangler Fig Pattern" subtitle="Incrementally replace legacy systems by growing new functionality alongside the old." imageAlt="modernization illustration" size="large" />
+
+## TL;DR
+
+Incrementally replace legacy systems by growing new functionality alongside the old. Rather than risky big-bang replacements, these patterns enable incremental, low-risk transitions that keep systems running while you modernize. They require discipline and clear governance but dramatically reduce modernization risk.
+
+## Learning Objectives
+
+- Understand the pattern and when to apply it
+- Learn how to avoid common modernization pitfalls
+- Apply risk mitigation techniques for major changes
+- Plan and execute incremental transitions safely
+- Manage team and organizational change during modernization
+
+## Motivating Scenario
+
+You have a legacy system that is becoming a bottleneck. Rewriting it would take a year and risk breaking critical functionality. Instead, you incrementally replace it with new services while keeping the old system running, gradually shifting traffic and functionality. Six months later, the legacy system handles 10 percent of traffic and serves as a fallback. Eventually, you can retire it completely. This pattern turns a risky all-or-nothing gamble into a managed, incremental transition.
+
+## Core Concepts
+
+### Migration Risk
+
+Major system changes carry existential risk: downtime impacts revenue, data corruption destroys trust, performance regression loses customers. These patterns manage that risk through incremental change and careful rollback planning.
+
+### Incremental Transition
+
+Rather than "old system" then "new system", these patterns create "old plus new coexisting" then "new plus old as fallback" then "new only". This gives you multiple checkpoints to verify things are working.
+
+<Admonition type="tip">
+The key insight: You do not need to be perfect on day one. You just need to be good enough to carry traffic safely, with a fallback if something goes wrong.
+</Admonition>
+
+### Dual-Write and Data Consistency
+
+When migrating data, you typically need both systems to have current data for a period. Dual writes keep both systems in sync, backfill catches up old data, and CDC (Change Data Capture) handles streaming updates.
+
+### Abstraction Layers
+
+Rather than replacing a system wholesale, you wrap it with an abstraction (facade or anti-corruption layer). The abstraction routes traffic gradually: initially 100 percent to old, then 99 percent old / 1 percent new, then 50/50, then eventually 100 percent new.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="strangler" label="Strangler Fig Timeline">
+
+```yaml
+Phase 1: Preparation (Weeks 1-4)
+  New service deployed but offline
+  Load balancer configured to route traffic
+  Both systems connected to same database
+  Risk: Low (new service not receiving traffic)
+
+Phase 2: Canary (Weeks 5-6)
+  Traffic Distribution: 1 percent to new, 99 percent to old
+  Monitoring: Compare response times, error rates
+  Verify data consistency
+  Rollback: Instant (revert to 100 percent old)
+  Risk: Very low (affects 1 percent of traffic)
+
+Phase 3: Ramp (Weeks 7-12)
+  Gradual Increase: 5 percent, 10 percent, 25 percent, 50 percent
+  Continuous comparison with old system
+  Alert on any divergence
+  Rollback: Revert traffic distribution instantly
+  Risk: Medium (affects majority by end)
+
+Phase 4: Retirement (Weeks 13+)
+  New service handles all traffic independently
+  Old system monitored but not actively used
+  Archive old system after stable period
+  Extract data and lessons learned
+```
+
+</TabItem>
+<TabItem value="strategies" label="Migration Strategies">
+
+```
+Core Strategies:
+
+Strangler Fig Pattern:
+  Grow new functionality alongside old
+  Gradually shift traffic
+  Old system stays running as safety net
+  Works for mostly stateless systems
+
+Branch by Abstraction:
+  Use feature flags and abstraction layers
+  Hide complexity behind clean interface
+  Transition implementation at runtime
+
+Dual Write and Backfill:
+  New system writes all new data
+  Old system maintains historical data
+  Backfill job copies old data to new system
+  Both stay consistent until cutover
+
+Anti-Corruption Layers:
+  Wrap legacy systems with adapters
+  Translate between old and new interfaces
+  Insulate new code from legacy complexity
+
+Domain-Aligned Decomposition:
+  Decompose monolith along domain boundaries
+  Each domain becomes new microservice
+  Easier to coordinate
+  Reduces coupling
+```
+
+</TabItem>
+<TabItem value="verification" label="Verification Checklist">
+
+```
+Data Consistency:
+  - Old and new systems return identical data
+  - Both systems show same transaction count
+  - Randomly sampled records match in both
+  - Metadata (timestamps, IDs) consistent
+
+Functionality:
+  - All major features work in new system
+  - Error cases handled identically
+  - Edge cases verified
+  - Security rules enforced identically
+
+Performance:
+  - New system has acceptable latency
+  - New system has acceptable error rate
+  - Database resources not over-utilized
+  - No unexpected slow queries
+
+Operations:
+  - Monitoring and alerting working
+  - Logs contain expected entries
+  - Can trace requests across systems
+  - Runbooks updated for new system
+
+Rollback:
+  - Can quickly switch all traffic back
+  - Old system receives traffic without issues
+  - Data not corrupted if rollback needed
+  - Team has tested rollback procedure
+```
+
+</TabItem>
+</Tabs>
+
+## Key Success Factors
+
+1. **Clear success criteria:** You know what "done" looks like
+2. **Incremental approach:** Big changes done in small, verifiable steps
+3. **Comprehensive testing:** Automated tests at multiple levels
+4. **Constant verification:** Continuous comparison between old and new
+5. **Fast rollback:** Can switch back to old system in minutes
+6. **Team alignment:** Everyone understands the approach and timeline
+7. **Transparent communication:** Stakeholders understand progress and risks
+
+## Pitfalls to Avoid
+
+❌ All-or-nothing thinking: "Just rewrite it" instead of incremental migration
+❌ Ignoring data consistency: Assuming old and new data will magically sync
+❌ No fallback plan: If new system fails, you are stuck
+❌ Invisible progress: Weeks of work with no deployed functionality
+❌ Parallel maintenance: Maintaining old and new systems forever
+❌ Rushing to cleanup: Retiring old system before new one is truly stable
+❌ Team turnover: Key knowledge not documented
+
+## Related Patterns
+
+- Strangler Fig: Wrap and gradually replace legacy systems
+- Feature Flags: Control which code path executes at runtime
+- Blue-Green Deployment: Switch entire systems at once
+- Canary Releases: Route small percentage to new version
+
+## Checklist: Before Modernization
+
+- [ ] Clear business case: Why modernize? What is the benefit?
+- [ ] Phased approach defined: How will you migrate incrementally?
+- [ ] Success criteria explicit: What does "done" look like?
+- [ ] Risk mitigation planned: What could go wrong? How will you recover?
+- [ ] Testing strategy defined: How will you verify correctness?
+- [ ] Monitoring in place: Can you detect problems in new system?
+- [ ] Team capacity sufficient: Do you have capacity for both?
+- [ ] Communication plan ready: How will you keep stakeholders informed?
+
+## Self-Check
+
+1. **Can you do this migration in phases?** If not, find a way to break it up.
+2. **Can you roll back in less than 1 hour?** If not, design a faster rollback.
+3. **Have you tested the fallback procedure?** If not, do it now.
+4. **Does everyone understand the timeline?** If not, communicate more clearly.
+
+## Deep Dive: Strangler Fig Pattern Implementation
+
+### Understanding the Pattern Name
+
+The pattern is named after the strangler fig tree, which grows around and eventually supplants a host tree. Similarly, the new system grows alongside the old, gradually taking over its responsibilities until the old system is completely superseded. The key insight: the old system remains functional throughout, reducing risk dramatically.
+
+### Risk Categories and Mitigation
+
+**Data Risk:** The greatest migration risk. Two systems must agree on data.
+
+- *Mitigation:* Implement CDC (Change Data Capture) to stream changes to new system in real-time
+- *Verification:* Run periodic data comparisons—random sampling of records from both systems
+- *Rollback:* New system data is derivative; can always be re-synced from old system
+
+**Functional Risk:** New system might not handle all edge cases.
+
+- *Mitigation:* Shadow traffic—run requests through both systems, discard new system response
+- *Verification:* Compare response times, error rates between old and new for same request
+- *Rollback:* Old system is still authoritative; client sees old system response always
+
+**Performance Risk:** New system might be slower, creating bottleneck.
+
+- *Mitigation:* Load test with realistic data volumes before ramping traffic
+- *Verification:* Monitor latency percentiles (p50, p95, p99) continuously
+- *Rollback:* Reduce traffic percentage instantly; no downtime required
+
+**Operational Risk:** New system might have undiscovered failure modes.
+
+- *Mitigation:* Start with small percentage (1-5%) so failure affects few users
+- *Verification:* Monitor error rates per service; alert on divergence from baseline
+- *Rollback:* Instant; revert load balancer configuration to 100% old
+
+### Real-World Example: E-commerce Platform
+
+A mid-size e-commerce company with 10M daily users wanted to migrate from a 10-year-old monolith (Ruby on Rails) to microservices (Go). Annual losses from technical debt: capacity constraints, slow deployments, difficulty hiring Ruby talent.
+
+**Phase 1: Strangler Preparation (Weeks 1-4)**
+
+- Set up new service infrastructure: Kubernetes cluster, observability stack
+- Implement API gateway as traffic router (using open source Kong)
+- New Order Service written and deployed (read-only initially)
+- Both systems share same PostgreSQL database (no dual writes yet)
+- Risk: Low (new service offline)
+
+**Phase 2: Canary Release (Weeks 5-8)**
+
+- API gateway routes 1% of order reads to new service
+- Comparison layer: API gateway compares responses, logs divergences
+- Monitoring: Dashboard shows old vs new response times, error rates
+- Bug fixes in new service (1-2 small issues found)
+- After 1 week stable: Increase to 5%
+- Risk: Very low (affects ~50K users out of 10M)
+
+**Phase 3: Ramp (Weeks 9-20)**
+
+- 5% → 10% → 25% → 50% (each week if no issues)
+- Database bottleneck identified: add read replicas
+- New service code optimized based on real traffic patterns
+- Performance: new service consistently 20% faster
+- After 50%: 75% → 90%
+- Risk: Medium (affects majority, but old system still available instantly)
+
+**Phase 4: Final Cutover (Weeks 21-24)**
+
+- 100% traffic to new service
+- Old service kept running (read-only) for 2 weeks as safety net
+- After stable period: Decommission old service
+- Archive source code, database snapshots, deployment configs
+- Post-mortem: Team learned optimizations for next service migration
+- Result: 12-week migration, zero downtime, minimal risk
+
+### Design Patterns for Strangler Fig
+
+**Router Pattern:**
+
+```yaml
+API Gateway Configuration:
+  /orders/list:
+    - if (user_id % 100) < traffic_percentage:
+        route to: new_orders_service
+      else:
+        route to: old_monolith
+    - log both responses
+    - return old system response to client
+    - compare asynchronously
+```
+
+**Feature Flag Pattern:**
+
+```javascript
+// Instead of router logic, use feature flags
+function handleOrderRequest(orderId) {
+  if (featureFlag.isEnabled('use-new-orders-service', {
+    userId: getCurrentUserId(),
+    percentage: 5
+  })) {
+    return newOrdersService.getOrder(orderId);
+  }
+  return oldMonolith.getOrder(orderId);
+}
+```
+
+**Dual-Write Pattern for Writes:**
+
+```python
+# Phase 2: Canary reads, but writes still go to old system only
+def create_order(order_data):
+    order = old_system.create_order(order_data)
+    # new system will get data via CDC
+    return order
+
+# Phase 3: Dual write - both systems get the write
+def create_order(order_data):
+    old_order = old_system.create_order(order_data)  # primary
+    try:
+        new_order = new_system.create_order(order_data)  # secondary
+        if old_order.id != new_order.id:
+            alert("Data mismatch in order creation")
+    except Exception as e:
+        log_error("New system write failed", e)
+        # Old system succeeded; new system will catch up via CDC
+    return old_order
+
+# Phase 4: New system is primary, old system shadows
+def create_order(order_data):
+    new_order = new_system.create_order(order_data)  # primary
+    try:
+        old_order = old_system.create_order(order_data)  # shadow
+    except:
+        pass  # old system failure is not critical
+    return new_order
+```
+
+### Metrics and Monitoring
+
+Critical metrics to track:
+
+1. **Traffic distribution:** % routed to new vs old
+2. **Response time comparison:** Old vs new latency (p50, p95, p99)
+3. **Error rates:** % errors old vs new
+4. **Data divergence:** Sampled record comparisons (1 per hour)
+5. **Feature coverage:** % of features working in new system
+6. **Deployment frequency:** Able to deploy old system fixes independently
+7. **Rollback time:** Time to revert traffic from new to old
+8. **Database load:** CPU, connections, query times
+
+### Common Pitfalls and How to Avoid Them
+
+**Pitfall 1: Underestimating Data Complexity**
+
+Many teams assume "just copy the data" is easy. Reality: data transformations, missing fields, historical inconsistencies make this hard.
+
+Solution:
+- Spend 2-3 weeks on data mapping before writing any new code
+- Document every field transformation: old_orders.total_cents → new_orders.total_amount_cents (1:1), old_orders.customer → new_orders.customer_id (requires lookup)
+- Implement validation: count records, sum totals, spot-check samples across transformation
+
+**Pitfall 2: Insufficient Monitoring During Cutover**
+
+Team confident new system works, turns off monitoring during final cutover. System has latency issue under full load; no alerts. Users see slowness; team is blind.
+
+Solution:
+- Keep monitoring on throughout—especially during final phases
+- Set up dashboards comparing old/new for every metric
+- Create alert for "divergence > 10%" between old and new latency
+- Have runbook ready: if new system slow, instant revert procedure
+
+**Pitfall 3: Not Testing Rollback**
+
+Team never practices rollback. When it's needed, discovers configuration errors, takes 1 hour to revert. Meanwhile users suffer.
+
+Solution:
+- Test rollback weekly during development phases
+- Document: "If new service fails, engineer runs: `kubectl set service order-api traffic=old:100 new:0`"
+- Measure rollback time: goal under 2 minutes
+- Every on-call engineer practices rollback before going on-call
+
+**Pitfall 4: Changing Architecture Twice**
+
+Team tries to migrate AND refactor architecture simultaneously. Code becomes complex; both old and new have issues. Migration stalls.
+
+Solution:
+- Strangler fig: new system mirrors old system's architecture, not new ideal architecture
+- Once old system is sunset, then refactor new system
+- This extends timeline but dramatically reduces risk
+- Example: If old system is synchronous blocking, new system is too (even if async would be better). Refactor async after migration is complete.
+
+**Pitfall 5: Team Learns Wrong Lessons**
+
+Team rushes migration (6 weeks instead of 12). Takes shortcuts. Post-mortems: "This was risky, shouldn't do that again." But root cause wasn't the pattern—it was rushing.
+
+Solution:
+- Each phase should have explicit success criteria before advancing
+- Don't advance just because time has passed; wait for metrics to stabilize
+- If hitting critical issue, pause that phase, investigate, fix, then continue
+- Celebrate patience: "Took us 12 weeks, but zero downtime and high confidence"
+
+## Advanced Topics
+
+### Strangler Fig with Microservices
+
+When migrating monolith to microservices, apply strangler fig to each bounded context:
+
+```
+Week 1-4:   Strangler for Order Service
+Week 5-12:  Ramp Order Service, start Strangler for Catalog Service
+Week 13-20: Ramp Catalog, start Strangler for Payment Service
+Week 21-28: Ramp Payment, all services live, monolith shadow-reading only
+```
+
+Each service has independent timeline, reducing coordination complexity.
+
+### Strangler Fig with Database Migrations
+
+If also changing databases (e.g., PostgreSQL to DynamoDB):
+
+1. New service code writes to both databases (primary old, secondary new)
+2. CDC streams from old DB to new DB to keep them in sync
+3. Switch primary: code writes to new DB first, old DB second
+4. Eventually: old DB is read-only for reconciliation, then decommissioned
+
+### Strangler Fig with Data Format Changes
+
+Old system uses XML, new system uses JSON. Use adapter in gateway:
+
+```python
+# API Gateway
+def handleRequest(request):
+    if useNewService(request):
+        response = new_service.handle(request_json)
+        return response  # return JSON
+    else:
+        response = old_service.handle(request_xml)  # send XML
+        return response  # return XML
+
+# Comparison layer
+def compareResponses(old_response_xml, new_response_json):
+    old_data = xmlToDict(old_response_xml)
+    new_data = new_response_json
+    # now compare
+```
+
+## Takeaway
+
+Modernization is not about technology—it is about managing risk while delivering business value. The best migrations are the ones teams do not notice: they happen gradually, safely, with multiple checkpoints. Time is your friend in modernization; rushing increases risk without proportional gain. Strangler Fig transforms a terrifying rewrite project into a series of small, manageable increments. Each week brings confidence, not anxiety. By the end, you've migrated the system AND built a high-trust team that understands the system deeply.
+
+## Next Steps
+
+1. **Define the scope:** What exactly are you modernizing? (One service? Whole platform?)
+2. **Identify the risks:** What could go wrong? How will you mitigate? (Data? Performance? Coordination?)
+3. **Plan in phases:** How can you migrate incrementally? (How to structure router, feature flags, dual writes?)
+4. **Design verification:** How will you prove old and new are equivalent? (Data sampling? Response comparison? Load testing?)
+5. **Prepare rollback:** How will you revert if something goes wrong? (What's the fastest rollback time possible?)
+6. **Build observability:** What metrics will drive phase advancement? (Define success criteria before starting.)
+7. **Communicate timeline:** How long will this realistically take? (6-12 months typical; better than rushing.)
+
+## References
+
+1. <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Strangler Fig Application ↗️</a>
+2. <a href="https://www.amazon.com/Building-Microservices-Designing-Fine-Grained-Systems/dp/1491950358" target="_blank" rel="nofollow noopener noreferrer">Sam Newman: Building Microservices ↗️</a>
+3. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+4. <a href="https://www.oreilly.com/library/view/monolith-to-microservices/9781492047834/" target="_blank" rel="nofollow noopener noreferrer">Sam Newman: Monolith to Microservices ↗️</a>
+5. <a href="https://www.oreilly.com/library/view/building-secure-and/9781491996621/" target="_blank" rel="nofollow noopener noreferrer">Addison-Wesley: Building Secure and Reliable Systems ↗️</a>

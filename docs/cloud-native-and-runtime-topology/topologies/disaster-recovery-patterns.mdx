@@ -1,0 +1,684 @@
+---
+sidebar_position: 3
+title: Disaster Recovery Patterns
+description: Backup strategies, RPO/RTO, PITR, and failover testing for business continuity
+docType: deep-dive
+difficulty: advanced
+estimatedTime: 30
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["disaster-recovery","backup","rpo","rto","pitr","failover","business-continuity"]
+image: /img/archman-social-card.webp
+tags: ["topology","architecture","resilience","disaster-recovery"]
+hide_title: true
+---
+
+<Hero
+  title="Disaster Recovery Patterns"
+  description="Design backup strategies, define RPO/RTO targets, implement point-in-time recovery, and test failover procedures for business continuity"
+  size="large"
+/>
+
+## TL;DR
+
+Disaster recovery combines backups, replication, and failover mechanisms to minimize data loss and downtime. Define two critical metrics: RPO (Recovery Point Objective—acceptable data loss) and RTO (Recovery Time Objective—acceptable downtime). Point-in-time recovery (PITR) restores databases to a specific moment; replication-based failover is faster but requires coordination. Follow the 3-2-1 rule: maintain 3 copies of data, on 2 different media types, with 1 copy offsite. Automate all backups, test failover quarterly, and document runbooks. Ransomware and corruption are threats; make backups immutable.
+
+## Learning Objectives
+
+- Design backup strategies aligned with business continuity requirements and RTO/RPO targets
+- Understand RPO/RTO trade-offs and achieve SLOs without over-engineering
+- Implement point-in-time recovery (PITR) for databases and stateful systems
+- Test failover procedures regularly and document recovery runbooks
+- Protect backups against ransomware and accidental deletion
+- Calculate recovery capacity planning and cost trade-offs
+
+## Motivating Scenario
+
+A SaaS company runs PostgreSQL on a single server in one region. No backups. A user accidentally runs a DELETE query that wipes the customer database. By the time anyone notices, the transaction is committed. The only "backup" is a week-old snapshot—customer loses a week of data. Angry customer files a lawsuit.
+
+**With disaster recovery:** Daily automated backups in 2 regions. Point-in-time recovery enabled. The company detects the accidental DELETE within 5 minutes. Restores from a backup taken 1 hour earlier. Customer loses 1 hour of data instead of a week. Business survives.
+
+## Core Concepts
+
+### RPO vs RTO
+
+**RPO (Recovery Point Objective)**: Maximum acceptable data loss, measured in time. If RPO = 1 hour, you accept losing up to 1 hour of data in a disaster. Achieved through backup frequency.
+
+**RTO (Recovery Time Objective)**: Maximum acceptable downtime. If RTO = 15 minutes, your system must be back online within 15 minutes of a failure. Achieved through fast failover and replication.
+
+| Metric | Definition | Example |
+|--------|------------|---------|
+| **RPO** | Data loss tolerance | "Lose data from last 30 minutes only" |
+| **RTO** | Downtime tolerance | "Offline for max 2 hours" |
+| **Backup frequency** | Drives RPO | Hourly backups → 1h RPO |
+| **Failover speed** | Drives RTO | Replication → fast (seconds). PITR restore → slower (minutes) |
+
+### The 3-2-1 Rule
+
+A proven backup strategy:
+- **3 copies**: Original + 2 backups
+- **2 media types**: Disk + Tape (or Block storage + Object storage)
+- **1 offsite**: At least one copy in a different geographic location
+
+Example:
+- Copy 1: Production database (on-disk)
+- Copy 2: Daily backup to local NAS (same region)
+- Copy 3: Daily backup replicated to S3 in another region (offsite)
+
+This protects against:
+- Single disk failure (Copy 2, 3 exist)
+- Regional disaster (Copy 3 offsite)
+- Media format obsolescence (2 different types)
+
+### Backup Types
+
+| Type | Strategy | RPO | RTO | Cost |
+|------|----------|-----|-----|------|
+| **Full backup** | Copy entire dataset | 1-7 days | Medium (restore slow) | High |
+| **Incremental** | Copy only changed data | Daily | Medium | Low |
+| **Differential** | Copy changes since last full | Daily | Medium | Medium |
+| **Continuous replication** | Stream changes to standby | Minutes-seconds | Fast (seconds) | Very High |
+| **Point-in-Time Recovery (PITR)** | Restore to any moment (via logs) | Minutes | Medium (restore from backup + replay logs) | Medium |
+
+### Failover Patterns
+
+| Pattern | Mechanism | RTO | Consistency | Complexity |
+|---------|-----------|-----|-------------|-----------|
+| **Passive Standby** | Single active, manual failover | Hours | Strong | Low |
+| **Active-Passive (automatic)** | Automatic failover on detection | Minutes | Strong | Medium |
+| **Active-Active** | Both regions serving (eventual consistency) | Seconds | Eventual | High |
+| **Warm Standby** | Pre-provisioned, replication, quick promotion | 5-15 min | Strong | Medium |
+
+## Practical Example
+
+<Tabs>
+<TabItem value="backup-strategy" label="Backup Strategy Design">
+
+```yaml
+# Example: Disaster recovery plan for PostgreSQL + Kubernetes
+
+# 1. Daily automated full backup to local storage
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup-daily
+  namespace: data-layer
+spec:
+  schedule: "2 0 * * *"  # 2 AM daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: postgres-backup
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              value: "postgres.data-layer"
+            - name: PGUSER
+              value: "postgres"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            command:
+            - /bin/sh
+            - -c
+            - |
+              BACKUP_FILE="backup-$(date +%Y%m%d-%H%M%S).sql.gz"
+              pg_dump --verbose --format=custom | gzip > /mnt/backups/$BACKUP_FILE
+              echo "Backup created: $BACKUP_FILE"
+              # Replicate to S3 for offsite storage
+              aws s3 cp /mnt/backups/$BACKUP_FILE s3://dr-backups/postgres/$BACKUP_FILE
+              # Clean up old backups (keep 30 days)
+              find /mnt/backups -name "backup-*.sql.gz" -mtime +30 -delete
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /mnt/backups
+          restartPolicy: OnFailure
+          volumes:
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-pvc
+---
+# 2. Continuous transaction logging for PITR
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-wal-config
+  namespace: data-layer
+data:
+  postgresql.conf: |
+    # Enable WAL archiving for PITR
+    wal_level = replica
+    max_wal_senders = 10
+    wal_keep_segments = 64
+    archive_mode = on
+    archive_command = 'test ! -f /mnt/wal-archive/%f && cp %p /mnt/wal-archive/%f'
+    # Replicate WAL to S3 every 5 minutes
+    archive_timeout = 300
+---
+# 3. Standby replica in another region (continuous replication)
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-primary-us-east-1
+  namespace: data-layer
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: myapp
+      owner: postgres
+  postgresql:
+    parameters:
+      log_checkpoints: "on"
+      log_statement: "all"
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://dr-backups/postgres
+      s3Credentials:
+        accessKeyId:
+          name: aws-credentials
+          key: access_key
+        secretAccessKey:
+          name: aws-credentials
+          key: secret_key
+      retention:
+        recoverWindowDays: 30
+    retentionPolicy: "RECOVERY WINDOW OF 30 days"
+  monitoring:
+    enabled: true
+    prometheusRule:
+      enabled: true
+---
+# 4. Failover procedure (manual, documented)
+# In case of primary region failure:
+# 1. Verify primary is truly down (not network partition)
+# 2. Promote standby to primary: pg_ctl promote
+# 3. Update application connection strings to new primary
+# 4. Run: PITR restore from backup if needed (for corruption/delete)
+# 5. Test all queries work
+# 6. Update DNS to point to new primary
+```
+
+**Backup Schedule:**
+- Hourly: Transaction logs (WAL) to S3 (enables PITR to any minute)
+- Daily: Full backup at 2 AM UTC to local NAS + S3
+- Weekly: Full backup to tape for long-term retention
+- Monthly: Offsite tape shipped to secure vault
+
+**Recovery Capability:**
+- RPO: 1 hour (lose at most 1 hour of data if primary fails)
+- RTO: 5 minutes for replication-based failover, 30 minutes for PITR restore
+
+</TabItem>
+
+<TabItem value="pitr-example" label="Point-in-Time Recovery (PITR)">
+
+```python
+# Example: Restore database to a specific point in time
+
+import subprocess
+import datetime
+from typing import Optional
+
+class PostgreSQLRecovery:
+    """Recover PostgreSQL database to a specific point in time."""
+
+    def __init__(self, backup_bucket="s3://dr-backups/postgres"):
+        self.backup_bucket = backup_bucket
+
+    def list_available_backups(self):
+        """List all available backups."""
+        cmd = f"aws s3 ls {self.backup_bucket}/ --recursive"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return result.stdout.split('\n')
+
+    def restore_to_time(self, target_time: datetime.datetime, restore_host: str):
+        """
+        Restore database to a specific point in time.
+
+        Args:
+            target_time: Restore to this moment (e.g., just before DELETE query)
+            restore_host: IP/hostname of target server
+        """
+        # Step 1: Find the latest full backup *before* target_time
+        backup_file = self._find_backup_before(target_time)
+        if not backup_file:
+            raise Exception(f"No backup found before {target_time}")
+
+        print(f"Step 1: Found backup: {backup_file}")
+
+        # Step 2: Download backup to restore host
+        cmd = f"aws s3 cp {self.backup_bucket}/{backup_file} /tmp/restore.sql.gz"
+        subprocess.run(cmd, shell=True, check=True)
+        print(f"Step 2: Downloaded backup to restore host")
+
+        # Step 3: Extract backup
+        cmd = "cd /tmp && gunzip -c restore.sql.gz | psql -h {} -U postgres -d myapp".format(restore_host)
+        subprocess.run(cmd, shell=True, check=True)
+        print(f"Step 3: Restored database from backup")
+
+        # Step 4: Replay transaction logs (WAL) from backup time to target_time
+        # This uses pg_wal_replay_recover.conf to specify recovery_target_timeline
+        # and recovery_target_time
+        recovery_conf = f"""
+        restore_command = 'aws s3 cp s3://dr-backups/postgres/wal/%f /tmp/%f'
+        recovery_target_time = '{target_time.isoformat()}'
+        recovery_target_timeline = 'latest'
+        recovery_target_action = 'pause'
+        """
+
+        with open("/tmp/recovery.conf", "w") as f:
+            f.write(recovery_conf)
+
+        print(f"Step 4: Replaying transaction logs to {target_time}")
+        # PostgreSQL reads recovery.conf and replays WAL up to recovery_target_time
+        # This can take minutes depending on amount of data
+
+        # Step 5: Manual verification before promoting standby
+        print(f"Step 5: Verify data is correct (query manually)")
+        print(f"       SELECT COUNT(*) FROM customers; -- Should match pre-DELETE count")
+
+        # Step 6: Promote standby to primary
+        print(f"Step 6: When ready, run: pg_ctl promote")
+
+    def _find_backup_before(self, target_time: datetime.datetime) -> Optional[str]:
+        """Find latest backup taken before target_time."""
+        # Query AWS S3 or backup catalog
+        # Return: s3 key of latest backup before target_time
+        # Example: "backup-20250214-020000.sql.gz"
+        pass
+
+    def dry_run_restore(self, target_time: datetime.datetime):
+        """Test recovery without modifying production (use test server)."""
+        print(f"DRY RUN: Recovering to {target_time}")
+        # Same steps, but on a separate test server
+        # Run queries to verify recovery was successful
+        # Then delete test server
+        pass
+
+# Usage
+recovery = PostgreSQLRecovery()
+
+# Scenario: Someone ran DELETE FROM customers WHERE 1=1 at 2:15 PM
+# Restore to 2:10 PM (5 minutes before)
+target = datetime.datetime(2025, 2, 14, 14, 10, 0)
+recovery.restore_to_time(target, restore_host="db-restore.internal")
+
+# Output:
+# Step 1: Found backup: backup-20250214-020000.sql.gz
+# Step 2: Downloaded backup to restore host
+# Step 3: Restored database from backup
+# Step 4: Replaying transaction logs to 2025-02-14T14:10:00
+# Step 5: Verify data is correct (query manually)
+# Step 6: When ready, run: pg_ctl promote
+```
+
+**PITR Workflow:**
+1. Disaster detected: "All customer data is gone!"
+2. Identify exact time of disaster (e.g., 2:15:32 PM)
+3. Calculate target recovery time: 2:15:00 PM (just before disaster)
+4. Run restore script → database restored to that exact moment
+5. Verify data looks correct (sample queries)
+6. Promote restored database to primary
+7. Update application to point to new primary
+8. Run full test suite
+9. Go live
+
+**Time to recovery:** ~10-30 minutes depending on data size and log replay time
+
+</TabItem>
+
+<TabItem value="failover-automation" label="Automated Failover Detection">
+
+```bash
+#!/bin/bash
+# Automated failover detection and promotion script
+# Runs on standby replica. If primary is unreachable, promotes standby to primary.
+
+set -e
+
+PRIMARY_HOST="db-primary.us-east-1.internal"
+STANDBY_HOST="db-standby.us-west-2.internal"
+CHECK_INTERVAL=10  # Check every 10 seconds
+FAILURE_THRESHOLD=3  # 3 consecutive failures = promote
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $@" >> /var/log/failover.log
+}
+
+check_primary_health() {
+    # Try to connect to primary and run a simple query
+    if timeout 5 psql -h $PRIMARY_HOST -U postgres -d postgres \
+        -c "SELECT 1" >/dev/null 2>&1; then
+        return 0  # Primary is alive
+    else
+        return 1  # Primary is down
+    fi
+}
+
+promote_standby() {
+    log "PRIMARY DOWN: Promoting standby to primary"
+
+    # Step 1: Promote standby
+    sudo -u postgres pg_ctl promote -D /var/lib/postgresql/data
+    log "Standby promoted to primary"
+
+    # Step 2: Wait for promotion to complete
+    sleep 10
+
+    # Step 3: Verify new primary is accepting writes
+    if ! psql -h localhost -U postgres -d postgres -c "CREATE TEMP TABLE test (id INT)"; then
+        log "ERROR: Promoted database not accepting writes"
+        exit 1
+    fi
+    log "Verified: Standby is now primary and accepting writes"
+
+    # Step 4: Update DNS (point primary hostname to new primary IP)
+    # aws route53 change-resource-record-sets ...
+    log "Updated DNS: db-primary.us-east-1.internal -> $STANDBY_HOST"
+
+    # Step 5: Alert ops team
+    # Send Slack message, PagerDuty alert, email
+    curl -X POST https://hooks.slack.com/services/YOUR/WEBHOOK/URL \
+        -d '{"text": "Database failover completed. Standby promoted to primary."}'
+    log "Alerted ops team via Slack"
+
+    # Step 6: Document failover in log
+    log "FAILOVER COMPLETE: Primary was $PRIMARY_HOST, new primary is $STANDBY_HOST"
+}
+
+consecutive_failures=0
+
+while true; do
+    if check_primary_health; then
+        consecutive_failures=0
+        log "Primary health check: OK"
+    else
+        consecutive_failures=$((consecutive_failures + 1))
+        log "Primary health check FAILED (attempt $consecutive_failures/$FAILURE_THRESHOLD)"
+
+        if [ $consecutive_failures -ge $FAILURE_THRESHOLD ]; then
+            promote_standby
+            exit 0  # Failover complete
+        fi
+    fi
+
+    sleep $CHECK_INTERVAL
+done
+```
+
+**Failover Workflow:**
+1. Health check detects primary down for 30 seconds
+2. Standby auto-promotes to primary
+3. DNS updated within 1-2 minutes
+4. Application reconnects to new primary (existing connections fail and retry)
+5. Ops team receives alert in Slack
+6. No manual intervention needed
+
+**RTO achieved:** 2-5 minutes
+
+</TabItem>
+
+<TabItem value="failover-testing" label="Failover Testing (Quarterly Drills)">
+
+```bash
+#!/bin/bash
+# Quarterly disaster recovery test
+# Simulates primary failure, tests full failover, verifies recovery
+
+set -e
+
+TEST_DATE=$(date +%Y%m%d-%H%M%S)
+LOG_FILE="/var/log/dr-test-$TEST_DATE.log"
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $@" | tee -a $LOG_FILE
+}
+
+cleanup_on_exit() {
+    log "Test complete. Artifacts in $LOG_FILE"
+    # Notify Slack, save results to S3, etc.
+}
+
+trap cleanup_on_exit EXIT
+
+log "=== QUARTERLY DR TEST START ==="
+log "Test date: $TEST_DATE"
+log "Primary: db-primary"
+log "Standby: db-standby"
+
+# Phase 1: Verify current state
+log ""
+log "PHASE 1: Verify current state"
+log "Primary: $(psql -h db-primary -c 'SELECT version();')"
+log "Standby: $(psql -h db-standby -c 'SELECT 1;')"  # Should work (replication only)
+log "Replication lag: $(psql -h db-primary -c 'SELECT pg_last_wal_receive_lsn();')"
+
+# Phase 2: Introduce test data
+log ""
+log "PHASE 2: Create test data on primary"
+psql -h db-primary -c "INSERT INTO test_failover (id, message) VALUES (123, 'DR Test $TEST_DATE');"
+log "Inserted test record: id=123, message='DR Test $TEST_DATE'"
+
+# Phase 3: Wait for replication
+log ""
+log "PHASE 3: Wait for replication to standby"
+sleep 5
+TEST_RECORD=$(psql -h db-primary -c "SELECT COUNT(*) FROM test_failover WHERE id=123;")
+log "Primary has record: $TEST_RECORD"
+
+# Phase 4: Simulate primary failure (network partition)
+log ""
+log "PHASE 4: Simulate primary failure"
+log "Killing primary network (iptables block)"
+ssh db-primary 'sudo iptables -A OUTPUT -j DROP'
+log "Primary isolated. Waiting for failover detection..."
+
+sleep 35  # Wait for health checks to fail
+
+# Phase 5: Verify standby promoted
+log ""
+log "PHASE 5: Verify standby auto-promoted to primary"
+PROMOTED=$(psql -h db-standby -c "SELECT pg_is_in_recovery();" 2>/dev/null || echo "unknown")
+log "Is standby in recovery? $PROMOTED (should be false/no)"
+
+if [ "$PROMOTED" == "f" ] || [ "$PROMOTED" == "no" ]; then
+    log "SUCCESS: Standby promoted to primary"
+else
+    log "FAILURE: Standby did not promote"
+    exit 1
+fi
+
+# Phase 6: Verify data integrity
+log ""
+log "PHASE 6: Verify data integrity on promoted primary"
+TEST_RECORD=$(psql -h db-standby -c "SELECT COUNT(*) FROM test_failover WHERE id=123;")
+log "Promoted primary has test record: $TEST_RECORD (should be 1)"
+
+if [ "$TEST_RECORD" == "1" ]; then
+    log "SUCCESS: Data integrity verified"
+else
+    log "FAILURE: Test record not found on promoted primary"
+    exit 1
+fi
+
+# Phase 7: Restore primary (revert network block)
+log ""
+log "PHASE 7: Restore original primary"
+ssh db-primary 'sudo iptables -D OUTPUT -j DROP'
+log "Primary network restored"
+
+# Phase 8: Summary
+log ""
+log "=== QUARTERLY DR TEST COMPLETE ==="
+log "Test Duration: ~60 seconds"
+log "RTO Achieved: ~35 seconds (detection + promotion)"
+log "Data Loss: 0 (no data lost, all replicated)"
+log "Status: PASS"
+
+# Phase 9: Send results to Slack
+curl -X POST $SLACK_WEBHOOK -d '{
+  "text": "Quarterly DR test PASSED",
+  "blocks": [{
+    "type": "section",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*DR Test Results*\nStatus: PASS\nRTO: 35s\nData Loss: 0\nDate: '"$TEST_DATE"'"
+    }
+  }]
+}'
+
+log "Results sent to Slack"
+```
+
+**Test Checklist:**
+- [ ] Verify primary health before test
+- [ ] Insert test data on primary
+- [ ] Wait for replication to standby
+- [ ] Simulate primary failure (network isolation or shutdown)
+- [ ] Verify standby auto-promotes
+- [ ] Verify test data exists on promoted primary
+- [ ] Verify applications reconnect and work
+- [ ] Restore original primary
+- [ ] Document RTO achieved
+- [ ] Send results to team/management
+- [ ] Update runbook if any issues found
+
+**Quarterly frequency** ensures:
+- Procedures are known and practiced
+- Tools/scripts actually work (not hypothetical)
+- Team is trained on failover
+- RTO targets are verified achievable
+
+</TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Disaster Recovery: Sound Strategy vs Over-Engineering"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**DO: Define RPO/RTO Based on Business Impact**: Critical ecommerce: RPO=1h, RTO=5min. Non-critical: RPO=24h, RTO=4h. Let business set targets. Design recovery to meet those targets, no more.",
+      "**DO: Test Failover Quarterly**: Run automated dr-test.sh. Simulate primary failure. Verify standby promotes. Verify data. Takes 1 hour, catches problems before real disaster.",
+      "**DO: Keep Backups Immutable**: Backups in S3 with versioning + MFA delete. Ransomware can't encrypt or delete them. 30-day retention minimum (survive crypto-locker discovery lag).",
+      "**DO: Automate Everything**: Backups run via cron. Failover detected/promoted automatically. Recovery scripts tested. Runbook is executable code, not Word document.",
+      "**DO: Follow 3-2-1 Rule**: Original + 2 backups, on 2 media types, 1 offsite. Protects against disk failure, regional disaster, format obsolescence.",
+      "**DO: Document Recovery RTO/RPO**: Runbook includes: what we can lose (RPO), how long it takes to recover (RTO), step-by-step recovery script. Shared with team."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**DO: Define RPO/RTO Based on Business Impact**: Engineer everything to RPO=5min, RTO=30sec (most expensive). Or ignore business requirements and hope backups are 'good enough.'",
+      "**DO: Test Failover Quarterly**: Never test. Assume failover works because design looks good on paper. Discover critical bugs during actual disaster (worst time to learn).",
+      "**DO: Keep Backups Immutable**: Backups stored on NAS with same credentials as production. Ransomware encrypts NAS. Backups gone. No recovery possible.",
+      "**DO: Automate Everything**: Manual backup procedures: 'Call DBA at 3 AM to run backup.' Failover: 'Manually SSH to standby and run pg_ctl promote.' Error-prone, slow.",
+      "**DO: Follow 3-2-1 Rule**: Single backup in same region/same storage type. Entire data center burns down = backups gone too.",
+      "**DO: Document Recovery RTO/RPO**: Recovery procedure exists only in one person's head. That person leaves company. No one else can recover. Disaster = company dies."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: Backup Never Tested",
+    body: "Backups run daily and look successful (0 errors). No one ever restores a backup. During disaster, restore fails: corrupt backup, wrong format, missing credentials. Recovery takes hours or fails entirely.",
+  },
+  {
+    label: "Anti-Pattern: Backups in Same Region",
+    body: "Primary DB in us-east-1. Backups stored in us-east-1. Data center catches fire, entire region destroyed. Backups gone. No recovery.",
+  },
+  {
+    label: "Anti-Pattern: Ransomware Encrypts Backups",
+    body: "Attacker gains access to production, encrypts primary. Admin restores from backup, but backups are on NAS that attacker also encrypted. All copies gone.",
+  },
+  {
+    label: "Pattern: RTO/RPO-Based Design",
+    body: "Business says: 'RPO=1h, RTO=15min.' Design accordingly. PITR + hourly backups for RPO. Warm standby + automated failover for RTO. Don't over-engineer for 99.99% uptime if business only needs 99.9%.",
+  },
+  {
+    label: "Pattern: 3-2-1 With Automation",
+    body: "Copy 1: Primary DB. Copy 2: Automated daily backup to local S3. Copy 3: Daily backup replicated to S3 in another region. All automated, immutable, tested quarterly.",
+  },
+  {
+    label: "Pattern: Chaos Engineering DR Tests",
+    body: "Monthly: Kill primary in production (within runbook time window). Standby auto-promotes. Team observes. Document any issues. Fix before next month. Realistic failure scenario.",
+  },
+  {
+    label: "Anti-Pattern: Runbook is Outdated Documentation",
+    body: "Recovery procedure written in 2020 Word document. Code has changed. Software versions differ. Runbook doesn't match reality. When disaster hits, instructions don't work.",
+  },
+  {
+    label: "Pattern: Runbook as Executable Code",
+    body: "Failover script is bash/python that runs hourly in testing. Tested, proven to work. When real failover needed, run same script. No surprises.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Are RPO and RTO targets defined by business (not engineering guesses)?",
+  "Do backup strategies achieve stated RPO targets? (frequency, retention)",
+  "Are backups tested quarterly (actual restore, not just 'no errors')?",
+  "Is the 3-2-1 rule followed (3 copies, 2 media, 1 offsite)?",
+  "Are backups stored in a different region from production?",
+  "Are backups immutable (versioning, MFA delete, write-once storage)?",
+  "Is PITR (point-in-time recovery) available for databases?",
+  "Is point-in-time RTO realistic, documented, and tested?",
+  "Is failover automated (not manual multi-step procedure)?",
+  "Is failover RTO measured, documented, and achievable?",
+  "Are runbook procedures executable code (scripts), not Word documents?",
+  "Are runbooks tested quarterly (chaos engineering)?",
+  "Does runbook include: pre-disaster verification, failure detection, promotion, DNS update, application reconnect, post-recovery validation?",
+  "Is ransomware considered (immutable backups, offsite copy)?",
+  "Is recovery capacity planned (spare region/infrastructure exists)?",
+  "Can team execute failover without on-call engineer (automated)?",
+  "Are backup/recovery costs justified by business impact (ROI)?",
+  "Is disaster recovery communication plan in place (who notified, when)?",
+]} />
+
+## Self-Check
+
+1. **Right now**, could you restore a critical database from backup? How long would it take? Test it on a dev database.
+2. **What is your current RPO and RTO?** If you don't have targets, ask business what they need.
+3. **Where are your backups stored?** If they're in the same region as production, you're not protected against regional disaster.
+4. **When was the last successful restore test?** If it's been > 3 months, test immediately.
+5. **If primary database fails right now**, who detects it? How long until users notice? How long until it's promoted and working?
+
+## Next Steps
+
+1. **Define RPO/RTO** — Interview business owners, document targets.
+2. **Design backup strategy** — Implement 3-2-1 rule. Automate backups.
+3. **Implement PITR** — Enable transaction logging, retention, offsite copy.
+4. **Set up warm standby** — Replicate to another region. Automate failover detection.
+5. **Test quarterly** — Run failover drill. Measure RTO. Document issues.
+6. **Create executable runbook** — Write recovery scripts (bash/python). Test regularly.
+7. **Make backups immutable** — Versioning, MFA delete, prevent ransomware.
+8. **Plan recovery capacity** — Ensure standby infrastructure is pre-provisioned.
+
+## References
+
+1. <a href="https://www.digitalocean.com/blog/disaster-recovery-rpo-and-rto/" target="_blank" rel="nofollow noopener noreferrer">DigitalOcean: RPO and RTO Explained ↗️</a>
+2. <a href="https://www.postgresql.org/docs/current/backup.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL: Backup and Restore ↗️</a>
+3. <a href="https://www.postgresql.org/docs/current/continuous-archiving.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL: Point-In-Time Recovery ↗️</a>
+4. <a href="https://aws.amazon.com/disaster-recovery/" target="_blank" rel="nofollow noopener noreferrer">AWS: Disaster Recovery ↗️</a>
+5. <a href="https://kubernetes.io/docs/concepts/cluster-administration/manage-deployment/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Disaster Recovery ↗️</a>
+6. <a href="https://www.cisa.gov/news-events/news/2021/07/01/cisa-partners-federal-agencies-cull-ransomware-attacks" target="_blank" rel="nofollow noopener noreferrer">CISA: Ransomware Alerts & Mitigation ↗️</a>
+---

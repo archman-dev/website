@@ -1,0 +1,546 @@
+---
+sidebar_position: 5
+title: "Multi-Tenancy: Pooled vs Siloed"
+description: "Design data isolation strategies for SaaS systems: shared vs dedicated resources"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [multi-tenancy, SaaS, data isolation, pooled, siloed, row-level security, schema isolation]
+image: /img/archman-social-card.webp
+tags: [multi-tenancy, SaaS, isolation, security, architecture, scaling, data-isolation]
+hide_title: true
+---
+
+<Hero title="Multi-Tenancy: Pooled vs Siloed" subtitle="Design data isolation and resource allocation for SaaS systems" size="large" />
+
+## TL;DR
+
+Pooled tenancy: all tenants in one database with tenant_id column enforced at query-time and database-level via row-level security (cost-effective, complex isolation). Siloed tenancy: separate database per tenant (simple isolation via database boundary, higher infrastructure cost). Hybrid: pooled for small tenants (S), siloed for enterprise customers (E) who require data residency or compliance guarantees. Choose based on isolation requirements, compliance obligations, cost sensitivity, and blast radius tolerance. Real-world architectures typically use 80% pooled + 20% siloed.
+
+## Learning Objectives
+
+- Understand multi-tenancy patterns (pooled, siloed, hybrid) and isolation models
+- Design tenant_id enforcement at query, ORM, and database levels
+- Implement row-level security (RLS) policies to prevent data leaks
+- Recognize trade-offs between cost, complexity, compliance, and scale
+- Choose pooled, siloed, or hybrid approach based on customer tier and regulations
+- Estimate infrastructure cost and operational complexity for each model
+- Design for tenant blast radius: contain failures to single tenant or group
+- Handle tenant onboarding, migration, and offboarding safely
+
+## Strategies Compared
+
+<Vs items={[
+{
+    label: "Pooled Tenancy",
+    points: ["All tenants in one database", "Tenant column in every table", "Lower infrastructure cost", "Efficient resource utilization", "Requires strong isolation enforcement"]
+  },
+{
+    label: "Siloed Tenancy",
+    points: ["Separate database per tenant", "Complete data isolation", "Compliance/regulatory advantage", "Higher infrastructure cost", "Easier to scale individual tenants"]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Pooled: Tenant Column Everywhere",
+      description: "Add tenant_id to every table. Enforce in queries and RLS policies",
+      tags: ["pooled", "security"]
+    }, {
+      title: "Pooled: Row-Level Security",
+      description: "PostgreSQL RLS policies enforce tenant isolation at database level",
+      tags: ["pooled", "security"]
+    }, {
+      title: "Pooled: Schema Per Tenant",
+      description: "Same tables in separate schemas per tenant. Queries switch schema",
+      tags: ["pooled", "isolation"]
+    }, {
+      title: "Siloed: Database Per Tenant",
+      description: "Separate database/cluster per tenant. Simple isolation, high cost",
+      tags: ["siloed", "isolation"]
+    }, {
+      title: "Hybrid: Tiered Approach",
+      description: "Pooled for small tenants, siloed for enterprise customers",
+      tags: ["hybrid", "scaling"]
+    }, {
+      title: "Avoid Tenant Leaks",
+      description: "Bug in query WHERE clause can expose tenant data. Use RLS as safety net"
+    }]}
+/>
+
+## Design Checklist
+
+<Checklist
+  items={[
+    "Multi-tenancy strategy chosen (pooled/siloed/hybrid)",
+    "Tenant isolation enforced at database level",
+    "Row-level security policies in place",
+    "All queries filter by tenant_id",
+    "Joins don't cross tenant boundaries",
+    "Audit logging includes tenant_id",
+    "Backup/restore process respects tenants",
+    "Compliance requirements documented",
+    "Cost model matches strategy",
+    "Data migration/onboarding process clear"
+  ]}
+/>
+
+## Self-Check
+
+- What's the advantage of siloed vs pooled tenancy?
+- How do you prevent tenant data leaks in pooled systems?
+- When would you use hybrid multi-tenancy?
+- What's a tenant blast radius and how do you limit it?
+
+:::info One Takeaway
+Pooled tenancy is cost-effective but requires disciplined isolation enforcement; siloed is simpler but expensive. Use hybrid for SaaS: pooled for small customers, siloed for enterprise.
+
+:::
+
+## Motivating Scenario
+
+Your SaaS platform grows from 5 enterprise customers to 50,000 small businesses. Early pooled model worked: one database, tenant_id in every table, cost ~$500/month. Now storage is 500GB, and a bug in the order service exposed one customer's data to another. Enterprise customers demand data residency compliance (GDPR, HIPAA); isolation bugs are unacceptable. You shift to hybrid: small customers pooled (99% of them) with strict row-level security, enterprise customers siloed (1% but 40% of revenue) with dedicated databases. Cost rises to $2,000/month, but blast radius shrinks: a pooled customer's outage affects 500 others, an enterprise's outage affects only themselves. Complexity increases (managing 50 separate schemas/databases), but compliance and reliability improve. The trade-off is unavoidable; your choice determines risk profile, margins, and scalability.
+
+## Core Concepts
+
+**Tenant Isolation Boundaries**: Physical (separate database/server), logical (schema/schema per tenant), or application-level (tenant_id column, RLS). Physical isolation is simple but costly; application-level is efficient but requires discipline.
+
+**Tenant Blast Radius**: How many other tenants are affected by a single tenant's outage or security breach. Pooled: all tenants affected. Siloed: only that tenant. Hybrid: mitigates by tier.
+
+**Row-Level Security (RLS)**: Database-enforced policy that automatically filters rows by tenant_id. Prevents application bugs from leaking data; acts as safety net.
+
+**Tenant-Aware ORM**: ORM automatically injects tenant_id into WHERE clauses and enforces filters at query time. Reduces human error.
+
+**Compliance and Regulatory Demands**: GDPR (right to be forgotten), HIPAA (audit trails, data residency), SOC 2 (access controls, encryption at rest). Siloed model simplifies compliance; pooled requires additional controls.
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="pooled-rls" label="Pooled: PostgreSQL Row-Level Security" default>
+```sql
+-- Tenant-aware schema
+CREATE TABLE customers (
+    id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,
+    email TEXT,
+    UNIQUE (tenant_id, email)
+);
+
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    customer_id INT NOT NULL REFERENCES customers(id),
+    amount DECIMAL(10, 2),
+    created_at TIMESTAMP DEFAULT NOW(),
+    FOREIGN KEY (tenant_id, customer_id) REFERENCES customers(tenant_id, id)
+);
+
+CREATE INDEX idx_orders_tenant ON orders(tenant_id);
+CREATE INDEX idx_customers_tenant ON customers(tenant_id);
+
+-- Row-Level Security: automatic filtering
+ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+-- Policy: users can only access their tenant's data
+CREATE POLICY customers_isolation ON customers
+    USING (tenant_id = current_setting('app.current_tenant')::uuid);
+
+CREATE POLICY orders_isolation ON orders
+    USING (tenant_id = current_setting('app.current_tenant')::uuid);
+
+-- Enforce at connection time
+SET app.current_tenant = 'a1b2c3d4-e5f6-47g8-h9i0-j1k2l3m4n5o6';  -- Customer A
+
+SELECT * FROM customers;  -- Only returns rows with tenant_id = a1b2c3d4...
+SELECT * FROM orders;     -- Only returns orders for that tenant
+
+-- Application code sets tenant context on every query
+-- PostgreSQL connection pool:
+-- 1. Get connection from pool
+-- 2. SET app.current_tenant = :tenant_id
+-- 3. Execute query (RLS filters automatically)
+-- 4. Return connection to pool
+```
+  </TabItem>
+
+  <TabItem value="pooled-app-level" label="Pooled: Application-Level Enforcement">
+```python
+# Python with SQLAlchemy: ORM-enforced tenant filtering
+
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+import uuid
+
+Base = declarative_base()
+
+class Tenant(Base):
+    __tablename__ = 'tenants'
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, unique=True)
+
+class Customer(Base):
+    __tablename__ = 'customers'
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(String, ForeignKey('tenants.id'), nullable=False, index=True)
+    name = Column(String)
+    email = Column(String)
+
+class Order(Base):
+    __tablename__ = 'orders'
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(String, ForeignKey('tenants.id'), nullable=False, index=True)
+    customer_id = Column(Integer, ForeignKey('customers.id'), nullable=False)
+    amount = Column(Integer)  # cents
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+
+# Tenant context management
+class TenantContext:
+    current_tenant_id = None
+
+    @classmethod
+    def set_tenant(cls, tenant_id):
+        cls.current_tenant_id = tenant_id
+
+    @classmethod
+    def get_tenant(cls):
+        if not cls.current_tenant_id:
+            raise ValueError("Tenant context not set")
+        return cls.current_tenant_id
+
+# Custom base query with automatic tenant filtering
+class TenantQuery:
+    @staticmethod
+    def filter_by_tenant(model, query=None):
+        """Automatically filter by current tenant."""
+        if query is None:
+            query = db.session.query(model)
+        return query.filter(model.tenant_id == TenantContext.get_tenant())
+
+# API endpoint example
+@app.route('/api/orders')
+def get_orders():
+    tenant_id = request.headers.get('X-Tenant-ID')
+    TenantContext.set_tenant(tenant_id)
+
+    # All queries automatically filtered by tenant_id
+    orders = TenantQuery.filter_by_tenant(Order).all()
+    return [o.to_dict() for o in orders]
+
+# Prevent accidental unfiltered queries
+@app.route('/api/customers/<int:customer_id>')
+def get_customer(customer_id):
+    tenant_id = request.headers.get('X-Tenant-ID')
+    TenantContext.set_tenant(tenant_id)
+
+    customer = db.session.query(Customer).filter(
+        Customer.id == customer_id,
+        Customer.tenant_id == TenantContext.get_tenant()  # Always explicit
+    ).one_or_none()
+
+    return customer.to_dict() if customer else {"error": "Not found"}, 404
+```
+  </TabItem>
+
+  <TabItem value="siloed-databases" label="Siloed: Separate Database Per Tenant">
+```yaml
+# Kubernetes ConfigMap: connection strings per tenant
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-databases
+data:
+  tenant-acme-prod: |
+    {
+      "host": "acme-prod.postgres.rds.us-east-1.amazonaws.com",
+      "port": 5432,
+      "database": "acme_prod",
+      "user": "acme_app",
+      "ssl": true
+    }
+  tenant-globex-prod: |
+    {
+      "host": "globex-prod.postgres.rds.us-east-1.amazonaws.com",
+      "port": 5432,
+      "database": "globex_prod",
+      "user": "globex_app",
+      "ssl": true
+    }
+  tenant-small-pool: |
+    {
+      "host": "shared-small.postgres.rds.us-east-1.amazonaws.com",
+      "port": 5432,
+      "database": "small_customers_pool",
+      "user": "app",
+      "ssl": true
+    }
+---
+# Application code: route to correct database
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tenant-registry
+type: Opaque
+stringData:
+  registry.json: |
+    {
+      "acme": {
+        "tier": "enterprise",
+        "connection_config": "tenant-acme-prod",
+        "region": "us-east-1",
+        "compliance": ["SOC2", "HIPAA"]
+      },
+      "globex": {
+        "tier": "enterprise",
+        "connection_config": "tenant-globex-prod",
+        "region": "us-west-2",
+        "compliance": ["SOC2"]
+      },
+      "startup-x": {
+        "tier": "small",
+        "connection_config": "tenant-small-pool",
+        "schema": "startup_x_1",
+        "region": "us-east-1",
+        "compliance": []
+      }
+    }
+```
+
+```python
+# Tenant routing logic
+class TenantRouter:
+    def __init__(self, registry_config):
+        self.registry = registry_config
+        self.connections = {}  # Connection pool per tenant
+
+    def get_connection(self, tenant_id):
+        """Get database connection for tenant."""
+        if tenant_id not in self.registry:
+            raise ValueError(f"Unknown tenant: {tenant_id}")
+
+        config = self.registry[tenant_id]
+        tier = config["tier"]
+
+        if tier == "enterprise":
+            # Dedicated database
+            conn_config = load_secret(config["connection_config"])
+            return create_engine(f"postgresql://{conn_config['user']}@{conn_config['host']}/{conn_config['database']}")
+
+        else:  # tier == "small"
+            # Pooled database with schema isolation
+            conn_config = load_secret(config["connection_config"])
+            engine = create_engine(f"postgresql://{conn_config['user']}@{conn_config['host']}/{conn_config['database']}")
+            schema = config.get("schema", tenant_id)
+
+            # Set schema for this connection
+            with engine.connect() as conn:
+                conn.execute(f"SET search_path TO {schema}")
+
+            return engine
+
+    def query(self, tenant_id, model, **filters):
+        """Execute query against tenant's database."""
+        engine = self.get_connection(tenant_id)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        return session.query(model).filter_by(**filters).all()
+
+# API usage
+@app.route('/api/<tenant_id>/orders')
+def get_orders(tenant_id):
+    router = TenantRouter(TENANT_REGISTRY)
+    orders = router.query(tenant_id, Order)
+    return [o.to_dict() for o in orders]
+```
+  </TabItem>
+
+  <TabItem value="hybrid-tiered" label="Hybrid: Tiered Strategy (Pooled + Siloed)">
+```python
+# Cost-aware tenant classification
+
+class TenantTier:
+    SMALL = "small"      # < $1k/month → pooled
+    MEDIUM = "medium"    # $1k-$10k/month → pooled with SLA
+    ENTERPRISE = "enterprise"  # > $10k/month → siloed
+
+def classify_tenant(tenant_id, monthly_spend, data_size_gb):
+    """Determine pooled vs siloed based on economics and compliance."""
+    compliance_reqs = get_compliance_requirements(tenant_id)
+
+    # Compliance drives siloed decision
+    if compliance_reqs and ("HIPAA" in compliance_reqs or "data-residency" in compliance_reqs):
+        return TenantTier.ENTERPRISE
+
+    # Spend/growth drives economics
+    if monthly_spend > 10_000:
+        return TenantTier.ENTERPRISE
+
+    if data_size_gb > 100:  # Detect large small customers
+        return TenantTier.MEDIUM
+
+    return TenantTier.SMALL
+
+# Onboarding: automatically route to correct infrastructure
+@app.route('/api/onboard', methods=['POST'])
+def onboard_tenant():
+    data = request.json
+    tenant = data['tenant_id']
+    tier = classify_tenant(tenant, data['projected_spend'], 0)
+
+    if tier == TenantTier.ENTERPRISE:
+        # Provision dedicated database (1-2 days, manual approval)
+        orchestrate_dedicated_database(tenant)
+        return {"status": "approved", "tier": "enterprise", "eta": "2 days"}
+
+    else:
+        # Add to pooled database (immediate)
+        add_tenant_to_pool(tenant)
+        return {"status": "ready", "tier": "small"}
+
+# Cost analysis: when to migrate small → enterprise
+def migration_analysis(tenant_id):
+    """Calculate cost of migration vs dedicated costs."""
+    current_usage = get_current_usage(tenant_id)
+    pooled_monthly = estimate_pooled_cost(current_usage)
+    siloed_monthly = 500  # Minimum: dedicated DB
+
+    breakeven_point = siloed_monthly / (siloed_monthly - pooled_monthly)
+
+    if current_usage['growth_rate'] > 0.5:  # 50% growth/month
+        months_to_breakeven = breakeven_point / 12
+        return {
+            "breakeven_months": months_to_breakeven,
+            "recommend_migration": months_to_breakeven < 12,
+            "pooled_cost": pooled_monthly,
+            "siloed_cost": siloed_monthly
+        }
+```
+  </TabItem>
+
+  <TabItem value="migration" label="Migrating Tenant: Pooled → Siloed">
+```sql
+-- Step 1: Create new siloed database
+CREATE DATABASE acme_prod;
+
+-- Step 2: Dump schema + data (zero-downtime via snapshots)
+pg_dump --schema-only pooled_db > /tmp/acme_schema.sql
+pg_dump -T tenants -T audit_log pooled_db | grep "tenant_id = 'acme'" > /tmp/acme_data.sql
+
+-- Step 3: Load into new siloed database
+psql acme_prod < /tmp/acme_schema.sql
+psql acme_prod < /tmp/acme_data.sql
+
+-- Step 4: Remove tenant_id column (no longer needed)
+ALTER TABLE orders DROP COLUMN tenant_id;
+ALTER TABLE customers DROP COLUMN tenant_id;
+-- Or keep for audit trail, just ignore in queries
+
+-- Step 5: Verify data integrity
+SELECT COUNT(*) FROM orders;  -- Should match pooled count for this tenant
+
+-- Step 6: Update routing registry
+UPDATE tenant_registry SET
+  connection_config = 'acme-prod-siloed',
+  tier = 'enterprise'
+WHERE tenant_id = 'acme';
+
+-- Step 7: Verify read traffic against new database
+-- Gradual: 10% → 50% → 100% traffic shift over 1 hour
+
+-- Step 8: Delete from pooled database (after verification period, e.g., 7 days)
+DELETE FROM orders WHERE tenant_id = 'acme';
+DELETE FROM customers WHERE tenant_id = 'acme';
+VACUUM;  -- Reclaim disk space
+```
+  </TabItem>
+</Tabs>
+
+## Patterns & Pitfalls (Expanded)
+
+<Showcase sections={[
+  {
+    label: "Pattern: Tenant Column Everywhere, Enforced at Query Level",
+    body: "Add tenant_id to every table. Always filter: WHERE tenant_id = context.tenant. Use database views or application layer to abstract. Reduces bugs vs magic tenant context."
+  },
+  {
+    label: "Pattern: Row-Level Security as Safety Net",
+    body: "Enable RLS on all tenant tables. Automatic filtering prevents bugs in queries or joins that forget tenant_id. Acts as last line of defense against data leaks."
+  },
+  {
+    label: "Pattern: Schema Per Tenant (Pooled Alternative)",
+    body: "Same tables in separate schemas per tenant. Queries: SET search_path TO schema_acme; SELECT * FROM orders; Isolation via schema boundary; simpler than RLS, but more management overhead."
+  },
+  {
+    label: "Pattern: Hybrid Tiered Approach",
+    body: "Pooled for small customers (80%, low risk), siloed for enterprise (20%, high revenue/compliance). Route at connection time. Cost-effective; scales to 100k+ tenants."
+  },
+  {
+    label: "Pitfall: Tenant Leak via Forgot WHERE Clause",
+    body: "Bug in service: SELECT * FROM orders; returns all tenants' data. RLS prevents this. Application-level filtering alone is insufficient; always add RLS."
+  },
+  {
+    label: "Pitfall: Cross-Tenant Joins",
+    body: "Joining customers to orders without tenant_id filter can leak data. Always: JOIN orders ON orders.customer_id = customers.id AND orders.tenant_id = customers.tenant_id."
+  },
+  {
+    label: "Pitfall: Backup/Restore Exposes Data",
+    body: "Logical backup of pooled DB exports all tenants. Use logical dumps filtered by tenant_id, or physical snapshots. Verify backups don't contain other tenants' data."
+  },
+  {
+    label: "Pitfall: Expensive Siloed Overhead",
+    body: "Each siloed database costs $500-2000/month (licensing, storage, backups, monitoring). 50 tenants → $25k/month. Use hybrid: 49 pooled + 1 siloed for true enterprise."
+  }
+]} />
+
+## Extended Design Checklist
+
+<Checklist items={[
+  "Multi-tenancy strategy chosen (pooled/siloed/hybrid) based on compliance and cost?",
+  "Tenant isolation enforced at database level (RLS, schema) and application level (WHERE clauses)?",
+  "Row-level security policies correctly filter all tenant tables?",
+  "All queries filter by tenant_id; no unintended cross-tenant joins?",
+  "Tenant context set on every request (header, JWT claim, or session)?",
+  "Foreign key constraints prevent orphaned rows across tenants?",
+  "Audit logging includes tenant_id on all data modifications?",
+  "Backup/restore process respects tenant boundaries; backups encrypted?",
+  "Compliance requirements documented (GDPR, HIPAA, SOC 2, data residency)?",
+  "Cost model matches strategy; estimated cost per tenant at scale?",
+  "Data migration/onboarding process clear (pooled → siloed, tenant offboarding)?",
+  "Monitoring and alerting aware of tenant blast radius (per-tenant metrics)?",
+  "Tenant-aware ORM or query builder prevents accidental unfiltered queries?"
+]} />
+
+## Self-Check (Extended)
+
+- How does row-level security prevent tenant data leaks in pooled systems?
+- When would you choose siloed tenancy despite higher cost?
+- How do you migrate a tenant from pooled to siloed without downtime?
+- What is tenant blast radius, and why does it matter?
+- How do you ensure backups don't expose data across tenants?
+- What compliance regulations require siloed or schema-per-tenant isolation?
+
+## One Takeaway (Extended)
+
+Pooled tenancy is cost-effective but requires disciplined isolation enforcement at application and database levels. Siloed is simpler but expensive. Hybrid (pooled for SMBs, siloed for enterprise) balances cost, compliance, and risk—use it for SaaS at scale. Always include RLS as a safety net; application-level filtering alone is insufficient. Tenant blast radius is a key decision criterion: tolerate cross-tenant impact for small customers, isolate for high-value or regulated ones.
+
+## Next Steps
+
+- Design tenant context propagation in your stack (middleware, ORM, connection pool)
+- Implement RLS policies for all tables; test that policies work
+- Estimate costs: pooled vs siloed for your customer distribution
+- Plan hybrid strategy: tier thresholds, migration process, compliance gates
+- Study <a href="https://stripe.com/blog/multi-tenant-architecture" target="_blank" rel="nofollow noopener noreferrer">Stripe's Multi-Tenant Architecture Blog ↗️</a>
+- Review <a href="https://www.postgresql.org/docs/current/ddl-rowsecurity.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL Row-Level Security documentation ↗️</a>
+
+## References
+
+- "Multi-Tenant Architecture" patterns, <a href="https://www.microsoft.com/en-us/cloud-platform/architecture-patterns" target="_blank" rel="nofollow noopener noreferrer">Microsoft Cloud Architecture ↗️</a>
+- PostgreSQL Row-Level Security: <a href="https://www.postgresql.org/docs/current/ddl-rowsecurity.html" target="_blank" rel="nofollow noopener noreferrer">Official Documentation ↗️</a>
+- AWS RDS Multi-Tenancy: <a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-tenant-architectures.html" target="_blank" rel="nofollow noopener noreferrer">AWS Best Practices ↗️</a>
+- Stripe Multi-Tenancy: <a href="https://stripe.com/blog/multi-tenant-architecture" target="_blank" rel="nofollow noopener noreferrer">Stripe Engineering Blog ↗️</a>

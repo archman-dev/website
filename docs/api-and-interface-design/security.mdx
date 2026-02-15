@@ -1,0 +1,615 @@
+---
+sidebar_position: 6
+title: "API Security"
+description: "Secure APIs with authentication, authorization, and scope management"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [API security, authentication, authorization, OAuth 2.0, scopes, JWT, bearer tokens, rate limiting, CORS]
+image: /img/archman-social-card.webp
+tags: [API-design, security, authentication, authorization, OAuth2, JWT, scopes, rate-limiting, CORS, threat-modeling]
+hide_title: true
+---
+
+<Hero title="API Security" subtitle="Protect APIs with authentication, authorization, and rate limiting" imageAlt="Security illustration" size="large" />
+
+## TL;DR
+
+**Authentication** answers "Who are you?" (verify identity). **Authorization** answers "What can you do?" (enforce permissions). Protect APIs via OAuth 2.0 (delegated access), API keys (simple, stateless), or mTLS (certificate-based). Use scopes to limit token power (read vs write, resource access). Rate limit to prevent DOS. Validate inputs, use HTTPS, and handle secrets securely. For public APIs, think like an attacker: can someone enumerate resources, bypass auth, escalate privileges?
+
+## Learning Objectives
+
+- Distinguish authentication from authorization
+- Choose appropriate auth schemes for your API
+- Implement OAuth 2.0 and scope-based authorization
+- Defend against common API attacks
+- Rate limit and monitor for abuse
+
+## Motivating Scenario
+
+Your public API lets apps fetch user data. Without auth, anyone can request `/users/123`, `/users/124`, etc., enumerating all users. With API keys, you know who's calling but don't know which resources they should access. With OAuth and scopes, you grant tokens limited to specific resources (read user profile, no access to billing). A token expires in 1 hour. If compromised, damage is limited.
+
+## Core Concepts
+
+### Authentication Methods
+
+**API Keys**: Simple string (Bearer token, header, or query param). Stateless, easy to use, but all-or-nothing permission. Best for internal or low-risk APIs.
+
+**OAuth 2.0**: Standard, delegated access. User approves permission grant. App receives token with limited scope. Flexible, standardized, but complex.
+
+**JWT (JSON Web Token)**: Self-contained, signed token with claims. Server doesn't need to look up state. Fast, stateless, suited for distributed systems.
+
+**mTLS**: Mutual TLS certificates. Client presents certificate, server verifies. Secure for service-to-service, complex for users.
+
+### Authorization Models
+
+**Role-Based Access Control (RBAC)**: User has role (admin, user, guest). Roles have permissions (read, write, delete).
+
+**Attribute-Based Access Control (ABAC)**: Fine-grained rules (if user.department == "sales" AND resource.type == "public", allow read).
+
+**Scope-Based**: Tokens are granted scopes (`read:users`, `write:orders`). Each request checks if token has required scope.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="basic" label="❌ Weak Authentication">
+
+```bash
+# No authentication - anyone can access
+GET /api/users/123
+HTTP/1.1 200 OK
+{ "id": 123, "name": "Alice", "ssn": "123-45-6789" }
+
+# Attacker enumerates users by incrementing ID
+GET /api/users/1
+GET /api/users/2
+...
+
+# API key in query string (logged in server logs)
+GET /api/users/123?api_key=sk-1234567890
+```
+
+Issues: No authentication, no authorization, exposed secrets, no rate limiting.
+
+</TabItem>
+<TabItem value="oauth" label="✅ OAuth 2.0 with Scopes">
+
+```bash
+# Client redirects user to auth server
+# User approves app access
+# Auth server returns code
+
+# Client exchanges code for token
+POST /oauth/token
+{
+  "code": "auth-code-123",
+  "client_id": "app-id",
+  "client_secret": "secret-key",
+  "redirect_uri": "https://app.example.com/callback"
+}
+
+# Server returns token with limited scopes
+HTTP/1.1 200 OK
+{
+  "access_token": "eyJhbGc...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "read:profile read:orders"
+}
+
+# Client uses token in Authorization header
+GET /api/users/123
+Authorization: Bearer eyJhbGc...
+
+# Server verifies token, checks scopes
+# Token only grants read:profile, not admin actions
+# User is authenticated, scopes enforce authorization
+
+# If token compromised, limited damage (expires in 1 hour, read-only)
+```
+
+Benefits:
+- User's password never shared with app
+- Token limited to specific scopes
+- Token expires, limiting exposure
+- User can revoke access without password change
+
+</TabItem>
+<TabItem value="jwt" label="JWT Implementation">
+
+```javascript
+// Token creation
+const jwt = require('jsonwebtoken');
+const token = jwt.sign(
+  {
+    userId: 123,
+    email: 'alice@example.com',
+    scopes: ['read:profile', 'write:profile'],
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600
+  },
+  'secret-key',
+  { algorithm: 'HS256' }
+);
+
+// Token verification
+const verifyToken = (token) => {
+  try {
+    const decoded = jwt.verify(token, 'secret-key', { algorithms: ['HS256'] });
+    return decoded;
+  } catch (err) {
+    throw new Error('Invalid token');
+  }
+};
+
+// Middleware
+app.use((req, res, next) => {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing authorization' });
+  }
+
+  const token = auth.slice(7);
+  try {
+    const decoded = verifyToken(token);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// Scope checking
+app.get('/api/profile', (req, res) => {
+  if (!req.user.scopes.includes('read:profile')) {
+    return res.status(403).json({ error: 'Insufficient scopes' });
+  }
+  res.json({ id: req.user.userId, email: req.user.email });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Common API Attacks and Defenses
+
+| Attack | Defense |
+|--------|---------|
+| Enumeration (guess IDs) | Require authentication; don't expose sequential IDs |
+| Brute force (try all passwords) | Rate limit auth endpoints; use account lockout |
+| Token theft (steal JWT) | Use HTTPS; short expiration; refresh tokens |
+| DOS (overwhelm server) | Rate limit; require authentication; queue requests |
+| Injection (SQL, command) | Validate/escape input; use parameterized queries |
+| CORS bypass | Set proper CORS headers; validate origin |
+| CSRF (cross-site forgery) | Use tokens (SameSite cookies); validate Referer |
+
+## Rate Limiting
+
+Prevent abuse without valid authentication:
+
+```bash
+GET /api/public-data
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 99
+X-RateLimit-Reset: 1707906000
+
+# 100 requests per hour per IP. When exceeded:
+HTTP/1.1 429 Too Many Requests
+Retry-After: 3600
+```
+
+Rate limit by IP (public), user ID (authenticated), or API key (apps).
+
+## Security Threat Models & Mitigations
+
+### Common API Attacks & Defenses
+
+**Enumeration Attack**: Attacker tries IDs sequentially (1, 2, 3...) to discover resources.
+```javascript
+// Bad: Sequential IDs expose data
+GET /api/users/1
+GET /api/users/2
+...
+GET /api/users/1000  // Attacker discovers 1000 users
+
+// Good: Use UUIDs or validate authorization
+GET /api/users/f47ac10b-58cc-4372-a567-0e02b2c3d479
+// Even if attacker gets the UUID, they can only access their own data
+
+// Better: Add authorization check
+app.get('/api/users/:userId', authenticateToken, (req, res) => {
+  if (req.user.id !== parseInt(req.params.userId)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  // User can only access their own data
+  res.json(getUserData(req.params.userId));
+});
+```
+
+**Privilege Escalation**: User tries to elevate permissions.
+```javascript
+// Bad: Trust client-provided role
+POST /api/profile
+{ "userId": 123, "role": "admin" }  // Client claims admin role
+
+// Good: Ignore client role, derive from token
+app.post('/api/profile', authenticateToken, (req, res) => {
+  // req.user.role comes from server-side token, not client
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  // Process admin operation
+});
+```
+
+**Token Theft**: Attacker steals token and uses it.
+```javascript
+// Mitigation: Short expiry, IP pinning, token binding
+
+// 1. Short expiry: token valid 15 min
+const token = jwt.sign(
+  { userId: user.id, issuedIp: req.ip },
+  secret,
+  { expiresIn: '15m' }
+);
+
+// 2. Check IP matches
+app.use(authenticateToken, (req, res, next) => {
+  if (req.user.issuedIp !== req.ip) {
+    return res.status(401).json({ error: 'Token IP mismatch' });
+  }
+  next();
+});
+
+// 3. Use secure cookies (httpOnly, secure, sameSite)
+res.cookie('token', token, {
+  httpOnly: true,    // JavaScript can't access
+  secure: true,      // HTTPS only
+  sameSite: 'strict' // No cross-site requests
+});
+```
+
+### Detecting Abuse Patterns
+
+```javascript
+// Track failed attempts
+const failedAttempts = new Map();
+const ipThrottle = new Map();
+
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  const clientIp = req.ip;
+
+  // Check rate limit
+  const attempts = failedAttempts.get(clientIp) || 0;
+  if (attempts > 5) {
+    return res.status(429).json({
+      error: 'Too many failed attempts',
+      retryAfter: 900  // Seconds
+    });
+  }
+
+  // Authenticate
+  const user = findUserByEmail(email);
+  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+    failedAttempts.set(clientIp, attempts + 1);
+
+    // Log suspicious activity
+    logger.warn('Failed login', {
+      email,
+      ip: clientIp,
+      attempts: attempts + 1,
+      timestamp: new Date()
+    });
+
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  // Success
+  failedAttempts.delete(clientIp);
+  const token = generateToken(user);
+
+  res.json({
+    token,
+    user: { id: user.id, email: user.email, role: user.role }
+  });
+});
+
+// Detect distributed attacks
+function detectAbuse(requests) {
+  // Multiple failed logins from different IPs in short time = credential stuffing
+  const failuresPerSecond = requests
+    .filter(r => r.status === 401)
+    .length / 60;  // Per minute
+
+  if (failuresPerSecond > 10) {
+    alert('Possible credential stuffing attack detected');
+    enableCaptcha();
+  }
+
+  // Many requests for non-existent users
+  const nonExistentAttempts = requests
+    .filter(r => r.status === 401 && !userExists(r.email))
+    .length;
+
+  if (nonExistentAttempts / requests.length > 0.5) {
+    alert('Possible enumeration attack');
+    blockSuspiciousIPs();
+  }
+}
+```
+
+## Advanced Authentication Patterns
+
+### Refresh Token Rotation
+
+Long-lived access tokens create risk. Use short-lived access tokens (15 minutes) and refresh tokens (7 days). Rotate refresh tokens on use to detect token theft.
+
+```javascript
+// Token refresh with rotation
+app.post('/api/refresh', (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  try {
+    const decoded = jwt.verify(refreshToken, REFRESH_SECRET);
+    const oldRefreshToken = decoded.jti; // Token ID for invalidation
+
+    // Invalidate old token in database
+    revokedTokens.add(oldRefreshToken);
+
+    // Issue new access token and refresh token
+    const newAccessToken = jwt.sign(
+      { userId: decoded.userId, scopes: decoded.scopes },
+      ACCESS_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    const newRefreshToken = jwt.sign(
+      { userId: decoded.userId, jti: uuid() },
+      REFRESH_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // Store refresh token in httpOnly cookie
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    res.json({ accessToken: newAccessToken });
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid or expired refresh token' });
+  }
+});
+```
+
+Benefits: If a short-lived access token leaks, damage is limited. If a refresh token is stolen and used, the legitimate user's refresh attempt fails (double-use detected).
+
+### Implicit Grant (Deprecated) vs Authorization Code with PKCE
+
+Never use implicit grant (old OAuth 2.0). Use Authorization Code with PKCE (Proof Key for Code Exchange) for SPAs and mobile apps.
+
+```javascript
+// PKCE: Client generates random challenge, proves it owns the challenge
+// 1. Generate code challenge
+const codeVerifier = crypto.randomBytes(32).toString('hex');
+const codeChallenge = crypto
+  .createHash('sha256')
+  .update(codeVerifier)
+  .digest('base64url');
+
+// 2. Redirect to auth server
+window.location.href =
+  `https://auth.example.com/authorize?` +
+  `client_id=${CLIENT_ID}&` +
+  `redirect_uri=${REDIRECT_URI}&` +
+  `scope=read:profile&` +
+  `code_challenge=${codeChallenge}&` +
+  `code_challenge_method=S256`;
+
+// 3. After user approves, auth server redirects with code
+// 4. Client exchanges code + code_verifier for token
+fetch('https://auth.example.com/token', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams({
+    code: authorizationCode,
+    code_verifier: codeVerifier,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    grant_type: 'authorization_code'
+  })
+});
+```
+
+Why: PKCE binds authorization code to the app that requested it. Attacker who intercepts code can't exchange it without the code verifier (known only to the original app).
+
+## API Security Deep Dives
+
+### Input Validation
+
+Validate all inputs. Never trust client data.
+
+```javascript
+// Example: Validate order creation
+app.post('/api/orders', authenticateToken, (req, res) => {
+  const { items, shippingAddress, paymentMethod } = req.body;
+
+  // Validate items
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Items must be non-empty array' });
+  }
+
+  items.forEach((item, idx) => {
+    if (!Number.isInteger(item.productId) || item.productId under 1) {
+      return res.status(400).json({ error: `Item ${idx}: invalid productId` });
+    }
+    if (!Number.isInteger(item.quantity) || item.quantity under 1 || item.quantity > 1000) {
+      return res.status(400).json({ error: `Item ${idx}: quantity must be 1-1000` });
+    }
+  });
+
+  // Validate shipping address
+  if (!shippingAddress || typeof shippingAddress !== 'object') {
+    return res.status(400).json({ error: 'Invalid shipping address' });
+  }
+  const addressRegex = /^[a-zA-Z0-9\s,\-\.#]{5,200}$/;
+  if (!addressRegex.test(shippingAddress.line1)) {
+    return res.status(400).json({ error: 'Invalid address format' });
+  }
+
+  // Validate payment method (whitelist)
+  const validMethods = ['credit_card', 'paypal', 'apple_pay'];
+  if (!validMethods.includes(paymentMethod)) {
+    return res.status(400).json({ error: 'Invalid payment method' });
+  }
+
+  // All validated, proceed
+  createOrder(req.user.id, items, shippingAddress, paymentMethod)
+    .then(order => res.json(order))
+    .catch(err => res.status(500).json({ error: 'Failed to create order' }));
+});
+```
+
+### Preventing CORS Vulnerabilities
+
+CORS misconfigurations expose APIs to unauthorized access.
+
+```javascript
+// Bad: Allow any origin to access
+app.use(cors()); // Allows Access-Control-Allow-Origin: *
+
+// Good: Whitelist trusted origins
+const trustedOrigins = [
+  'https://app.example.com',
+  'https://www.example.com'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || trustedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // Allow cookies
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// CSRF protection for state-changing requests
+app.post('/api/orders', (req, res) => {
+  const token = req.headers['x-csrf-token'];
+  const sessionToken = req.session.csrfToken;
+
+  if (!token || token !== sessionToken) {
+    return res.status(403).json({ error: 'Invalid CSRF token' });
+  }
+  // Process request
+});
+```
+
+### Detecting and Logging Security Events
+
+Monitor for suspicious patterns.
+
+```javascript
+// Log suspicious activities
+const logger = winston.createLogger({
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.File({ filename: 'security.log' })
+  ]
+});
+
+// Detect multiple failed auth attempts
+const failedAttempts = new Map(); // IP -> count
+
+app.post('/api/login', (req, res) => {
+  const clientIp = req.ip;
+
+  const attempts = failedAttempts.get(clientIp) || 0;
+  if (attempts > 5) {
+    logger.warn('Rate limit exceeded', { ip: clientIp, attempts });
+    return res.status(429).json({ error: 'Too many attempts' });
+  }
+
+  const { email, password } = req.body;
+  const user = findUserByEmail(email);
+
+  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+    failedAttempts.set(clientIp, attempts + 1);
+    logger.warn('Failed login attempt', { ip: clientIp, email });
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  failedAttempts.delete(clientIp); // Clear on success
+  res.json({ token: generateToken(user) });
+});
+
+// Detect token misuse
+app.use((req, res, next) => {
+  if (req.user) {
+    // Check if token IP doesn't match current IP
+    if (req.user.issuedIp !== req.ip) {
+      logger.warn('Token IP mismatch (possible token theft)', {
+        userId: req.user.id,
+        issuedIp: req.user.issuedIp,
+        currentIp: req.ip
+      });
+    }
+  }
+  next();
+});
+```
+
+## Design Review Checklist
+
+- [ ] All endpoints require authentication (except public ones)
+- [ ] Authorization enforced (user A can't access user B's data)
+- [ ] Scopes defined and honored (token can't exceed granted scopes)
+- [ ] Tokens expire and refresh tokens used for long-lived access
+- [ ] Secrets never logged or exposed in errors
+- [ ] Rate limiting prevents DOS
+- [ ] HTTPS required (TLS 1.2+)
+- [ ] Input validation prevents injection attacks
+- [ ] CORS properly configured (not `*` for credentialed requests)
+- [ ] Sensitive data in responses authorized (don't leak PII)
+- [ ] Refresh token rotation detects token theft
+- [ ] PKCE used for SPAs and mobile apps
+- [ ] Failed auth attempts logged and rate-limited
+- [ ] Token reuse detected (replay attacks)
+- [ ] Suspicious patterns monitored and alerted
+
+## Self-Check
+
+- What's the difference between authentication and authorization?
+- Why should API tokens expire?
+- How do scopes limit token power?
+- When should you use PKCE instead of implicit grant?
+- How would you detect token theft?
+
+:::info One Takeaway
+Security is not a feature; it's foundational. Authenticate all users, authorize all requests, limit token scope and duration, and monitor for suspicious patterns.
+
+:::
+
+## Next Steps
+
+- Read **Threat Modeling** for identifying security risks
+- Study **Error Formats** for handling auth errors securely
+- Explore **Observability** for detecting suspicious patterns
+- Implement **Audit Logging** for compliance
+
+## References
+
+- OAuth 2.0 Specification (tools.ietf.org/html/rfc6749)
+- OAuth 2.0 PKCE (RFC 7636)
+- JSON Web Token (JWT) Specification (tools.ietf.org/html/rfc7519)
+- OWASP API Security Top 10
+- API Security Best Practices (auth0.com, okta.com)

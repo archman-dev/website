@@ -1,0 +1,406 @@
+---
+sidebar_position: 5
+title: "Load Shedding and Backpressure"
+description: "Reject low-priority requests when overloaded. Backpressure signals cascade up the stack to prevent cascading failures."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [load shedding, backpressure, queue overflow, priority, graceful degradation, overload handling]
+image: /img/archman-social-card.webp
+tags: [load-shedding, backpressure, priority, queue-overflow, graceful-degradation, overload]
+hide_title: true
+---
+
+<Hero title="Load Shedding and Backpressure" subtitle="Reject requests strategically when overloaded, signal upstream to prevent cascades" imageAlt="Load shedding illustration" size="large" />
+
+## TL;DR
+
+When overloaded, queuing everything guarantees slow failure for all requests. Load shedding rejects low-priority requests fast, preserving capacity for critical operations. Better to fail some quickly than fail everyone slowly. Backpressure signals "I'm full" upstream, cascading load control up the stack. Strategies include priority-based rejection, service-tier rejection, and adaptive thresholds. Shed analytics and recommendations first; preserve payment and authentication traffic.
+
+## Learning Objectives
+
+- Understand why unbounded queues cause cascading failures
+- Design priority-based load shedding strategies
+- Implement backpressure mechanisms across service boundaries
+- Choose between aggressive vs. conservative shedding policies
+- Monitor and tune shedding thresholds for your SLA
+
+## Motivating Scenario
+
+An e-commerce platform experiences a flash sale. Traffic spikes 10x. Without load shedding, the API gateway queues all 100,000 requests. Processing now takes 30 minutes per request. Payment processing, the most critical service, starves because threads are locked up waiting for slow requests. With load shedding, analytics requests are rejected immediately, keeping payment processing threads available for critical transactions. Customers experience 429 (Too Many Requests) on analytics, but purchases succeed within 2 seconds.
+
+## Core Concepts
+
+<Figure
+  caption="Load Shedding vs. Unbounded Queuing"
+  content={`
+graph TB
+    subgraph unbounded["Without Load Shedding"]
+        A1["Requests<br/>100K/sec"]
+        Q1["Queue<br/>50K deep"]
+        S1["Service<br/>100 threads"]
+        A1 -->|All queued| Q1
+        Q1 -->|Slow drain| S1
+        style Q1 fill:#ffcccc
+        style S1 fill:#ffcccc
+    end
+
+    subgraph shedding["With Load Shedding"]
+        A2["Requests<br/>100K/sec"]
+        P["Priority Gate"]
+        C["Critical<br/>5K/sec"]
+        N["Non-Critical<br/>Rejected"]
+        Q2["Queue<br/>100 deep"]
+        S2["Service<br/>100 threads"]
+        A2 --> P
+        P -->|High priority| C
+        P -->|Low priority| N
+        C --> Q2
+        Q2 --> S2
+        style C fill:#c8e6c9
+        style N fill:#ffcccc
+        style S2 fill:#c8e6c9
+    end
+`}
+/>
+
+Load shedding operates at the ingress layer—API gateway, load balancer, or service entrypoint. When queue depth exceeds a threshold, new low-priority requests are rejected with a 429 status code. This prevents resource exhaustion and keeps latency predictable for high-priority traffic.
+
+Backpressure extends this concept: when a service is overloaded, it signals upstream services (via 429 or queue-full responses) to reduce traffic. Upstream services then shed load before it reaches the overloaded service. This cascades control decisions up the call stack.
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="python" label="Python">
+```python
+import time
+from enum import Enum
+from collections import deque
+
+class RequestPriority(Enum):
+    CRITICAL = 1
+    NORMAL = 2
+    BACKGROUND = 3
+
+class LoadShedder:
+    def __init__(self, max_queue_depth=1000, shed_threshold=0.8):
+        self.queue = deque()
+        self.max_queue_depth = max_queue_depth
+        self.shed_threshold = shed_threshold
+        self.dropped_requests = 0
+
+    def should_accept(self, priority):
+        queue_utilization = len(self.queue) / self.max_queue_depth
+
+        # Critical always accepted
+        if priority == RequestPriority.CRITICAL:
+            return True
+
+        # Normal accepted if queue < 70%
+        if priority == RequestPriority.NORMAL:
+            return queue_utilization < 0.7
+
+        # Background only if queue < 30%
+        if priority == RequestPriority.BACKGROUND:
+            return queue_utilization < 0.3
+
+        return False
+
+    def add_request(self, request_id, priority):
+        if not self.should_accept(priority):
+            self.dropped_requests += 1
+            return False, "Service overloaded (429)"
+
+        self.queue.append((request_id, priority, time.time()))
+        return True, "Queued"
+
+    def process(self):
+        if self.queue:
+            req_id, priority, arrival = self.queue.popleft()
+            latency = time.time() - arrival
+            return req_id, latency
+        return None, None
+
+# Example usage
+shed = LoadShedder()
+
+# Simulate requests
+for i in range(2000):
+    priority = RequestPriority.CRITICAL if i % 10 == 0 else (
+        RequestPriority.NORMAL if i % 3 == 0 else RequestPriority.BACKGROUND
+    )
+    accepted, msg = shed.add_request(f"req-{i}", priority)
+
+    # Process some requests
+    if i % 5 == 0:
+        shed.process()
+
+print(f"Dropped: {shed.dropped_requests}, Queued: {len(shed.queue)}")
+```
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+type Priority int
+
+const (
+    Critical   Priority = 1
+    Normal     Priority = 2
+    Background Priority = 3
+)
+
+type LoadShedder struct {
+    queue           chan interface{}
+    maxDepth        int
+    shedThreshold   float64
+    droppedRequests int64
+}
+
+func NewLoadShedder(maxDepth int) *LoadShedder {
+    return &LoadShedder{
+        queue:         make(chan interface{}, maxDepth),
+        maxDepth:      maxDepth,
+        shedThreshold: 0.8,
+    }
+}
+
+func (ls *LoadShedder) ShouldAccept(priority Priority) bool {
+    utilization := float64(len(ls.queue)) / float64(ls.maxDepth)
+
+    switch priority {
+    case Critical:
+        return true
+    case Normal:
+        return utilization < 0.7
+    case Background:
+        return utilization < 0.3
+    }
+    return false
+}
+
+func (ls *LoadShedder) AddRequest(id string, priority Priority) (bool, string) {
+    if !ls.ShouldAccept(priority) {
+        ls.droppedRequests++
+        return false, "Service overloaded (429)"
+    }
+
+    select {
+    case ls.queue <- id:
+        return true, "Queued"
+    default:
+        ls.droppedRequests++
+        return false, "Queue full (429)"
+    }
+}
+
+func (ls *LoadShedder) Process() {
+    select {
+    case req := <-ls.queue:
+        fmt.Printf("Processing: %v\n", req)
+    default:
+    }
+}
+
+func main() {
+    shed := NewLoadShedder(1000)
+
+    for i := 0; i < 2000; i++ {
+        var priority Priority
+        if i%10 == 0 {
+            priority = Critical
+        } else if i%3 == 0 {
+            priority = Normal
+        } else {
+            priority = Background
+        }
+
+        shed.AddRequest(fmt.Sprintf("req-%d", i), priority)
+        if i%5 == 0 {
+            shed.Process()
+        }
+    }
+
+    fmt.Printf("Dropped: %d\n", shed.droppedRequests)
+}
+```
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js">
+```javascript
+const EventEmitter = require('events');
+
+class Priority {
+    static CRITICAL = 1;
+    static NORMAL = 2;
+    static BACKGROUND = 3;
+}
+
+class LoadShedder extends EventEmitter {
+    constructor(maxQueueDepth = 1000) {
+        super();
+        this.queue = [];
+        this.maxQueueDepth = maxQueueDepth;
+        this.shedThreshold = 0.8;
+        this.droppedRequests = 0;
+    }
+
+    shouldAccept(priority) {
+        const utilization = this.queue.length / this.maxQueueDepth;
+
+        if (priority === Priority.CRITICAL) {
+            return true;
+        }
+        if (priority === Priority.NORMAL) {
+            return utilization < 0.7;
+        }
+        if (priority === Priority.BACKGROUND) {
+            return utilization < 0.3;
+        }
+        return false;
+    }
+
+    addRequest(requestId, priority) {
+        if (!this.shouldAccept(priority)) {
+            this.droppedRequests++;
+            return [false, "Service overloaded (429)"];
+        }
+
+        this.queue.push({
+            id: requestId,
+            priority,
+            arrival: Date.now()
+        });
+        return [true, "Queued"];
+    }
+
+    process() {
+        if (this.queue.length > 0) {
+            const req = this.queue.shift();
+            const latency = Date.now() - req.arrival;
+            return [req.id, latency];
+        }
+        return [null, null];
+    }
+}
+
+// Example usage
+const shed = new LoadShedder(1000);
+
+for (let i = 0; i < 2000; i++) {
+    let priority;
+    if (i % 10 === 0) {
+        priority = Priority.CRITICAL;
+    } else if (i % 3 === 0) {
+        priority = Priority.NORMAL;
+    } else {
+        priority = Priority.BACKGROUND;
+    }
+
+    shed.addRequest(`req-${i}`, priority);
+
+    if (i % 5 === 0) {
+        shed.process();
+    }
+}
+
+console.log(`Dropped: ${shed.droppedRequests}, Queued: ${shed.queue.length}`);
+```
+  </TabItem>
+</Tabs>
+
+## When to Use vs. When NOT to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "Use Load Shedding",
+    points: [
+      "Sustained traffic exceeds capacity",
+      "You have tiered SLAs (critical vs. non-critical)"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid Load Shedding",
+    points: [
+      "Rejecting is better than slow response",
+      "Multi-tenant systems with quotas",
+      "Flash sales and traffic spikes"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Priority Buckets",
+      body: "Assign requests to tiers (critical, normal, background). Shed from bottom tier up. Critical requests have guaranteed capacity reserves. Example: payment APIs always have 20% reserved capacity."
+    },
+    {
+      label: "Pattern: Adaptive Thresholds",
+      body: "Adjust shedding thresholds based on system load. At 50% CPU, shed background tasks. At 80% CPU, shed normal tasks. At 95% CPU, only accept critical. Prevents cascading failures."
+    },
+    {
+      label: "Pitfall: Upstream Storms",
+      body: "If you shed traffic, clients retry immediately. All retries hit at once, causing a thundering herd. Add jitter to retry delays to spread load over time."
+    },
+    {
+      label: "Pitfall: Wrong Thresholds",
+      body: "Too aggressive shedding = rejection of legitimate traffic. Too lenient = back to the queueing problem. Monitor actual queue depths and adjust thresholds monthly."
+    },
+    {
+      label: "Pattern: Backpressure Signaling",
+      body: "Return 503 Service Unavailable or 429 Too Many Requests with Retry-After header. Upstream services read this and shed load before it reaches you. Enables intelligent load distribution."
+    },
+    {
+      label: "Pitfall: Silent Drops",
+      body: "Dropping requests without feedback. Clients don't know to back off. Always signal rejections clearly. Log shed events for monitoring. Alert on shed rate > threshold."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Request priorities are documented and enforced (critical, normal, background)",
+    "Queue depth thresholds are determined from capacity tests, not guessed",
+    "Shedding decision logic is tested under overload conditions",
+    "Clients handle 429 responses with exponential backoff and jitter",
+    "Rejected requests are logged with priority and reason",
+    "Monitoring alerts on shed rate (> 1% rejected is concerning)",
+    "Load shedding is placed at ingress (API gateway), not mid-stack",
+    "Backpressure signals propagate upstream (no silent drops)",
+    "SLA guarantees are honored for critical request tiers",
+    "Failover and multi-region strategies account for load shedding"
+  ]}
+/>
+
+## Self-Check
+
+- Can you explain why an unbounded queue leads to cascading failure?
+- What are the three priority tiers in your system? How are they determined?
+- How does your system signal backpressure to upstream services?
+- What happens when a client receives a 429? Do they retry wisely?
+- How do you monitor whether shedding is necessary vs. optional?
+
+## Next Steps
+
+1. **Health Probes:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/health-probes" target="_blank" rel="nofollow noopener noreferrer">Health Probes ↗️</a> to pair with shedding for complete failure detection
+2. **Circuit Breaker:** Learn <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/circuit-breaker" target="_blank" rel="nofollow noopener noreferrer">Circuit Breaker ↗️</a> to prevent cascades at the dependency level
+3. **Rate Limiting:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/rate-limiting-and-throttling" target="_blank" rel="nofollow noopener noreferrer">Rate Limiting and Throttling ↗️</a> for proactive traffic control
+
+## References
+
+- Cockroft, A. (2015). <a href="https://tech.netflix.com/en/blog/hystrix-latency-and-fault-tolerance-for-distributed-systems/" target="_blank" rel="nofollow noopener noreferrer">Hystrix: Latency and Fault Tolerance for Distributed Systems ↗️</a>. Netflix Technology Blog.
+- Nygard, M. J. (2007). Release It!: Design and Deploy Production-Ready Software. Pragmatic Programmers.
+- Rosenthal, C. (2011). <a href="https://www.infoq.com/articles/backpressure-explained/" target="_blank" rel="nofollow noopener noreferrer">Backpressure Explained ↗️</a>. InfoQ.

@@ -1,0 +1,453 @@
+---
+sidebar_position: 2
+title: "Hot Paths, Caching & Memoization"
+description: "Optimize critical code paths through strategic caching and computation reuse."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: ["hot", "paths,", "caching"]
+image: /img/archman-social-card.webp
+tags: [reliability, performance, patterns, scalability]
+hide_title: true
+---
+
+<Hero title="Hot Paths, Caching & Memoization" subtitle="Optimize critical code paths through strategic caching and computation reuse." imageAlt="hot paths, caching & memoization illustration" size="large" />
+
+## TL;DR
+
+Optimize critical code paths through strategic caching and computation reuse. This pattern is proven in production at scale and requires thoughtful implementation, continuous tuning, and rigorous monitoring to realize its benefits.
+
+## Learning Objectives
+
+- Understand the problem this pattern solves
+- Learn when and how to apply it correctly
+- Recognize trade-offs and failure modes
+- Implement monitoring to validate effectiveness
+- Apply the pattern in your own systems
+
+## Motivating Scenario
+
+Your product listing page is slow. Fetching product details requires database queries, tax calculation, shipping estimates, and recommendations. For high-traffic products (purchased by thousands daily), these queries repeat thousands of times. By caching results for 5 minutes, you reduce database load 100x. With memoization, identical function calls within the same request return cached results instantly. Hot path optimization combined with caching is how companies scale from thousands to millions of requests per second.
+
+## Core Concepts
+
+### Pattern Purpose
+
+Hot Paths, Caching & Memoization addresses specific reliability and performance challenges proven at scale. It enables systems to handle failures, slowdowns, and overload without cascading failures or complete outages.
+
+### Key Principles
+
+1. **Fail fast, not loud:** Detect problems and take corrective action quickly
+2. **Graceful degradation:** Maintain partial functionality under stress
+3. **Isolation:** Prevent failures from cascading to other components
+4. **Feedback loops:** Monitor constantly and adapt
+
+### When to Use
+
+- Handling distributed system failures gracefully
+- Performance or reliability critical to business
+- Preventing cascading failures across systems
+- Managing variable and unpredictable load
+
+### When NOT to Use
+
+- Simplicity is more important than fault tolerance
+- Failures are rare and acceptable
+- Pattern overhead exceeds the benefit
+
+## Practical Example
+
+<Tabs>
+<TabItem value="patterns" label="Core Patterns">
+
+```yaml
+# Hot Paths, Caching & Memoization Patterns and Their Use
+
+Circuit Breaker:
+  Purpose: Prevent cascading failures by stopping requests to failing service
+  When_Failing: Return fast with cached or degraded response
+  When_Recovering: Gradually allow requests to verify recovery
+  Metrics_to_Track: Failure rate, response time, circuit trips
+
+Timeout & Retry:
+  Purpose: Handle transient failures and slow responses
+  Implementation: Set timeout, wait, retry with backoff
+  Max_Retries: 3-5 depending on operation cost and urgency
+  Backoff: Exponential (1s, 2s, 4s) to avoid overwhelming failing service
+
+Bulkhead:
+  Purpose: Isolate resources so one overload doesn't affect others
+  Implementation: Separate thread pools, connection pools, queues
+  Example: Checkout path has dedicated database connections
+  Benefit: One slow query doesn't affect other traffic
+
+Graceful Degradation:
+  Purpose: Maintain partial service when components fail
+  Example: Show cached data when personalization service is down
+  Requires: Knowledge of what's essential vs. nice-to-have
+  Success: Users barely notice the degradation
+
+Load Shedding:
+  Purpose: Shed less important work during overload
+  Implementation: Reject low-priority requests when queue is full
+  Alternative: Increase latency for all rather than reject some
+  Trade-off: Some customers don't get served vs. all customers are slow
+```
+
+</TabItem>
+<TabItem value="config" label="Configuration Example">
+
+```yaml
+Reliability_Configuration:
+  service_timeouts:
+    payment_api: 5s
+    recommendation_engine: 2s
+    user_auth: 1s
+  
+  retry_policy:
+    transient_errors: [408, 429, 503, 504]
+    max_retries: 3
+    backoff_multiplier: 2
+    initial_delay: 100ms
+  
+  circuit_breaker:
+    failure_threshold: 50%
+    window: 10 requests
+    open_timeout: 30s
+    
+  load_shedding:
+    queue_threshold: 1000
+    shed_non_essential: true
+    reject_priority: low
+```
+
+</TabItem>
+<TabItem value="metrics" label="Monitoring">
+
+```
+Essential Metrics:
+
+Latency:
+  - P50, P95, P99 response times
+  - Alert if P99 > acceptable threshold
+  
+Failure Rates:
+  - Error rate percentage
+  - Alert if >5% errors
+  
+Pattern-Specific:
+  - Circuit breaker trips (alert if >3 in 5min)
+  - Retry count distribution
+  - Load shed requests
+  - Bulkhead resource utilization
+
+Example Dashboard:
+  - Real-time traffic flow with failures highlighted
+  - Circuit breaker state (Open/Closed/Half-Open)
+  - Retry success rates by service
+  - Queue depths and shedding rates
+```
+
+</TabItem>
+</Tabs>
+
+## Implementation Guide
+
+1. **Identify the Problem:** What specific failure mode are you protecting against?
+2. **Choose the Right Pattern:** Different problems need different solutions
+3. **Implement Carefully:** Half-implemented patterns are worse than nothing
+4. **Configure Based on Data:** Don't copy thresholds from blog posts
+5. **Monitor Relentlessly:** Validate the pattern actually solves your problem
+6. **Tune Continuously:** Thresholds need adjustment as load and systems change
+
+## Characteristics of Effective Implementation
+
+✓ Clear objectives: Can state in one sentence what you're solving
+✓ Proper monitoring: Can see whether pattern is working
+✓ Appropriate thresholds: Based on data from your system
+✓ Graceful failure mode: Unacceptable in production
+✓ Well-tested: Failure scenarios explicitly tested
+✓ Documented: Future maintainers understand why it exists
+
+## Pitfalls to Avoid
+
+❌ Blindly copying patterns: Thresholds from one system don't work for another
+❌ Over-retrying: Making failing service worse by hammering it
+❌ Forgetting timeouts: Retries without timeouts extend the pain
+❌ Silent failures: If circuit breaker opens, someone needs to know
+❌ No monitoring: Deploying patterns without metrics to validate
+❌ Set and forget: Patterns need tuning as load and systems change
+
+## Related Patterns
+
+- **Bulkheads:** Isolate different use cases so failures don't cascade
+- **Graceful Degradation:** Degrade functionality when load is high
+- **Health Checks:** Detect failures requiring retry or circuit breaker
+- **Observability:** Metrics and logs showing whether pattern works
+
+## Checklist: Implementation Readiness
+
+- [ ] Problem clearly identified and measured
+- [ ] Pattern selected is appropriate for the problem
+- [ ] Thresholds based on actual data from your system
+- [ ] Failure mode is explicit and acceptable
+- [ ] Monitoring and alerts configured before deployment
+- [ ] Failure scenarios tested explicitly
+- [ ] Team understands the pattern and trade-offs
+- [ ] Documentation explains rationale and tuning
+
+## Self-Check
+
+1. **Can you state in one sentence why you need this pattern?** If not, you might not need it.
+2. **Have you measured baseline before and after?** If not, you don't know if it helps.
+3. **Did you tune thresholds for your system?** Or copy them from a blog post?
+4. **Can someone on-call understand what triggers and what it does?** If not, document better.
+
+## Takeaway
+
+These patterns are powerful because proven in production. But power comes with complexity. Implement only what you need, tune based on data, and monitor relentlessly. A well-implemented pattern you understand is worth far more than several half-understood patterns copied from examples.
+
+## Next Steps
+
+1. **Identify the problem:** What specific failure mode are you protecting against?
+2. **Gather baseline data:** Measure current behavior before implementing
+3. **Implement carefully:** Start simple, add complexity only if needed
+4. **Monitor and measure:** Validate the pattern actually helps
+5. **Tune continuously:** Adjust thresholds based on production experience
+
+## Identifying Hot Paths
+
+**Hot path**: Code executed frequently and with low tolerance for latency.
+
+### Finding Hot Paths
+
+1. **Profiling**: Measure CPU time in production
+2. **Tracing**: Track latency from request start to end
+3. **Monitoring**: Identify endpoints users complain about
+4. **User behavior**: Analyze which features are used most
+
+Example: E-commerce product listing
+```
+1. Fetch product (30ms) - hot path, called 100k times/sec
+2. Fetch reviews (200ms) - called 50k times/sec, slower
+3. Calculate recommendations (500ms) - called 20k times/sec, very slow
+
+Optimization priority: #3 > #2 > #1 (highest latency first)
+```
+
+## Caching Strategy Matrix
+
+| Strategy | Latency | Correctness | Complexity | Best For |
+|----------|---------|-------------|-----------|----------|
+| **No cache** | Slow | Perfect | Low | Non-critical data |
+| **TTL cache** | Fast | Approximate | Medium | Time-tolerant data |
+| **LRU cache** | Very fast | Approximate | Medium | Memory-constrained |
+| **Write-through** | Medium | Perfect | High | Consistency critical |
+| **Write-behind** | Fast | Eventually consistent | High | High throughput |
+| **Cache-aside** | Medium | Eventually consistent | Medium | Most common |
+
+## Memoization Patterns
+
+### Within-Request Memoization
+```python
+# Don't fetch the same user multiple times in one request
+class RequestMemo:
+    def __init__(self):
+        self.cache = {}
+
+    def get_user(self, user_id):
+        if user_id in self.cache:
+            return self.cache[user_id]  # Cache hit in same request
+        user = fetch_user_from_db(user_id)
+        self.cache[user_id] = user
+        return user
+
+# Usage
+memo = RequestMemo()
+user1 = memo.get_user(123)  # DB query
+user2 = memo.get_user(123)  # Memory cache (memoized)
+```
+
+### Distributed Cache Pattern
+```yaml
+Hot Path Caching Strategy:
+
+Product Details Cache:
+  TTL: 5 minutes
+  Size: 1GB (10M products × 100 bytes)
+  Hit rate target: 95%
+  Eviction: LRU (least recently used)
+  Invalidation: On product update
+
+User Recommendations Cache:
+  TTL: 10 minutes (changes slower)
+  Size: 500MB
+  Hit rate target: 90%
+  Invalidation: On purchase, after TTL
+
+Search Results Cache:
+  TTL: 1 hour (changes rarely)
+  Size: 100MB
+  Hit rate target: 80%
+  Keyed by: query string, page number
+```
+
+## Cache Invalidation Strategies
+
+"There are only two hard things in Computer Science: cache invalidation and naming things." - Phil Karlton
+
+### Time-Based Invalidation (TTL)
+```python
+# Cache with time-to-live
+@cache.cached(timeout=300)  # 5 minute TTL
+def expensive_operation(param):
+    # Data stale after 5 minutes
+    return complex_calculation(param)
+
+# Trade-off: May serve stale data for up to TTL
+# Pro: Simple, no manual invalidation
+# Con: Risk of stale data, doesn't handle immediate updates
+```
+
+### Event-Based Invalidation
+```python
+# Invalidate on event
+def update_product(product_id, data):
+    # Update database
+    product = db.update('products', product_id, data)
+
+    # Invalidate cache
+    cache.delete(f'product:{product_id}')
+    cache.delete('products:all')  # Also invalidate list cache
+
+    # Notify services that depend on this product
+    event_bus.publish('product.updated', {'product_id': product_id})
+
+    return product
+
+# Trade-off: Always fresh, but complex invalidation logic
+# Pro: No stale data
+# Con: Risk of missing invalidations, cascade effects
+```
+
+### Write-Through Cache
+```python
+# Synchronous: Write to cache and database atomically
+def update_user(user_id, data):
+    # Write to cache first
+    cache.set(f'user:{user_id}', data)
+
+    # Then write to database
+    try:
+        db.update('users', user_id, data)
+    except Exception:
+        # Rollback: remove from cache if DB write fails
+        cache.delete(f'user:{user_id}')
+        raise
+
+# Trade-off: Always consistent, but slower writes
+# Pro: Cache always fresh
+# Con: Slower operation (write to cache + database)
+```
+
+### Write-Behind (Write-Back) Cache
+```python
+# Asynchronous: Write to cache, async write to database
+async def update_user(user_id, data):
+    # Write to cache immediately (fast)
+    cache.set(f'user:{user_id}', data)
+
+    # Async: Write to database in background
+    asyncio.create_task(
+        db.update_async('users', user_id, data)
+    )
+
+# Trade-off: Fast writes, eventual consistency
+# Pro: Fast writes, high throughput
+# Con: If service crashes before async write, data lost
+```
+
+## Cache Stampede Prevention
+
+**Problem**: Key expires, many clients request simultaneously, all hit database
+
+```python
+# Cache stampede scenario:
+# t=0: Key expires
+# t=0.001: 1000 requests arrive, all miss cache
+# t=0.002: All 1000 hit database simultaneously
+# Database overloaded, slow responses
+
+# Solution 1: Probabilistic Early Expiration
+# Expire key before TTL, with probability based on age
+def get_user(user_id):
+    key = f'user:{user_id}'
+    cached = cache.get(key)
+
+    if cached and should_refresh(key):
+        # Key not quite expired, but likely to expire soon
+        # Refresh in background, don't block request
+        asyncio.create_task(refresh_user_cache(user_id))
+        return cached  # Return stale data while refreshing
+
+    if cached:
+        return cached
+
+    # Cache miss: fetch and cache
+    user = db.get_user(user_id)
+    cache.set(key, user, ttl=300)
+    return user
+
+# Solution 2: Locking
+# Only one request refreshes, others wait
+def get_user_with_lock(user_id):
+    key = f'user:{user_id}'
+    lock_key = f'{key}:lock'
+
+    cached = cache.get(key)
+    if cached:
+        return cached
+
+    # Try to acquire lock
+    if cache.add(lock_key, 'locked', ttl=5):
+        # I won the lock, fetch and cache
+        try:
+            user = db.get_user(user_id)
+            cache.set(key, user, ttl=300)
+            return user
+        finally:
+            cache.delete(lock_key)
+    else:
+        # Someone else is refreshing, wait
+        time.sleep(0.1)  # Wait 100ms
+        # Try again (will hit cache or get fresh data)
+        return get_user_with_lock(user_id)
+```
+
+## Cache Coherence in Distributed Systems
+
+When you have caches in multiple places (client cache, Redis, database):
+
+```
+Client 1 Cache    Client 2 Cache    Distributed Cache (Redis)    Database
+    ↓                   ↓                      ↓                      ↓
+  user: Alice      user: Bob          user data (expired)        user data (current)
+
+Problem: Caches inconsistent across clients
+Solution: Invalidate aggressively or use events
+```
+
+**Strategies**:
+1. **Single Source of Truth**: Database is source of truth, caches are read-through
+2. **Event-Driven Invalidation**: Update → publish event → all caches invalidate
+3. **Versioning**: Cache data version, request latest version when needed
+4. **Eventual Consistency**: Accept temporary inconsistency, consistency guaranteed eventually
+
+## References
+
+1. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+2. <a href="https://www.amazon.com/Site-Reliability-Engineering-Production-Systems/dp/149192912X" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book ↗️</a>
+3. <a href="https://www.usenix.org/conference/nsdi20/presentation/yang" target="_blank" rel="nofollow noopener noreferrer">ACM NSDI 2020: Caching Strategies ↗️</a>
+4. <a href="https://en.wikipedia.org/wiki/Cache_stampede" target="_blank" rel="nofollow noopener noreferrer">Cache Stampede on Wikipedia ↗️</a>

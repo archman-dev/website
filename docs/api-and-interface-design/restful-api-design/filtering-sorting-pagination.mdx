@@ -1,0 +1,547 @@
+---
+sidebar_position: 3
+title: "Filtering, Sorting, and Pagination"
+description: "Scale APIs to handle large datasets with efficient query parameters"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [pagination, filtering, sorting, query parameters, limit offset, cursor pagination, API scalability]
+image: /img/archman-social-card.webp
+tags: [REST, API-design, pagination, filtering, sorting, query-parameters, scalability, performance, best-practices]
+hide_title: true
+---
+
+<Hero title="Filtering, Sorting, and Pagination" subtitle="Handle large datasets efficiently with query parameters" imageAlt="Pagination illustration" size="large" />
+
+## TL;DR
+
+Real-world datasets are large. Always support pagination—never return all results. Use query parameters for filtering (`?status=active`), sorting (`?sort=created_at:desc`), and pagination limits (`?limit=50&offset=0` or cursor tokens). Set sensible defaults (limit=20), enforce maximums (limit≤100), and provide metadata in responses (total count, next page link). This prevents resource exhaustion and gives clients control over performance.
+
+## Learning Objectives
+
+- Understand pagination strategies and their tradeoffs
+- Design consistent query parameter conventions
+- Handle sorting and filtering at scale
+- Provide pagination metadata clients need
+- Avoid common pagination bugs (cursor invalidation, missing data)
+
+## Motivating Scenario
+
+Your API endpoint `/users` suddenly starts timing out. Investigation reveals clients are requesting all 10 million users without pagination. Adding pagination support was delayed because the specification wasn't clear: should you use offset/limit or cursor tokens? How should clients know if more results exist? Should metadata be in headers or the response body?
+
+Clear pagination defaults and conventions prevent this chaos.
+
+## Core Concepts
+
+### Pagination Strategies
+
+**Offset/Limit**: Clients specify starting position and count. Simple, familiar, but problematic with large offsets (database scans) and insertion/deletion during pagination (results shift).
+
+**Keyset/Cursor**: Clients paginate from a marker value (e.g., last user's ID). More efficient for large datasets, but clients can't jump to arbitrary pages.
+
+**Page-based**: Clients request page 2, 3, etc. Conceptually simple but internally similar to offset/limit.
+
+### Query Parameter Conventions
+
+Standardize on conventions so clients understand your API intuitively:
+
+- **Filtering**: `?field=value` or `?field[operator]=value` (e.g., `?created_at[gte]=2025-01-01`)
+- **Sorting**: `?sort=field` or `?sort=field:asc,other_field:desc` (colon-separated direction)
+- **Pagination**: `?limit=20&offset=0` or `?limit=20&cursor=abc123def`
+
+### Response Metadata
+
+Clients need to know if more results exist and how to fetch them. Provide:
+- Total count of matching resources
+- Link to next/previous page
+- Current page/offset information
+
+## Practical Example
+
+<Tabs>
+<TabItem value="offset" label="Offset/Limit Pagination">
+
+```bash
+# Request
+GET /users?status=active&sort=created_at:desc&limit=50&offset=0
+
+# Response
+HTTP/1.1 200 OK
+Content-Type: application/json
+Link: <https://api.example.com/users?status=active&sort=created_at:desc&limit=50&offset=50>; rel="next"
+
+{
+  "data": [
+    { "id": 1, "name": "Alice", "created_at": "2025-02-01" },
+    { "id": 2, "name": "Bob", "created_at": "2025-02-02" }
+  ],
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "total": 523,
+    "has_more": true
+  }
+}
+
+# Request next page
+GET /users?status=active&sort=created_at:desc&limit=50&offset=50
+```
+
+**Pros**: Simple, clients can jump to page N, familiar pattern
+**Cons**: Inefficient for large offsets, data shifts if insertions occur during pagination
+
+</TabItem>
+<TabItem value="cursor" label="Cursor Pagination">
+
+```bash
+# Request
+GET /users?status=active&sort=created_at:desc&limit=50
+
+# Response
+{
+  "data": [
+    { "id": 123, "name": "Alice", "created_at": "2025-02-01T10:00:00Z" },
+    { "id": 124, "name": "Bob", "created_at": "2025-02-01T09:59:00Z" }
+  ],
+  "pagination": {
+    "limit": 50,
+    "has_more": true,
+    "next_cursor": "eyJpZCI6IDEyNCwgInRzIjogMjAyNS0wMi0wMVQwOTo1OTowMFp9"
+  }
+}
+
+# Request next page (opaque cursor)
+GET /users?status=active&sort=created_at:desc&limit=50&cursor=eyJpZCI6IDEyNCwgInRzIjogMjAyNS0wMi0wMVQwOTo1OTowMFp9
+
+# Response next batch (cursor stable even if data is inserted)
+{
+  "data": [
+    { "id": 125, "name": "Carol", "created_at": "2025-02-01T09:58:00Z" }
+  ],
+  "pagination": {
+    "limit": 50,
+    "has_more": false,
+    "next_cursor": null
+  }
+}
+```
+
+**Pros**: Efficient at any position, stable across insertions, prevents data duplication
+**Cons**: Clients can't jump to arbitrary pages, opaque cursor values
+
+</TabItem>
+</Tabs>
+
+## Filtering Best Practices
+
+**Simple equality**: `?status=active` filters where status equals "active"
+
+**Comparison operators**: `?created_at[gte]=2025-01-01&created_at[lt]=2025-02-01`
+
+**Multiple values**: `?status=active,pending` (comma-separated) or `?status=active&status=pending` (repeated parameter)
+
+**Full-text search**: `?q=alice+smith` for free-text search across fields
+
+**Document the schema**: Clients need to know which fields are filterable and what operators are supported.
+
+## Sorting Best Practices
+
+**Default sort**: Always choose a sensible default (`created_at DESC`). Never return arbitrary order.
+
+**Multiple sort keys**: `?sort=status:asc,created_at:desc` for stability when primary sort has ties.
+
+**Validate sort fields**: Only allow sorts on indexed fields to prevent performance degradation.
+
+**Include sort direction**: Always specify ascending/descending to avoid ambiguity.
+
+## Patterns and Pitfalls
+
+**Pitfall**: No pagination. Returning all results breaks clients and exhausts your server.
+
+**Pitfall**: Missing `has_more` flag. Clients can't tell if they've reached the end. They keep requesting with no results.
+
+**Pitfall**: Inconsistent limit defaults. Some endpoints default to 20, others to 100. Pick one.
+
+**Pitfall**: No maximum limit. Allowing `?limit=1000000` lets malicious clients DOS your API.
+
+**Pattern**: Always return total count when feasible. Clients display "Showing 1-50 of 523 results."
+
+**Pattern**: Use Link header for next/previous page. REST clients recognize this standard.
+
+## When to Use Offset vs Cursor
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Offset/Limit When",
+    points: [
+      "Small dataset (< 100k records)",
+      "Clients need arbitrary page jumps",
+      "Simple implementation is priority",
+      "Data doesn't change frequently"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use Cursor When",
+    points: [
+      "Large dataset (millions of records)",
+      "Sequential browsing is expected",
+      "Data changes rapidly (feeds)",
+      "Performance under high offset is critical"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Design Review Checklist
+
+- [ ] All collection endpoints support pagination
+- [ ] Default limit specified (e.g., 20)
+- [ ] Maximum limit enforced (e.g., 100)
+- [ ] Pagination strategy chosen (offset, cursor, page)
+- [ ] Sorting fields documented and validated
+- [ ] Filtering supported on common fields
+- [ ] Pagination metadata clear (`has_more`, `total`, `next_cursor`)
+- [ ] Link header used for next/previous page
+- [ ] Query parameter naming consistent across API
+- [ ] Edge cases handled (empty results, beyond last page, invalid cursor)
+
+## Self-Check
+
+- Which pagination strategy handles large offsets efficiently?
+- Why should you never return all results without pagination?
+- How do you signal that more results exist?
+
+:::info One Takeaway
+Pagination isn't an afterthought—it's foundational. Default to cursor pagination for large datasets, provide clear metadata, and set sensible limits.
+
+:::
+
+## Next Steps
+
+- Read **Error Formats & Problem Details** for handling validation errors in filters
+- Study **Versioning Strategies** for evolving pagination schemes
+- Explore **Concurrency Control (ETags)** for handling updates during pagination
+
+## Complex Implementation Examples
+
+### Advanced Filtering with Operators
+
+```python
+from enum import Enum
+from datetime import datetime
+
+class FilterOperator(Enum):
+    EQ = "eq"      # equal
+    NE = "ne"      # not equal
+    GT = "gt"      # greater than
+    GTE = "gte"    # greater than or equal
+    LT = "lt"      # less than
+    LTE = "lte"    # less than or equal
+    IN = "in"      # in list
+    CONTAINS = "contains"  # substring/contains
+    STARTS_WITH = "starts_with"
+    ENDS_WITH = "ends_with"
+    BETWEEN = "between"
+
+class FilterQuery:
+    """Build complex filter queries."""
+
+    def __init__(self):
+        self.filters = []
+
+    def add_filter(self, field: str, operator: FilterOperator, value):
+        """Add a filter condition."""
+        self.filters.append({
+            'field': field,
+            'operator': operator,
+            'value': value
+        })
+        return self
+
+    def build_sql(self) -> tuple:
+        """Build SQL WHERE clause and parameters."""
+        conditions = []
+        params = []
+
+        for f in self.filters:
+            field = f['field']
+            op = f['operator']
+            val = f['value']
+
+            if op == FilterOperator.EQ:
+                conditions.append(f"{field} = %s")
+                params.append(val)
+            elif op == FilterOperator.NE:
+                conditions.append(f"{field} != %s")
+                params.append(val)
+            elif op == FilterOperator.GT:
+                conditions.append(f"{field} > %s")
+                params.append(val)
+            elif op == FilterOperator.GTE:
+                conditions.append(f"{field} >= %s")
+                params.append(val)
+            elif op == FilterOperator.LT:
+                conditions.append(f"{field} < %s")
+                params.append(val)
+            elif op == FilterOperator.LTE:
+                conditions.append(f"{field} <= %s")
+                params.append(val)
+            elif op == FilterOperator.IN:
+                placeholders = ','.join(['%s'] * len(val))
+                conditions.append(f"{field} IN ({placeholders})")
+                params.extend(val)
+            elif op == FilterOperator.CONTAINS:
+                conditions.append(f"{field} LIKE %s")
+                params.append(f"%{val}%")
+            elif op == FilterOperator.STARTS_WITH:
+                conditions.append(f"{field} LIKE %s")
+                params.append(f"{val}%")
+            elif op == FilterOperator.BETWEEN:
+                conditions.append(f"{field} BETWEEN %s AND %s")
+                params.extend(val)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        return where_clause, params
+
+# Usage
+query = (FilterQuery()
+    .add_filter('status', FilterOperator.EQ, 'active')
+    .add_filter('created_at', FilterOperator.GTE, datetime(2025, 1, 1))
+    .add_filter('created_at', FilterOperator.LTE, datetime(2025, 2, 14))
+    .add_filter('category', FilterOperator.IN, ['electronics', 'books'])
+    .add_filter('title', FilterOperator.CONTAINS, 'laptop'))
+
+where_clause, params = query.build_sql()
+# WHERE clause: status = %s AND created_at >= %s AND created_at <= %s
+#               AND category IN (%s, %s) AND title LIKE %s
+```
+
+### Multi-Field Sorting with Stability
+
+```python
+class MultiFieldSort:
+    """Sort by multiple fields for stable ordering."""
+
+    def __init__(self):
+        self.sort_fields = []
+
+    def add_sort(self, field: str, direction: str = 'ASC'):
+        """Add sort field."""
+        self.sort_fields.append({
+            'field': field,
+            'direction': direction.upper()
+        })
+        return self
+
+    def build_sql(self) -> str:
+        """Build ORDER BY clause."""
+        if not self.sort_fields:
+            return "ORDER BY id ASC"  # Default stable sort
+
+        order_by = []
+        for sort in self.sort_fields:
+            order_by.append(f"{sort['field']} {sort['direction']}")
+
+        return "ORDER BY " + ", ".join(order_by)
+
+    def add_stable_sort(self):
+        """Always add ID as final tiebreaker for stability."""
+        # Make sure ID isn't already last
+        if not self.sort_fields or self.sort_fields[-1]['field'] != 'id':
+            self.add_sort('id', 'ASC')
+        return self
+
+# Usage: Sort by status, then by created_at, then by ID (stable)
+sort = (MultiFieldSort()
+    .add_sort('status', 'ASC')
+    .add_sort('created_at', 'DESC')
+    .add_stable_sort())
+
+# Guarantees consistent ordering even with ties
+```
+
+### Efficient Search with Full-Text Indexing
+
+```python
+class FullTextSearchPagination:
+    """Paginate search results efficiently."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def search(self, query: str, limit: int = 20, offset: int = 0):
+        """Search with pagination."""
+        # Use full-text search for speed
+        sql = """
+            SELECT id, title, snippet(content, 'query', '<mark>', '</mark>', '...', 15) as content_snippet,
+                   ts_rank(to_tsvector('english', content), query) as rank
+            FROM articles, plainto_tsquery('english', %s) query
+            WHERE to_tsvector('english', content) @@ query
+            ORDER BY rank DESC, id ASC
+            LIMIT %s OFFSET %s
+        """
+
+        results = self.db.query(sql, [query, limit, offset])
+
+        # Get total for pagination metadata
+        count_sql = """
+            SELECT COUNT(*) as total
+            FROM articles, plainto_tsquery('english', %s) query
+            WHERE to_tsvector('english', content) @@ query
+        """
+
+        total = self.db.query_one(count_sql, [query])['total']
+
+        return {
+            'results': results,
+            'pagination': {
+                'limit': limit,
+                'offset': offset,
+                'total': total,
+                'has_more': (offset + limit) < total
+            }
+        }
+
+# Usage
+search = FullTextSearchPagination(db)
+results = search.search('postgresql performance', limit=20, offset=0)
+# Returns search results with snippets and rank
+```
+
+### Handling Edge Cases
+
+```python
+class SafePagination:
+    """Handle pagination edge cases safely."""
+
+    @staticmethod
+    def validate_and_sanitize(limit, offset, max_limit=100):
+        """Validate pagination parameters."""
+        # Ensure reasonable limits
+        limit = max(1, min(int(limit or 20), max_limit))
+        offset = max(0, int(offset or 0))
+
+        return limit, offset
+
+    @staticmethod
+    def handle_cursor_invalidation(cursor, db):
+        """Handle cursor that's no longer valid."""
+        # Cursor might point to deleted row
+        # Approach: fall back to next available row
+
+        try:
+            # Try to find row exactly at cursor
+            row = db.query_one(
+                "SELECT * FROM items WHERE id = %s",
+                [cursor]
+            )
+            return row
+        except NotFound:
+            # Cursor row deleted, find next
+            next_row = db.query_one(
+                "SELECT * FROM items WHERE id > %s ORDER BY id LIMIT 1",
+                [cursor]
+            )
+            if next_row:
+                return next_row
+            else:
+                # Reached end of results
+                return None
+
+    @staticmethod
+    def handle_empty_results(limit, offset, total):
+        """Return meaningful response for empty results."""
+        return {
+            'data': [],
+            'pagination': {
+                'limit': limit,
+                'offset': offset,
+                'total': total,
+                'has_more': False
+            },
+            'message': f'No results found. Total available: {total}'
+        }
+
+# Usage
+limit, offset = SafePagination.validate_and_sanitize(
+    request.args.get('limit'),
+    request.args.get('offset')
+)
+
+results = db.query("SELECT * FROM items LIMIT %s OFFSET %s", [limit, offset])
+
+if not results:
+    return SafePagination.handle_empty_results(limit, offset, 0)
+
+return {
+    'data': results,
+    'pagination': {
+        'limit': limit,
+        'offset': offset,
+        'total': db.count_total('items'),
+        'has_more': (offset + limit) < db.count_total('items')
+    }
+}
+```
+
+## API Response Format Patterns
+
+### Envelope Pattern
+
+```json
+{
+  "data": [
+    { "id": 1, "name": "Alice" },
+    { "id": 2, "name": "Bob" }
+  ],
+  "pagination": {
+    "limit": 20,
+    "offset": 0,
+    "total": 523,
+    "has_more": true,
+    "next_url": "https://api.example.com/users?limit=20&offset=20"
+  },
+  "meta": {
+    "request_id": "req-123",
+    "timestamp": "2025-02-14T10:00:00Z"
+  }
+}
+```
+
+### JSON API Standard
+
+```json
+{
+  "data": [
+    {
+      "type": "users",
+      "id": "1",
+      "attributes": {
+        "name": "Alice",
+        "email": "alice@example.com"
+      }
+    }
+  ],
+  "links": {
+    "self": "https://api.example.com/users?page[number]=1",
+    "next": "https://api.example.com/users?page[number]=2",
+    "last": "https://api.example.com/users?page[number]=26"
+  },
+  "meta": {
+    "total": 523,
+    "count": 20
+  }
+}
+```
+
+## References
+
+- Pagination Patterns (Stripe API documentation)
+- Cursor Pagination (using keyset pagination)
+- REST API Pagination (Microsoft API Guidelines)
+- JSON:API Standard (jsonapi.org)
+- "Building Web APIs with Flask" by Miguel Grinberg
+- "RESTful API Design Best Practices" by Todd Fredrich

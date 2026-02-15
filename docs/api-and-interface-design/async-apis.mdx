@@ -1,0 +1,485 @@
+---
+sidebar_position: 4
+title: "Async APIs and Event Contracts"
+description: "Design event-driven systems with AsyncAPI specifications"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [AsyncAPI, event-driven, message brokers, event contracts, Kafka, webhooks, async communication, event schema]
+image: /img/archman-social-card.webp
+tags: [AsyncAPI, event-driven, messaging, event-contracts, Kafka, RabbitMQ, webhooks, async-communication, event-schema, decoupling]
+hide_title: true
+---
+
+<Hero title="Async APIs and Event Contracts" subtitle="Design event-driven systems with AsyncAPI specifications" imageAlt="Async APIs illustration" size="large" />
+
+## TL;DR
+
+Async APIs enable systems to communicate via events (messages) rather than request-response. A user signs up; the system emits a `user.created` event. Email, notification, and analytics services subscribe and react independently. **AsyncAPI** is an OpenAPI-like specification for event-driven systems, documenting channels, message schemas, and protocols (Kafka, RabbitMQ, AMQP). Unlike REST's tight coupling (client blocks waiting for response), async decouples timing: producer publishes, consumers process at their pace. Essential for scalable, resilient systems; adds complexity around ordering, deduplication, and failure handling.
+
+## Learning Objectives
+
+- Design event schemas and contracts
+- Understand AsyncAPI specification
+- Choose appropriate message brokers and protocols
+- Handle ordering, deduplication, and failures
+- Balance async benefits against complexity
+
+## Motivating Scenario
+
+A user signs up. Your system must:
+1. Send confirmation email
+2. Record analytics event
+3. Initialize user preferences
+4. Notify admin team
+
+With REST, the signup endpoint calls all three services sequentially. If the email service is slow or down, signup times out. If a service is unavailable, signup fails entirely.
+
+With async: Signup emits `user.signup` event. Email, analytics, preferences, and admin services subscribe independently. If email is down, signup completes; email catches up later. Services scale independently.
+
+## Core Concepts
+
+### Event-Driven Communication
+
+**Event**: Immutable fact about something that happened (UserCreated, OrderShipped, PaymentProcessed).
+
+**Producer**: Emits events (user service publishes UserCreated).
+
+**Consumer**: Subscribes to events and reacts (email service subscribes to UserCreated).
+
+**Message Broker**: Transports events (Kafka, RabbitMQ, AWS SNS/SQS).
+
+### AsyncAPI Specification
+
+Like OpenAPI for REST, AsyncAPI documents async systems. Define channels (topics), message schemas, and protocols.
+
+```yaml
+asyncapi: 2.6.0
+info:
+  title: User Service Events
+  version: 1.0.0
+channels:
+  user.events:
+    description: User lifecycle events
+    subscribe:
+      message:
+        $ref: '#/components/messages/UserEvent'
+components:
+  messages:
+    UserCreated:
+      payload:
+        type: object
+        properties:
+          userId:
+            type: string
+          email:
+            type: string
+          createdAt:
+            type: string
+            format: date-time
+```
+
+### Message Ordering and Deduplication
+
+**Ordering**: Do consumers care about event order? Orders care: ShoppingCart → OrderPayment → OrderShipped. Choose brokers/partitioning that guarantee order (Kafka partitions, not SNS).
+
+**Deduplication**: Exactly-once delivery is hard. Brokers typically offer at-least-once. Consumers must be idempotent or track processed message IDs.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="sync" label="❌ Synchronous (Coupled)">
+
+```javascript
+// User signup endpoint
+app.post('/signup', async (req, res) => {
+  // Validate and create user
+  const user = await db.createUser(req.body);
+
+  // Call dependent services sequentially
+  try {
+    await emailService.sendConfirmation(user); // ~200ms
+    await analyticsService.recordSignup(user); // ~100ms
+    await preferencesService.initialize(user); // ~50ms
+  } catch (err) {
+    // If any service fails, signup fails
+    await db.deleteUser(user.id);
+    return res.status(500).json({ error: 'Signup failed' });
+  }
+
+  res.json({ userId: user.id });
+});
+// Total latency: 350ms + network variability
+// Single failure cascades
+```
+
+</TabItem>
+<TabItem value="async" label="✅ Asynchronous (Decoupled)">
+
+```javascript
+// User signup endpoint (fast, decoupled)
+app.post('/signup', async (req, res) => {
+  const user = await db.createUser(req.body);
+
+  // Emit event, return immediately
+  await eventBroker.publish('user.events', {
+    type: 'UserCreated',
+    userId: user.id,
+    email: user.email,
+    createdAt: new Date()
+  });
+
+  res.json({ userId: user.id });
+  // Returns in ~50ms, user creation is durable
+});
+
+// Consumer: Email service
+eventBroker.subscribe('user.events', async (message) => {
+  if (message.type === 'UserCreated') {
+    await emailService.sendConfirmation(message.email);
+  }
+});
+
+// Consumer: Analytics service
+eventBroker.subscribe('user.events', async (message) => {
+  if (message.type === 'UserCreated') {
+    await analytics.recordSignup(message.userId);
+  }
+});
+
+// Consumer: Preferences service
+eventBroker.subscribe('user.events', async (message) => {
+  if (message.type === 'UserCreated') {
+    await preferences.initialize(message.userId);
+  }
+});
+// Services run in parallel, independently
+// Failure doesn't cascade
+```
+
+</TabItem>
+<TabItem value="asyncapi" label="AsyncAPI Specification">
+
+```yaml
+asyncapi: '2.6.0'
+info:
+  title: User Service Events
+  version: 1.0.0
+  description: Events emitted by the user service
+servers:
+  kafka:
+    url: kafka://kafka-broker:9092
+    protocol: kafka
+channels:
+  user.events:
+    description: User lifecycle events
+    publish:
+      message:
+        oneOf:
+          - $ref: '#/components/messages/UserCreated'
+          - $ref: '#/components/messages/UserDeactivated'
+components:
+  messages:
+    UserCreated:
+      contentType: application/json
+      payload:
+        type: object
+        required: [userId, email, createdAt]
+        properties:
+          userId:
+            type: string
+            description: Unique user identifier
+          email:
+            type: string
+            format: email
+          createdAt:
+            type: string
+            format: date-time
+    UserDeactivated:
+      contentType: application/json
+      payload:
+        type: object
+        required: [userId, deactivatedAt]
+        properties:
+          userId:
+            type: string
+          deactivatedAt:
+            type: string
+            format: date-time
+```
+
+Consumers know exactly what events to expect and their structure.
+
+</TabItem>
+</Tabs>
+
+## Message Broker Comparison
+
+| Broker | Strength | When to Use |
+|--------|----------|-----------|
+| Kafka | Ordering, durability, high throughput | Event streams, activity feeds, audit logs |
+| RabbitMQ | Routing, ACK/dead-letter queues | Task queues, reliable delivery |
+| AWS SNS/SQS | Managed, serverless | Cloud-first, simple pub-sub |
+| AMQP | Standard protocol, exchanges/bindings | Enterprise, complex routing |
+
+## Patterns and Pitfalls
+
+**Pitfall**: Losing events. Use durable brokers, disk persistence, and replication.
+
+**Pitfall**: Ignoring ordering. If OrderCreated, OrderPayment, OrderShipped must happen in order, use Kafka partitions by order ID.
+
+**Pitfall**: No deduplication strategy. Idempotent consumers are essential for at-least-once delivery.
+
+**Pitfall**: No dead-letter queues. If a consumer fails, events disappear or block forever. Use DLQs to quarantine poison messages.
+
+**Pattern**: Version events early. Add a `version` field so you can evolve schemas without breaking old consumers.
+
+**Pattern**: Use correlation IDs. Track requests/events through multiple services for debugging.
+
+## Design Review Checklist
+
+- [ ] Event schema versioned and backward-compatible
+- [ ] AsyncAPI specification documents all channels and messages
+- [ ] Message broker chosen (Kafka for ordering, RabbitMQ for flexibility, etc.)
+- [ ] Ordering guarantees clear (per-partition, global, none)
+- [ ] Consumers are idempotent
+- [ ] Dead-letter queues configured
+- [ ] Monitoring tracks lag (producer lag, consumer lag)
+- [ ] Correlation IDs used for tracing
+- [ ] Schema registry or central contract management
+- [ ] Failure scenarios documented (broker down, slow consumer, etc.)
+
+## Advanced Async Patterns
+
+### Consumer Groups and Partitioning
+
+Kafka partitions enable parallel processing and ordering guarantees:
+
+```python
+# Kafka: Single consumer group processes partition
+# All messages in partition go to same consumer
+# Order is guaranteed within partition
+
+producer = KafkaProducer(bootstrap_servers=['localhost:9092'])
+
+# Publish to topic with partition key
+# Messages with same key go to same partition
+producer.send('orders',
+    key=b'customer-123',  # Ensures ordering per customer
+    value={
+        "order_id": "ORD-456",
+        "customer_id": "cust-123",
+        "amount": 99.99
+    }
+)
+
+# Consumer group
+consumer = KafkaConsumer(
+    'orders',
+    group_id='order-processors',
+    bootstrap_servers=['localhost:9092']
+)
+
+for message in consumer:
+    print(f"Processing: {message.value}")
+    # All messages for customer-123 arrive in order
+    # Multiple consumers process different partitions in parallel
+```
+
+### Dead Letter Queues (DLQ) and Error Handling
+
+Gracefully handle poison messages:
+
+```python
+class RobustMessageConsumer:
+    def __init__(self, broker, topic, dlq_topic):
+        self.consumer = KafkaConsumer(topic, group_id='robust-group')
+        self.dlq_producer = KafkaProducer()
+        self.dlq_topic = dlq_topic
+
+    def process_message(self, message):
+        """Process with error handling and DLQ fallback."""
+        try:
+            # Attempt to process
+            result = self.handle_order(message.value)
+            return result
+        except ValidationError as e:
+            # Bad data: Send to DLQ for manual review
+            self.dlq_producer.send(self.dlq_topic, {
+                "original_message": message.value,
+                "error": str(e),
+                "error_type": "validation_error",
+                "timestamp": datetime.utcnow().isoformat(),
+                "dlq_reason": "Invalid message format"
+            })
+            # Don't commit: Message is preserved in DLQ
+            raise
+        except TransientError as e:
+            # Transient: Retry
+            raise  # Will be retried by consumer
+        except FatalError as e:
+            # Unrecoverable: Log and move on
+            logger.error(f"Fatal error: {e}", extra={"message": message.value})
+            # Send to DLQ
+            self.dlq_producer.send(self.dlq_topic, {
+                "original_message": message.value,
+                "error": str(e),
+                "error_type": "fatal_error"
+            })
+
+    def handle_order(self, order_data):
+        if not order_data.get("order_id"):
+            raise ValidationError("Missing order_id")
+        # Process order...
+```
+
+### Fan-out Fan-in Patterns
+
+Single event triggers multiple independent consumers:
+
+```python
+# Single order.created event
+event_broker.publish("orders.created", {
+    "order_id": "ORD-123",
+    "customer_id": "CUST-456",
+    "total": 99.99
+})
+
+# Multiple independent consumers react:
+
+# Consumer 1: Email Service
+event_broker.subscribe("orders.created", email_service.send_confirmation)
+
+# Consumer 2: Analytics
+event_broker.subscribe("orders.created", analytics.track_order_created)
+
+# Consumer 3: Inventory
+event_broker.subscribe("orders.created", inventory.reserve_items)
+
+# Consumer 4: Fulfillment
+event_broker.subscribe("orders.created", fulfillment.create_shipment)
+
+# All run in parallel, independently
+# Failure of one doesn't affect others
+```
+
+### Schema Evolution and Compatibility
+
+Change event schemas without breaking consumers:
+
+```yaml
+# Version 1 (original)
+OrderCreated:
+  properties:
+    order_id: string
+    customer_id: string
+    total: number
+
+# Version 2 (add new field with default)
+OrderCreated:
+  properties:
+    order_id: string
+    customer_id: string
+    total: number
+    discount: number (optional, default: 0)  # New field
+    # Old consumers ignore discount
+    # New consumers see discount (if present)
+
+# Version 3 (deprecate old field)
+OrderCreated:
+  properties:
+    order_id: string
+    customer_id: string
+    total: number
+    discount: number (optional, default: 0)
+    currency: string (optional, default: "USD")  # New field
+    # Old field 'total' still present for compatibility
+```
+
+## Real-World Async Pattern: Multi-Service Saga
+
+Order creation coordinated asynchronously across services:
+
+```
+1. User clicks "Create Order"
+   ↓
+2. OrderService receives request
+   - Creates Order with status=PENDING
+   - Publishes: OrderCreated event
+   - Returns order_id to user immediately (not yet confirmed!)
+   ↓
+3. InventoryService subscribes to OrderCreated
+   - Tries to reserve items
+   - If success: Publishes InventoryReserved
+   - If fail: Publishes InventoryReservationFailed
+   ↓
+4. PaymentService subscribes to InventoryReserved
+   - Charges customer's payment method
+   - If success: Publishes PaymentProcessed
+   - If fail: Publishes PaymentFailed
+   ↓
+5. FulfillmentService subscribes to PaymentProcessed
+   - Creates shipping label
+   - Publishes: OrderShipped
+   ↓
+6. OrderService subscribes to OrderShipped
+   - Updates order status to CONFIRMED
+   - Publishes: OrderConfirmed
+   ↓
+7. NotificationService subscribes to OrderConfirmed
+   - Sends confirmation email
+   - Publishes: ConfirmationEmailSent
+   ↓
+8. User polls order status, sees CONFIRMED after a few seconds
+```
+
+## Performance and Trade-offs
+
+### Async vs. Sync Latency
+
+```
+Synchronous (blocking wait):
+User → API Gateway → Order Service → Inventory Service → Payment Service
+│←─────────────────── Response ──────────────────→│
+Total: ~500ms (user waits)
+
+Asynchronous (fire and forget):
+User → API Gateway → Order Service → (publishes event)
+│← Immediate response ←│  ~50ms
+(Rest happens async in background, user doesn't wait)
+```
+
+### Consistency Model
+
+- **Immediate consistency**: Sync calls (tight coupling)
+- **Eventual consistency**: Async events (loose coupling, temporary inconsistency)
+
+Choose based on business requirement. Payments: strict consistency. Recommendations: eventual fine.
+
+## Self-Check
+
+- When would you use Kafka vs RabbitMQ? Kafka for ordering and replaying; RabbitMQ for flexible routing and ACKs.
+- Why must consumers be idempotent? At-least-once delivery means same message might arrive twice. Idempotent handling prevents duplicate side effects.
+- How do correlation IDs help in async systems? Track a single logical request (order) across multiple services for debugging and monitoring.
+- What problem does DLQ solve? Prevents poison messages from blocking processing; moves bad messages aside for manual review.
+- When should you use fan-out patterns? When one event triggers independent downstream actions (email, analytics, fulfillment all reacting to order).
+
+:::info One Takeaway
+Async decouples timing and enables resilience but adds complexity around ordering, deduplication, and eventual consistency. Use when scalability and resilience matter more than simplicity. Invest in proper error handling (DLQs), idempotency, and observability (tracing). Start simple with request-reply; graduate to events as system complexity grows.
+
+:::
+
+## Next Steps
+
+- Read **Webhooks** for pushing events to external systems
+- Study **Versioning Strategies** for evolving event schemas
+- Explore **Observability** for monitoring async systems
+
+## References
+
+- AsyncAPI Specification (asyncapi.com)
+- Kafka Documentation (kafka.apache.org)
+- Event Sourcing and CQRS (Martin Fowler)
+- Designing Event-Driven Systems (Building Microservices)

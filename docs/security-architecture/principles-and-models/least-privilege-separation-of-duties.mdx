@@ -1,0 +1,472 @@
+---
+sidebar_position: 2
+title: "Least Privilege and Separation of Duties"
+description: "Minimize permissions and distribute authority to limit blast radius"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [least privilege, separation of duties, RBAC, ABAC, privilege escalation, access control, permissions]
+image: /img/archman-social-card.webp
+tags: [security-principles, least-privilege, separation-of-duties, RBAC, ABAC, access-control, privilege-management, compliance]
+hide_title: true
+---
+
+<Hero title="Least Privilege and Separation of Duties" subtitle="Minimize permissions and distribute authority" imageAlt="Access control illustration" size="large" />
+
+## TL;DR
+
+**Least Privilege**: Grant users, services, and accounts only the minimum permissions needed to do their job. An employee needs to read invoices, not approve them. An API service needs to read a database, not delete it. **Separation of Duties**: Distribute authority so no single person/account can cause catastrophic damage. Approve and audit functions separated; payment approval requires two signatures. Default deny; only grant explicit permissions. Remove unused access regularly. This limits damage when accounts are compromised or insiders turn malicious.
+
+## Learning Objectives
+
+- Apply least privilege to users, services, and infrastructure
+- Design role hierarchies that prevent privilege escalation
+- Implement separation of duties in critical workflows
+- Monitor for privilege creep
+- Balance security with operability
+
+## Motivating Scenario
+
+An admin account has permissions: read, write, delete everything. An admin's credentials are compromised. The attacker deletes backups, exfiltrates databases, and brings systems down. Recovery takes weeks.
+
+With least privilege:
+- The admin reads logs but can't modify infrastructure
+- Database admin modifies databases but can't read encryption keys
+- A backup technician restores backups but can't create new ones
+- Each action requires audit logging
+
+Attacker with one account's credentials can't destroy everything. Separation of duties prevents any single person from covering their tracks.
+
+## Core Concepts
+
+### Principle of Least Privilege
+
+**Concept**: Grant only necessary permissions for role, minimized to specific resources, for limited duration.
+
+Example:
+- **Too permissive**: User has "all permissions"
+- **Least privilege**: User can "read invoices from 2025", "export to CSV", nothing else
+
+### Implementing RBAC (Role-Based Access Control)
+
+Define roles (Engineer, Manager, Admin) with associated permissions:
+
+```yaml
+roles:
+  Engineer:
+    permissions:
+      - services:read
+      - logs:read
+      - databases:read
+  Manager:
+    permissions:
+      - services:read
+      - team:manage
+      - approvals:review
+  Admin:
+    permissions:
+      - "*"  # All permissions
+```
+
+**Problem**: Admin role too powerful. Use ABAC instead.
+
+### Attribute-Based Access Control (ABAC)
+
+Grant access based on attributes: user, resource, action, context.
+
+```yaml
+policy:
+  - condition: |
+      user.role == "Engineer" &&
+      resource.environment == "staging" &&
+      action == "read"
+    effect: Allow
+  - condition: |
+      user.role == "Engineer" &&
+      resource.environment == "production"
+    effect: Deny
+  - condition: |
+      user.role == "Manager" &&
+      action == "approve_deployment" &&
+      request.time > business_hours
+    effect: Deny  # Require audit
+```
+
+More flexible than RBAC; prevents privilege creep.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="poor" label="❌ Excessive Privilege">
+
+```yaml
+# Account has all permissions
+user:
+  id: eng-001
+  name: Alice
+  role: Developer
+permissions:
+  - "databases:*"      # Read, write, delete everything
+  - "logs:*"           # All log operations
+  - "infrastructure:*" # All infrastructure changes
+  - "secrets:*"        # View all secrets
+  - "backups:*"        # Delete backups, create new ones
+
+# If credentials compromised:
+# Attacker can delete all data, steal secrets, destroy backups
+# No audit trail; attacker deletes logs
+```
+
+</TabItem>
+<TabItem value="good" label="✅ Least Privilege">
+
+```yaml
+# Each account has minimal permissions for its job
+user:
+  id: eng-001
+  name: Alice
+  role: Application Engineer
+permissions:
+  - "databases:staging:read"      # Only staging, read-only
+  - "logs:application:read"        # Only app logs
+  - "infrastructure:staging:*"     # Only staging infra
+  - "secrets:application:read"     # Only app secrets
+  # Cannot: write to databases, delete backups, access production
+
+# Separate accounts for different roles:
+ops:
+  id: ops-001
+  role: Infrastructure Engineer
+permissions:
+  - "infrastructure:production:read"
+  - "databases:backup:restore"  # Restore from backup
+  - "logs:infrastructure:read"
+  # Cannot: modify databases, delete backups, access secrets
+
+approval:
+  id: mgr-001
+  role: Deployment Manager
+permissions:
+  - "deployments:review"        # Approve deployments
+  - "deployments:logs:read"     # See deployment logs
+  # Cannot: execute deployments, modify configs
+
+executor:
+  id: svc-001
+  role: CI/CD Service
+permissions:
+  - "deployments:execute"       # Execute approved deployments
+  - "artifacts:read:pull"       # Pull build artifacts
+  # Cannot: approve deployments, modify configs
+```
+
+Benefits:
+- Alice compromised: staging-only damage
+- Ops compromised: can restore but not delete
+- Manager compromised: can't execute changes
+- Service compromised: can't approve
+
+</TabItem>
+<TabItem value="audit" label="Separation of Duties in Payments">
+
+```yaml
+# Payment workflow requires multiple parties
+
+initiate_payment:
+  role: Accountant
+  permission: "payments:create"
+  action: "Create payment request ($5000)"
+  audit: "Logged: who, what, when"
+
+review_payment:
+  role: Finance Manager
+  permission: "payments:review"
+  action: "Review payment request"
+  requirement: "Cannot be same person who created it"
+  audit: "Logged: reviewer, decision, timestamp"
+
+approve_payment:
+  role: CFO
+  permission: "payments:approve"
+  action: "Approve and execute payment"
+  requirement: "Requires separate approval from review step"
+  audit: "Logged: CFO, execution, confirmation"
+
+# Attacker with Accountant credentials can initiate payment,
+# but cannot approve it (needs 2 other people's sign-off).
+# Attacker cannot modify audit logs (separate system).
+```
+
+</TabItem>
+</Tabs>
+
+## Detecting Privilege Creep
+
+Audit permissions regularly:
+
+```bash
+# List all permissions for a user
+aws iam get-user-policy alice@example.com
+
+# Check for overly permissive policies
+grep "*" policies/* | grep -v approved
+
+# Audit role changes
+aws iam list-entities-for-policy policy-arn | grep added_recently
+```
+
+Remove unused permissions immediately after:
+- Role change
+- Project completion
+- Offboarding
+- Every 90 days (periodic audit)
+
+### Practical Privilege Creep Scenarios
+
+**Scenario 1: Temporary Access Becomes Permanent**
+An engineer needs temporary production database access to debug an issue. You grant `databases:production:*` for 24 hours. After fixing the issue, the engineer forgets to ask for removal. Six months later, they still have full production access. Regular audits catch this—query for all users with production access and verify current need.
+
+**Scenario 2: Role Accumulation**
+Alice starts as a Software Engineer with `services:staging:read`. She becomes Tech Lead, so you add Manager role with `team:manage` and `approvals:review`. Later, she moves to Operations but nobody removes Engineer role. Now she has engineer + manager + ops permissions—privilege creep across roles.
+
+**Scenario 3: Overly Broad Service Account**
+A CI/CD service account created to deploy to staging needs `artifacts:staging:pull` and `deployments:staging:execute`. Instead, it gets `*:staging:*` for convenience. Later, the same account is used for production deployments, granting it `*:production:*` access. Audits should flag "*" permissions immediately.
+
+### Automated Privilege Auditing
+
+```yaml
+# Automated audit rules
+audit_rules:
+  - name: "Flag wildcard permissions"
+    condition: "permission == '*' OR permission matches '.*:\\*'"
+    action: "Alert immediately, require justification"
+
+  - name: "Flag unused access"
+    condition: "last_used > 90 days"
+    action: "Request confirmation or revoke"
+
+  - name: "Flag privilege escalation paths"
+    condition: "user_role == 'Developer' AND permissions include 'admin:*'"
+    action: "Review and document justification"
+
+  - name: "Flag cross-environment access"
+    condition: "user has both production AND staging write access"
+    action: "Require separation for safety"
+```
+
+## Just-in-Time Access
+
+Instead of permanent permissions, grant temporary access:
+
+```bash
+# Alice needs to debug production issue
+# Request temporary access
+vault write aws/creds/production-read ttl=1h username=alice
+
+# Credentials valid for 1 hour, then revoked automatically
+# Minimizes exposure window
+```
+
+### JIT Access Implementation Patterns
+
+**Pattern 1: Time-Bounded Credentials**
+Create temporary AWS credentials with a TTL. The credentials automatically expire. Example:
+- Engineer requests production database read access
+- System generates temporary credentials valid for 1 hour
+- Credentials automatically revoke after 1 hour
+- Audit log captures who accessed what when
+- No manual cleanup needed
+
+**Pattern 2: Context-Aware Access**
+Access granted only in specific contexts:
+- Approval required (manager must approve)
+- Time-limited (only during work hours, not weekends)
+- IP-restricted (only from office IP or VPN)
+- Rate-limited (can make 10 queries, not unlimited)
+- Monitored (all queries logged and reviewed)
+
+```yaml
+jit_access_request:
+  requester: alice@company.com
+  resource: production_database
+  access_level: read_only
+  duration: 1 hour
+  reason: "Debug customer issue #12345"
+  approval_required: true
+  context:
+    ip_restricted: "office_vpn"
+    rate_limit: "100 queries/hour"
+    audit_logging: "all_queries"
+    notification: "send_weekly_summary"
+  approval:
+    approved_by: bob@company.com
+    timestamp: "2025-09-10T14:30:00Z"
+  expiration: "2025-09-10T15:30:00Z"
+```
+
+**Pattern 3: Just-in-Case Backup Access**
+For critical incidents when normal JIT process is too slow:
+- Pre-approved emergency access (broken glass)
+- Can be activated immediately without approval
+- Automatically revokes after 30 minutes
+- Requires incident ticket within 5 minutes
+- Post-incident review mandatory
+- Higher audit visibility (more scrutiny than normal access)
+
+### JIT vs Permanent Access Trade-offs
+
+| Aspect | Permanent | Just-in-Time |
+|--------|-----------|--------------|
+| **Convenience** | Always available | Requires request/approval |
+| **Security** | Larger exposure window | Minimal exposure (hours) |
+| **Audit Trail** | Usage log | Request + approval + usage log |
+| **Automation** | Easy, set once | Requires automation/system |
+| **Incident Response** | Immediate | Faster than manual removal |
+| **Cost** | Lower overhead | Higher overhead (automation) |
+| **Best For** | Development/staging | Production/sensitive operations |
+
+## Design Review Checklist
+
+- [ ] Default deny; only explicit allow statements
+- [ ] Each role has minimal permissions for job
+- [ ] Permissions scoped to resources (not global)
+- [ ] Critical functions require separation of duties
+- [ ] Audit logs record all privilege usage
+- [ ] Service accounts have limited, specific permissions
+- [ ] No hardcoded credentials in code
+- [ ] Unused permissions removed regularly (90-day audit)
+- [ ] Just-in-time access for sensitive operations
+- [ ] Privilege escalation prevented by design
+
+## Advanced Scenarios and Real-World Challenges
+
+### Challenge 1: Balancing Security and Velocity
+
+**Problem**: Tight permissions slow down development. Engineers frequently need new permissions.
+
+**Solution**: Use contextual permissions:
+- Development/staging: More permissive (faster iteration)
+- Production: Strict least privilege (safety critical)
+- Emergency: Fast-track approval (with post-review)
+
+```yaml
+permission_model_by_environment:
+  development:
+    # Developers need flexibility
+    default: DENY
+    auto_approve:
+      - "services:development:*"
+      - "databases:development:*"
+    requires_approval:
+      - production_access
+    requires_emergency: []
+
+  staging:
+    # Staging closer to production; more control
+    default: DENY
+    auto_approve:
+      - "services:staging:read"
+    requires_approval:
+      - "services:staging:write"
+      - "databases:staging:delete"
+    requires_emergency:
+      - none
+
+  production:
+    # Production requires careful control
+    default: DENY
+    auto_approve: []
+    requires_approval:
+      - everything
+    requires_emergency:
+      - critical_incident_only
+```
+
+### Challenge 2: Service-to-Service Communication
+
+**Problem**: Microservices need to call each other, but we want least privilege.
+
+**Solution**: Use identity federation and scoped credentials.
+
+```yaml
+# Service A calling Service B
+service_a:
+  identity: "service-a@company.iam.goog"
+  can_call:
+    - service_b_read_api  # Only read API
+    - service_b_write_api_resource_123  # Only specific resource
+  cannot_call:
+    - service_b_admin_api
+    - service_b_write_api_resource_456
+
+# Database access similarly scoped
+database_permissions:
+  service_a:
+    tables:
+      orders:
+        operations: [SELECT, INSERT]
+      customers:
+        operations: [SELECT]
+    cannot_access:
+      - financial_data
+      - user_passwords
+      - encryption_keys
+```
+
+### Challenge 3: Third-Party API Integrations
+
+**Problem**: Integrations need API keys but you want to limit damage if compromised.
+
+**Solution**: Scope credentials narrowly.
+
+```yaml
+third_party_integrations:
+  stripe:
+    api_key: "sk_live_..."
+    scoped_permissions:
+      - charges:write  # Can create charges
+      - charges:read   # Can read charges
+    cannot:
+      - customer:delete
+      - account:modify
+      - webhook:modify
+    rate_limited: "1000 requests/hour"
+    ip_restricted: ["10.0.0.0/8"]
+    expiration: "2026-01-01"
+
+  aws_external_account:
+    assume_role_arn: "arn:aws:iam::123456789:role/external-access"
+    external_id: "random-guid-for-cross-account"
+    permissions:
+      - "s3:GetObject"  # Only read, specific bucket
+    rate_limited: "100 requests/hour"
+    time_restricted: "09:00-17:00 UTC"
+```
+
+## Self-Check
+
+- What's the difference between RBAC and ABAC?
+- Why should the approver and executor roles be different?
+- How would you audit for privilege creep?
+- Can you design a least privilege model for your microservices?
+- What's a just-in-time access scenario in your company?
+
+:::info One Takeaway
+Less permission = less damage if compromised. Default to denying all, then grant explicitly and narrowly. Combine least privilege with just-in-time access for maximum security with manageable operational overhead.
+
+:::
+
+## Next Steps
+
+- Read **Defense in Depth** for layered permission checks
+- Study **Complete Mediation** for enforcement mechanisms
+- Explore **Identity & Access Management** for implementation
+
+## References
+
+- Least Privilege Principle (NIST)
+- Separation of Duties (SOX, internal controls)
+- RBAC vs ABAC (access control models)
+- Privilege Escalation (attack techniques)

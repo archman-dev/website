@@ -1,0 +1,578 @@
+---
+sidebar_position: 2
+title: "Read Replicas & Fan-Out"
+description: "Distribute read traffic across replicas while maintaining consistency"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [replication, read replicas, fan-out, consistency, replication lag, eventual consistency]
+image: /img/archman-social-card.webp
+tags: [replication, scaling, read-heavy, consistency, architecture, availability]
+hide_title: true
+---
+
+<Hero title="Read Replicas & Fan-Out" subtitle="Scale reads by distributing traffic across replicas" size="large" />
+
+## TL;DR
+
+Read replicas asynchronously replicate writes from a primary database to one or more secondary databases. This scales read-heavy workloads, reduces latency for geographically distributed users, and provides backup capacity. The trade-off is eventual consistency—replicas lag behind the primary by milliseconds to seconds. Use for analytics, reporting, and user-facing reads; for consistency-critical operations, read from the primary or implement causally-consistent reads.
+
+## Learning Objectives
+
+By the end of this article, you will understand:
+- How read replicas work and when they're appropriate
+- Replication lag and its impact on consistency
+- Strategies to handle consistency requirements with eventual consistency
+- Geographic replication for global scale and latency reduction
+- Monitoring, failover, and cascade replication patterns
+- Common pitfalls and how to avoid them
+
+## Motivating Scenario
+
+Your SaaS platform serves users globally. Write traffic (orders, updates) is concentrated in primary database (US region), but read traffic is distributed worldwide. Users in Japan waiting for queries to return from the US primary experience 200ms+ latency. Deploying read replicas in each region enables local reads: queries complete in 10-20ms against a nearby replica. The catch: replicas are 50-500ms behind the primary due to asynchronous replication.
+
+## Core Concepts
+
+### Read-Write Splitting Architecture
+
+Primary database receives all writes. Reads can route to primary or replicas:
+
+```
+Application Layer
+    ↓
+[Read Router]
+    ├─→ Write Query → Primary (authoritative)
+    └─→ Read Query  → Replica (stale, faster)
+```
+
+**Replication Flow:**
+1. Client writes to primary
+2. Primary writes to transaction log
+3. Replicas pull from log, apply changes asynchronously
+4. Replica lag: time between primary commit and replica application
+
+<Figure caption="Read Replica Architecture">
+```mermaid
+flowchart TB
+    A["Application"] --> B{Query Type}
+    B -->|Write| C["Primary DB"]
+    B -->|Read| D[Replica Pool]
+    C -->|Binlog/WAL| E["Replication Stream"]
+    E --> F["Replica 1<br/>50ms lag"]
+    E --> G["Replica 2<br/>75ms lag"]
+    E --> H["Replica 3<br/>120ms lag"]
+    D --> F
+    D --> G
+    D --> H
+    C --> I["Transaction Log"]
+```
+</Figure>
+
+### Replication Lag: Causes and Effects
+
+**Why lag exists:**
+- Network latency between primary and replica
+- Replica CPU/disk slower than primary
+- Large transactions take time to apply
+- Long-running queries block replication
+
+**Typical lag:** 50-500ms for healthy replicas; can exceed minutes if replica is overloaded
+
+**Impact on consistency:**
+```
+Time 0: User updates profile → Primary
+Time 50ms: Replica reflects update
+Time 0-50ms: Another user reads profile → Gets old data if reads replica
+```
+
+### Consistency Models
+
+**Strong Consistency (Read Primary):**
+```
+Write to Primary → Immediately readable (no lag)
+Risk: Primary overloaded; no scale-out for reads
+```
+
+**Eventual Consistency (Read Replica):**
+```
+Write to Primary → Visible on Replica after lag
+Risk: User writes, refreshes page, sees old data (confusing UX)
+Typical for: Non-critical reads, analytics, reporting
+```
+
+**Causal Consistency (Hybrid):**
+```
+Write to Primary → Replica reaches write timestamp → Read from Replica
+Requires: Session tokens or causality tracking
+```
+
+## Practical Example
+
+### Setting Up Read Replicas with Consistency Handling
+
+<Tabs>
+  <TabItem value="python" label="Python (MySQL)">
+```python
+import mysql.connector
+from mysql.connector import errorcode
+import time
+
+class ReadReplicaPool:
+    def __init__(self, primary_config, replica_configs):
+        self.primary = mysql.connector.connect(**primary_config)
+        self.replicas = [
+            mysql.connector.connect(**config)
+            for config in replica_configs
+        ]
+        self.replica_index = 0
+
+    def write_query(self, query, params=None):
+        """All writes go to primary"""
+        cursor = self.primary.cursor()
+        cursor.execute(query, params or ())
+        self.primary.commit()
+        last_insert_id = cursor.lastrowid
+        cursor.close()
+        return last_insert_id
+
+    def read_query(self, query, params=None, use_primary=False):
+        """
+        Route to replica unless primary required
+        Args:
+            use_primary: Force read from primary for consistency
+        """
+        if use_primary:
+            db = self.primary
+        else:
+            # Round-robin across replicas
+            db = self.replicas[self.replica_index % len(self.replicas)]
+            self.replica_index += 1
+
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(query, params or ())
+        result = cursor.fetchall()
+        cursor.close()
+        return result
+
+    def read_after_write(self, query, params=None, write_timestamp=None):
+        """
+        Causal consistency: wait for replica to catch up
+        before reading
+        """
+        if write_timestamp is None:
+            write_timestamp = time.time()
+
+        max_retries = 50  # 2.5 seconds
+        for attempt in range(max_retries):
+            cursor = self.primary.cursor()
+            cursor.execute("SELECT UNIX_TIMESTAMP(NOW())")
+            primary_timestamp = cursor.fetchone()[0]
+            cursor.close()
+
+            # Check replica replication lag
+            cursor = self.replicas[0].cursor()
+            cursor.execute("SHOW SLAVE STATUS")
+            status = cursor.fetchone()
+            replica_lag = status['Seconds_Behind_Master'] or 0
+            cursor.close()
+
+            # Wait if replica behind
+            if primary_timestamp - write_timestamp > replica_lag + 0.1:
+                # Replica caught up
+                return self.read_query(query, params, use_primary=False)
+
+            time.sleep(0.05)
+
+        # Timeout: fall back to primary read
+        return self.read_query(query, params, use_primary=True)
+
+# Usage
+pool = ReadReplicaPool(
+    primary_config=dict(host='db.primary', user='app', password='pwd', database='prod'),
+    replica_configs=[
+        dict(host='db.replica1', user='app', password='pwd', database='prod'),
+        dict(host='db.replica2', user='app', password='pwd', database='prod'),
+    ]
+)
+
+# Write new user
+user_id = pool.write_query(
+    "INSERT INTO users (name, email) VALUES (%s, %s)",
+    ('Alice', 'alice@example.com')
+)
+
+# Read with causal consistency
+user = pool.read_after_write(
+    "SELECT * FROM users WHERE id = %s",
+    (user_id,)
+)
+print(f"Created user: {user}")
+```
+  </TabItem>
+  <TabItem value="go" label="Go (PostgreSQL)">
+```go
+package main
+
+import (
+    "database/sql"
+    "fmt"
+    "sync"
+    "time"
+    _ "github.com/lib/pq"
+)
+
+type ReplicaPool struct {
+    primary   *sql.DB
+    replicas  []*sql.DB
+    mu        sync.RWMutex
+    nextIdx   int
+}
+
+func NewReplicaPool(primaryDSN string, replicaDSNs []string) (*ReplicaPool, error) {
+    primary, err := sql.Open("postgres", primaryDSN)
+    if err != nil {
+        return nil, err
+    }
+
+    replicas := make([]*sql.DB, 0, len(replicaDSNs))
+    for _, dsn := range replicaDSNs {
+        db, err := sql.Open("postgres", dsn)
+        if err != nil {
+            return nil, err
+        }
+        replicas = append(replicas, db)
+    }
+
+    return &ReplicaPool{
+        primary:  primary,
+        replicas: replicas,
+    }, nil
+}
+
+func (p *ReplicaPool) Write(query string, args ...interface{}) (int64, error) {
+    result, err := p.primary.Exec(query, args...)
+    if err != nil {
+        return 0, err
+    }
+    return result.LastInsertId()
+}
+
+func (p *ReplicaPool) Read(query string, args ...interface{}) (*sql.Rows, error) {
+    p.mu.Lock()
+    db := p.replicas[p.nextIdx%len(p.replicas)]
+    p.nextIdx++
+    p.mu.Unlock()
+
+    return db.Query(query, args...)
+}
+
+func (p *ReplicaPool) ReadAfterWrite(query string, writeTime time.Time, args ...interface{}) (*sql.Rows, error) {
+    // Wait for replica to catch up with primary
+    maxRetries := 50
+    for i := 0; i < maxRetries; i++ {
+        var lag int
+        err := p.primary.QueryRow(
+            "SELECT EXTRACT(EPOCH FROM (NOW() - NOW())) AS lag",
+        ).Scan(&lag)
+        if err != nil {
+            continue
+        }
+
+        // Simple wait: if write was recent, wait for replica
+        if time.Since(writeTime) > 500*time.Millisecond {
+            return p.Read(query, args...)
+        }
+
+        time.Sleep(50 * time.Millisecond)
+    }
+
+    // Timeout: read from primary
+    return p.primary.Query(query, args...)
+}
+
+// Usage
+func main() {
+    pool, _ := NewReplicaPool(
+        "postgres://user:pwd@db.primary/prod",
+        []string{
+            "postgres://user:pwd@db.replica1/prod",
+            "postgres://user:pwd@db.replica2/prod",
+        },
+    )
+
+    // Write
+    id, _ := pool.Write("INSERT INTO users (name) VALUES ($1) RETURNING id", "Alice")
+
+    // Read with causal consistency
+    writeTime := time.Now()
+    rows, _ := pool.ReadAfterWrite(
+        "SELECT * FROM users WHERE id = $1",
+        writeTime, id,
+    )
+    defer rows.Close()
+
+    fmt.Println("User inserted and read with causal consistency")
+}
+```
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js (Connection Pooling)">
+```javascript
+const mysql = require('mysql2/promise');
+
+class ReplicaPool {
+    constructor(primaryConfig, replicaConfigs) {
+        this.primaryConfig = primaryConfig;
+        this.replicaConfigs = replicaConfigs;
+        this.primaryPool = null;
+        this.replicaPools = [];
+        this.replicaIndex = 0;
+    }
+
+    async initialize() {
+        this.primaryPool = await mysql.createPool(this.primaryConfig);
+
+        for (const config of this.replicaConfigs) {
+            const pool = await mysql.createPool(config);
+            this.replicaPools.push(pool);
+        }
+    }
+
+    async write(query, params = []) {
+        const conn = await this.primaryPool.getConnection();
+        try {
+            const [result] = await conn.execute(query, params);
+            return result.insertId;
+        } finally {
+            conn.release();
+        }
+    }
+
+    async read(query, params = [], usePrimary = false) {
+        let pool;
+        if (usePrimary || this.replicaPools.length === 0) {
+            pool = this.primaryPool;
+        } else {
+            pool = this.replicaPools[this.replicaIndex++ % this.replicaPools.length];
+        }
+
+        const conn = await pool.getConnection();
+        try {
+            const [rows] = await conn.execute(query, params);
+            return rows;
+        } finally {
+            conn.release();
+        }
+    }
+
+    async readAfterWrite(query, params = [], writeTime = null) {
+        writeTime = writeTime || Date.now();
+        const maxWait = 2500; // 2.5 seconds
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWait) {
+            // Check replication lag (varies by DB)
+            const [status] = await this.primaryPool.query(
+                "SHOW SLAVE STATUS"
+            );
+            const lag = status[0]?.Seconds_Behind_Master || 0;
+
+            // If enough time passed for replica to catch up, read from replica
+            if (Date.now() - writeTime > lag * 1000 + 100) {
+                return this.read(query, params, false);
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        // Timeout: fall back to primary
+        return this.read(query, params, true);
+    }
+}
+
+// Usage
+(async () => {
+    const pool = new ReplicaPool(
+        { host: 'db.primary', user: 'app', password: 'pwd', database: 'prod' },
+        [
+            { host: 'db.replica1', user: 'app', password: 'pwd', database: 'prod' },
+            { host: 'db.replica2', user: 'app', password: 'pwd', database: 'prod' },
+        ]
+    );
+
+    await pool.initialize();
+
+    // Write
+    const userId = await pool.write(
+        'INSERT INTO users (name) VALUES (?)',
+        ['Alice']
+    );
+
+    // Read with causal consistency
+    const user = await pool.readAfterWrite(
+        'SELECT * FROM users WHERE id = ?',
+        [userId],
+        Date.now()
+    );
+
+    console.log('User:', user);
+})();
+```
+  </TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Use When:",
+    points: [
+      "Read-to-write ratio exceeds 3:1 (reads vastly outnumber writes)",
+      "Geographic distribution of users requires regional replicas",
+      "Analytics/reporting queries can tolerate minutes of staleness",
+      "Backup capacity needed for failover or disaster recovery",
+      "Primary database CPU/memory becomes bottleneck for reads",
+      "Can implement causal consistency for user-facing reads"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid When:",
+    points: [
+      "Write-heavy workloads (replication lag will be significant)",
+      "Strong consistency required for all reads (read from primary only)",
+      "Replication lag < 50ms is unacceptable for your use case",
+      "Operational overhead of managing replicas exceeds benefit",
+      "Database is already performant enough for current read load",
+      "Data is highly volatile (cascading consistency issues)"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Read-Write Splitting",
+      body: "Route writes to primary, reads to replicas. Manage replication lag awareness in application. Use session tokens to ensure read-after-write consistency for user-facing features."
+    },
+    {
+      label: "Replication Lag Monitoring",
+      body: "Continuously monitor lag on each replica. Alert if lag > 1 second. Lag indicates replica overload or network issues. Can cause confusing UX (write appears to fail)."
+    },
+    {
+      label: "Geographic Distribution",
+      body: "Place replicas near users (Japan replica for JP users, EU replica for EU users). Reduces latency from 200ms to 20ms. Ensures high availability if region goes down."
+    },
+    {
+      label: "Cascade Replication",
+      body: "Replica → Replica → Replica chains amplify lag. Avoid deep chains. Maximum 2-3 levels. Primary → Regional replicas is ideal."
+    },
+    {
+      label: "Replication Failures",
+      body: "Replica can fail silently (replication thread dies, no writes applied). Monitor replication status. Set up alerts. Have runbook for repairing failed replica."
+    },
+    {
+      label: "Backup from Replica",
+      body: "Taking backups from replica (vs primary) reduces primary load. Replica backup lag acceptable for non-critical backups. Critical backups still from primary."
+    }
+  ]}
+/>
+
+## Operational Considerations
+
+### 1. Monitoring Replication Health
+
+```sql
+-- MySQL: Check lag on each replica
+SHOW SLAVE STATUS\G
+-- Seconds_Behind_Master: replication lag in seconds
+
+-- PostgreSQL: Check replication status
+SELECT slot_name, restart_lsn FROM pg_replication_slots;
+```
+
+### 2. Failover Handling
+
+If primary fails:
+1. Detect: Primary unresponsive (heartbeat timeout)
+2. Promote: Elect best replica (least lag), promote to primary
+3. Redirect: Route writes to new primary
+4. Rebuild: Demoted primary becomes replica of new primary
+
+### 3. Preventing Split Brain
+
+If primary and replica both accept writes (due to network partition):
+- Conflicting data on both
+- Replication fails with conflicts
+- **Prevention**: Ensure only primary accepts writes (application-level routing)
+
+### 4. Handling Replica Lag in Application
+
+```python
+# For critical reads, enforce consistency
+def read_user(user_id, must_be_fresh=False):
+    if must_be_fresh:
+        # Read from primary
+        return db_primary.query(f"SELECT * FROM users WHERE id = {user_id}")
+    else:
+        # Read from replica (may be stale)
+        return db_replica.query(f"SELECT * FROM users WHERE id = {user_id}")
+
+# In API response, indicate freshness
+response = {
+    "user": read_user(user_id, must_be_fresh=True),
+    "last_modified": user.updated_at,
+    "freshness": "guaranteed"  # Indicate this is fresh from primary
+}
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Identified read-heavy queries and their frequency",
+  "Calculated read-to-write ratio; exceeds 3:1 for replica ROI",
+  "Evaluated geographic distribution of users",
+  "Determined acceptable replication lag (SLA)",
+  "Designed read router (load balancer vs application-level routing)",
+  "Implemented causal consistency mechanism for user-facing reads",
+  "Set up continuous monitoring of replication lag on each replica",
+  "Created alerting for lag > threshold or replication failure",
+  "Tested failover process and promotion of standby replica",
+  "Documented read consistency guarantees for different query types",
+  "Configured backups to work with replicas without impacting primary",
+  "Established runbook for troubleshooting replication lag or failures"
+]} />
+
+## Self-Check Questions
+
+1. **What's replication lag and when does it matter?**
+   - Lag is delay between write to primary and visibility on replica. Matters for user-facing features expecting immediate consistency.
+
+2. **How do you ensure consistency with read replicas?**
+   - Read from primary for consistency-critical operations; implement causal consistency (session tokens) for others; communicate staleness to users.
+
+3. **When would you use geographic replication?**
+   - When users are distributed globally (US, EU, APAC). Regional replicas enable local reads with low latency.
+
+4. **How do you detect replication failure?**
+   - Monitor `Seconds_Behind_Master` (MySQL) or replication lag (PostgreSQL). Alert if lag increases unexpectedly or replication thread stops.
+
+## Next Steps
+
+1. **Audit read patterns**: Identify queries that would benefit from replicas
+2. **Set up first replica**: In same datacenter initially
+3. **Implement read router**: Application or middleware layer to direct traffic
+4. **Monitor lag**: Set up dashboards and alerts
+5. **Add geographic replicas**: Extend to other regions
+6. **Test failover**: Practice promoting replica in controlled environment
+7. **Document SLAs**: Clarify consistency guarantees for each query type
+
+## References
+
+- MySQL Replication: <a href="https://dev.mysql.com/doc/refman/8.0/en/replication.html" target="_blank" rel="nofollow noopener noreferrer">Official Guide ↗️</a>
+- PostgreSQL Streaming Replication: <a href="https://www.postgresql.org/docs/current/warm-standby.html" target="_blank" rel="nofollow noopener noreferrer">Docs ↗️</a>
+- Eventual Consistency: <a href="https://www.allthingsdistributed.com/2008/12/eventually_consistent.html" target="_blank" rel="nofollow noopener noreferrer">Werner Vogels Article ↗️</a>

@@ -1,0 +1,284 @@
+---
+sidebar_position: 3
+title: "Shared Database Between Services Anti-Pattern"
+description: "Multiple services accessing the same database directly, creating coupling and preventing independence."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 20
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [shared-database, anti-pattern, coupling, schema-ownership, data-isolation, independence, microservices-mistakes]
+image: /img/archman-social-card.webp
+tags: [anti-patterns, microservices, architecture, data-management, coupling, design-flaws, patterns, best-practices, operational-excellence]
+hide_title: true
+---
+
+<Hero title="Shared Database Between Services Anti-Pattern" subtitle="Multiple services accessing the same database directly, creating coupling and preventing independence." imageAlt="Shared database anti-pattern illustration" size="large" />
+
+## TL;DR
+
+Shared databases occur when multiple services directly access the same database and tables they don't own. This creates tight coupling: schema changes require team coordination, services can't scale independently, and hidden dependencies embed in the database schema. Solution: Each service owns its database and data. Services access each other's data through APIs, not direct queries. Event-driven syncing keeps related data consistent across service boundaries.
+
+## Learning Objectives
+
+- Understand the coupling created by shared databases
+- Identify shared database anti-patterns in existing systems
+- Design database-per-service architecture
+- Implement event-driven data synchronization
+- Manage eventual consistency across services
+- Plan incremental migration away from shared databases
+
+## Motivating Scenario
+
+A company has an orders database shared by Orders Service, Shipping Service, and Invoicing Service. All three services directly query and modify the orders table. When the Shipping team wants to add a `tracking_number` column, they need approval from the other teams. When the Orders team optimizes queries, they must test against Shipping and Invoicing workloads. When one service experiences a runaway query, it locks rows and blocks all three services. A single database that was meant to be convenient has become a coordination bottleneck preventing independent evolution.
+
+## Core Concepts
+
+### The Database Coupling Problem
+
+Shared databases create implicit contracts through schema structure rather than explicit API contracts. This is more fragile than service-oriented architecture should be.
+
+<Figure
+  mermaid={`graph TB
+    OS["Order Service"]
+    SS["Shipping Service"]
+    IS["Invoicing Service"]
+
+    OS -->|"Direct SQL queries"| DB["Shared Database"]
+    SS -->|"Direct SQL queries"| DB
+    IS -->|"Direct SQL queries"| DB
+
+    subgraph DB["orders table"]
+      id["id"]
+      customer["customer_id"]
+      total["total"]
+      tracking["tracking_number"]
+      invoice_ref["invoice_reference"]
+    end
+
+    style OS fill:#ff6b6b
+    style SS fill:#ff6b6b
+    style IS fill:#ff6b6b
+    style DB fill:#ffe0e0
+`}
+/>
+
+### Problems This Creates
+
+1. **Schema Coupling**: Table structure is a contract all services depend on
+2. **Coordination Overhead**: Schema changes require approval from all teams
+3. **Scaling Inefficiency**: Can't scale one service's read pattern independently
+4. **Hidden Dependencies**: Dependencies are in SQL queries, not API contracts
+5. **Data Integrity**: Multiple writers create complex concurrency issues
+6. **Testing Complexity**: Hard to test services in isolation when they share data
+
+## Practical Example
+
+<Tabs>
+<TabItem value="bad" label="Shared Database (Anti-Pattern)" default>
+    ```python
+    # Order Service
+    class OrderService:
+        def create_order(self, customer_id, items):
+            # Direct SQL - Orders Service owns this
+            cursor.execute("""
+                INSERT INTO orders (customer_id, total, status)
+                VALUES (?, ?, 'pending')
+            """, (customer_id, sum(i.price for i in items)))
+
+            order_id = cursor.lastrowid
+            return order_id
+
+    # Shipping Service - can access and modify Orders table
+    class ShippingService:
+        def start_shipping(self, order_id, address):
+            # Direct SQL - Shipping modifies Orders table
+            cursor.execute("""
+                UPDATE orders SET status = 'shipped',
+                       shipping_address = ?
+                WHERE id = ?
+            """, (address, order_id))
+
+    # Invoicing Service - also accesses Orders table
+    class InvoicingService:
+        def create_invoice(self, order_id):
+            # Direct SQL - reads Orders table
+            cursor.execute("""
+                SELECT customer_id, total FROM orders WHERE id = ?
+            """, (order_id,))
+            order = cursor.fetchone()
+
+    # Problem: Any schema change requires all three teams to coordinate
+    # ALTER TABLE orders ADD COLUMN tracking_number VARCHAR(50);
+    # ^ Needs approval from Order, Shipping, and Invoicing teams
+    ```
+
+</TabItem>
+
+<TabItem value="good" label="Database per Service (Better)">
+    ```python
+    # Order Service - owns orders database
+    class OrderService:
+        def create_order(self, customer_id, items):
+            cursor.execute("""
+                INSERT INTO orders (customer_id, total, status)
+                VALUES (?, ?, 'pending')
+            """, (customer_id, sum(i.price for i in items)))
+
+            order_id = cursor.lastrowid
+
+            # Publish event - other services react asynchronously
+            event_bus.publish('order.created', {
+                'order_id': order_id,
+                'customer_id': customer_id,
+                'total': sum(i.price for i in items)
+            })
+
+            return order_id
+
+    # Shipping Service - owns shipping database
+    class ShippingService:
+        def __init__(self, event_bus):
+            # Subscribe to order created events
+            event_bus.subscribe('order.created', self.on_order_created)
+
+        def on_order_created(self, event):
+            # Create shipping record in Shipping's own database
+            cursor.execute("""
+                INSERT INTO shipments (order_id, status)
+                VALUES (?, 'pending')
+            """, (event['order_id'],))
+
+        def update_tracking(self, order_id, tracking_number):
+            # Only Shipping modifies its own data
+            cursor.execute("""
+                UPDATE shipments SET tracking_number = ?
+                WHERE order_id = ?
+            """, (tracking_number, order_id))
+
+            # Publish event for others to consume
+            event_bus.publish('tracking.updated', {
+                'order_id': order_id,
+                'tracking_number': tracking_number
+            })
+
+    # Invoicing Service - owns invoicing database
+    class InvoicingService:
+        def __init__(self, event_bus):
+            event_bus.subscribe('order.created', self.on_order_created)
+
+        def on_order_created(self, event):
+            # Cache order data in invoicing database
+            cursor.execute("""
+                INSERT INTO order_cache (order_id, customer_id, total)
+                VALUES (?, ?, ?)
+            """, (event['order_id'], event['customer_id'], event['total']))
+
+        def create_invoice(self, order_id):
+            # Read from own database cache
+            cursor.execute("""
+                SELECT customer_id, total FROM order_cache WHERE order_id = ?
+            """, (order_id,))
+            return cursor.fetchone()
+
+    # Now each service can evolve independently
+    # Shipping adds tracking_number? Only affects Shipping database
+    # No coordination needed; event contract remains the same
+    ```
+</TabItem>
+</Tabs>
+
+## When to Use / When to Avoid
+
+<Vs highlight={[0]} items={[
+{
+    label: "Shared Database (Avoid)",
+    points: [
+      "All services share one database and tables",
+      "Any schema change requires coordination",
+      "Can't scale independently",
+      "Multiple services write to same tables (concurrency issues)",
+      "Hidden dependencies in SQL queries",
+      "Tests cannot run in isolation"
+    ],
+    highlightTone: "warning"
+  },
+{
+    label: "Database per Service (Prefer)",
+    points: [
+      "Each service owns its database/schema",
+      "Schema changes are independent",
+      "Scale read/write patterns per service",
+      "Single service writes to its tables (clear ownership)",
+      "Explicit API/event contracts",
+      "Services can be tested in complete isolation"
+    ]
+  }
+]} />
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Pattern: Database per Service",
+    body: "Each microservice owns its database. No shared tables. If service A needs data from service B, it requests via API or subscribes to events. Clear ownership, independent evolution."
+  },
+  {
+    label: "Pattern: Event-Driven Sync",
+    body: "When service A's data changes, it publishes an event. Service B subscribes, creates a cached copy in its database. Enables read efficiency while maintaining independence."
+  },
+  {
+    label: "Pattern: Strangler Pattern for Migration",
+    body: "New service gets its own database. Gradually migrate data from shared to new database using a strangler facade. Run both in parallel, then decommission old schema."
+  },
+  {
+    label: "Pattern: API Gateway for Data Access",
+    body: "Services access other services' data through explicit APIs, not SQL. Gateway enforces versioning, authentication, rate limits. Makes contracts visible."
+  },
+  {
+    label: "Pitfall: Race Conditions",
+    body: "Without shared transactions, achieve consistency via sagas or compensating transactions. If service A publishes event but crashes before delivery, implement idempotent event handlers."
+  },
+  {
+    label: "Pitfall: Data Duplication",
+    body: "Database per service means data duplication. Accept it as cost of independence. Monitor consistency via events; use eventual consistency windows."
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Each service owns its database schema?",
+  "No service reads/writes tables it doesn't own?",
+  "Service-to-service data access via APIs, not shared queries?",
+  "Event-driven synchronization for eventual consistency?",
+  "Event contracts documented and versioned?",
+  "Services can be deployed independently without schema coordination?",
+  "Data duplication accepted and monitored?",
+  "Idempotent event handlers to handle retries?",
+  "No cross-database transactions (use sagas instead)?",
+  "Monitoring in place for data consistency issues?"
+]} />
+
+## Self-Check
+
+- **Why is shared database bad?** It couples services through implicit schema contracts. Schema changes require coordination, blocking independent evolution.
+- **How do services share data if not shared DB?** APIs for synchronous reads, events for asynchronous updates. Services cache copies of needed data.
+- **What about data consistency?** Accept eventual consistency. Use event-driven synchronization and compensating transactions (sagas) for multi-service workflows.
+- **How do you migrate from shared to separated?** Use strangler pattern. New service gets new database. Gradually migrate data. Run both in parallel, then decommission.
+- **What's the downside of database per service?** Data duplication (accept it), eventual consistency complexity, more operational overhead. Worth it for independent evolution.
+
+## Next Steps
+
+1. **Audit existing databases** — Document which services access which tables
+2. **Identify tightly coupled tables** — These are candidates for service extraction first
+3. **Design event contracts** — Define events that will sync data across services
+4. **Plan gradual migration** — Use strangler pattern; don't migrate everything at once
+5. **Implement event infrastructure** — Message bus or event streaming platform
+6. **Establish data consistency monitoring** — Detect divergence between service copies
+
+## References
+
+- <a href="https://www.oreilly.com/library/view/building-microservices/9781491950340/" target="_blank" rel="nofollow noopener noreferrer">Building Microservices (Sam Newman) ↗</a>
+- <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="nofollow noopener noreferrer">Database per Service Pattern ↗</a>
+- <a href="https://martinfowler.com/bliki/Strangler.html" target="_blank" rel="nofollow noopener noreferrer">Strangler Fig Pattern (Martin Fowler) ↗</a>

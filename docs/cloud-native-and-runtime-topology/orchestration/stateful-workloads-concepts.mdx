@@ -1,0 +1,911 @@
+---
+sidebar_position: 8
+title: "Stateful Workloads: Concepts and Patterns"
+description: "Run stateful applications in containerized environments with persistence and ordering."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [architect, engineer]
+keywords: [stateful, Kubernetes, StatefulSets, persistence, ordering]
+image: /img/archman-social-card.webp
+tags: [cloud-native, orchestration, stateful-workloads]
+hide_title: true
+---
+
+<Hero title="Stateful Workloads" subtitle="Manage databases, caches, and message queues in containerized environments." size="large" />
+
+## TL;DR
+
+Stateful workloads (databases, caches, message queues) need: persistent storage, stable network identity, ordered startup/shutdown. Stateless services = scale horizontally, easy. Stateful = hard. Use Kubernetes StatefulSets: ordered creation (pod-0, pod-1, pod-2), stable names (mysql-0.mysql-headless), persistent volumes (each pod owns its data), graceful termination. Headless services: direct pod access (no load balancing). Init containers: perform setup (schema, initial data). Self-healing via pod replacement (if pod dies, new pod mounts same volume).
+
+## Learning Objectives
+
+- Understand stateful vs. stateless workloads
+- Design StatefulSets for ordered execution
+- Configure persistent storage correctly
+- Implement graceful shutdown
+- Debug stateful workload issues
+- Choose self-managed vs. managed databases
+- Scale stateful applications
+- Monitor stateful workload health
+
+## Motivating Scenario
+
+MySQL in Docker works locally. Deploy to Kubernetes: Pod crashes, new pod starts, but data is gone (no persistent volume). Config wrong ordering: all pods start simultaneously, cluster formation fails. Redis Cluster in K8s: pods need stable identity to gossip; load balancer breaks it. Lesson: Stateful workloads need special handling.
+
+## Core Concepts
+
+### Stateless vs. Stateful
+
+| Aspect | Stateless | Stateful |
+|--------|-----------|----------|
+| **Data** | No persistent data | Owns persistent data |
+| **Scaling** | Add/remove pod anytime | Ordered startup/shutdown |
+| **Replacement** | New pod = fresh start | New pod must mount old data |
+| **Identity** | Interchangeable | Unique (pod-0, pod-1) |
+| **Examples** | Web server, API | DB, cache, message queue |
+
+### StatefulSet Architecture
+
+```yaml
+StatefulSet: mysql
+├── Pod: mysql-0 (first created)
+│   └── PersistentVolume: mysql-data-0
+├── Pod: mysql-1 (second created)
+│   └── PersistentVolume: mysql-data-1
+└── Pod: mysql-2 (third created)
+    └── PersistentVolume: mysql-data-2
+
+Headless Service: mysql-headless
+├── mysql-0.mysql-headless.default.svc.cluster.local
+├── mysql-1.mysql-headless.default.svc.cluster.local
+└── mysql-2.mysql-headless.default.svc.cluster.local
+```
+
+### Key Features
+
+| Feature | Purpose |
+|---------|---------|
+| **Ordered Pod Names** | mysql-0, mysql-1, mysql-2 (predictable) |
+| **Stable Network ID** | Pod DNS name doesn't change on restart |
+| **Persistent Volume** | Data survives pod replacement |
+| **Headless Service** | Direct pod access (for cluster membership) |
+| **Graceful Termination** | Pod-0 terminates last (cluster coordination) |
+| **Init Containers** | Setup cluster before pod starts |
+
+## Implementation
+
+<Tabs>
+<TabItem value="yaml" label="Kubernetes">
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-headless
+spec:
+  clusterIP: None  # Headless service
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    name: mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      # Init container: setup cluster
+      initContainers:
+      - name: init-mysql
+        image: mysql:8
+        command: ['/bin/bash', '-c']
+        args:
+        - |
+          echo "Setting up MySQL replication..."
+          # Configuration setup
+          cat > /etc/mysql/mysql.conf.d/mysqld.cnf <<EOF
+          [mysqld]
+          datadir=/var/lib/mysql
+          server-id=${HOSTNAME##*-}
+          log_bin=mysql-bin
+          relay-log=mysql-relay-bin
+          EOF
+        volumeMounts:
+        - name: mysql-config
+          mountPath: /etc/mysql/mysql.conf.d
+      
+      # Main container
+      containers:
+      - name: mysql
+        image: mysql:8
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3306
+          name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: root-password
+        
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        # Readiness probe
+        readinessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        
+        # Graceful shutdown
+        lifecycle:
+          preStop:
+            exec:
+              command: ['/bin/sh', '-c', 'sleep 15']
+        
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+        - name: mysql-config
+          mountPath: /etc/mysql/mysql.conf.d
+  
+  # Persistent volume claim template
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7
+        command:
+        - /bin/sh
+        args:
+        - -c
+        - "redis-server /etc/redis/redis.conf --slaveof $(hostname).redis-headless 6379"
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: redis-config
+          mountPath: /etc/redis
+      
+      terminationGracePeriodSeconds: 30  # Wait for graceful shutdown
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
+---
+# Kafka StatefulSet (simplified)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+spec:
+  serviceName: kafka-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+      - name: kafka
+        image: confluentinc/cp-kafka:7.0.0
+        env:
+        - name: KAFKA_BROKER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: PLAINTEXT://$(POD_NAME).kafka-headless.kafka:9092
+        - name: KAFKA_ZOOKEEPER_CONNECT
+          value: zookeeper-0.zookeeper:2181,zookeeper-1.zookeeper:2181,zookeeper-2.zookeeper:2181
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 9092
+          name: kafka
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /var/lib/kafka
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 20Gi
+```
+
+</TabItem>
+<TabItem value="deployment" label="Deployment Patterns">
+
+```yaml
+# Pattern 1: Operator-based (automated management)
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-ha
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: myapp
+      owner: postgres
+  postgresql:
+    parameters:
+      max_connections: "200"
+  storage:
+    size: 50Gi
+  monitoring:
+    enabled: true
+---
+# Pattern 2: DaemonSet for node-local storage
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: local-storage-provisioner
+spec:
+  selector:
+    matchLabels:
+      app: local-storage-provisioner
+  template:
+    metadata:
+      labels:
+        app: local-storage-provisioner
+    spec:
+      containers:
+      - name: provisioner
+        image: k8s.gcr.io/sig-storage/local-static-provisioner:v2.5.0
+        volumeMounts:
+        - name: local-data
+          mountPath: /mnt/data
+      volumes:
+      - name: local-data
+        hostPath:
+          path: /mnt/data
+---
+# Pattern 3: Self-healed cluster
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+spec:
+  serviceName: cassandra
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cassandra
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - cassandra
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: cassandra
+        image: cassandra:4
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "sleep 5 && nodetool status"
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "sleep 30 && nodetool decommission || true"
+        volumeMounts:
+        - name: cassandra-data
+          mountPath: /var/lib/cassandra
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: cassandra-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 30Gi
+```
+
+</TabItem>
+<TabItem value="python" label="Monitoring">
+
+```python
+# Monitor stateful workload health
+from kubernetes import client, config, watch
+import logging
+
+config.load_incluster_config()
+v1 = client.CoreV1Api()
+apps_v1 = client.AppsV1Api()
+
+def check_statefulset_health(name, namespace):
+    """Check if StatefulSet is healthy"""
+    sts = apps_v1.read_namespaced_stateful_set(name, namespace)
+    
+    health_status = {
+        'name': name,
+        'desired_replicas': sts.spec.replicas,
+        'ready_replicas': sts.status.ready_replicas or 0,
+        'updated_replicas': sts.status.updated_replicas or 0,
+        'healthy': sts.status.ready_replicas == sts.spec.replicas
+    }
+    
+    return health_status
+
+def check_pvc_health(name, namespace):
+    """Check persistent volume claim status"""
+    pvcs = v1.list_namespaced_persistent_volume_claim(namespace)
+    
+    pvc_status = {}
+    for pvc in pvcs.items:
+        if name in pvc.metadata.name:
+            pvc_status[pvc.metadata.name] = {
+                'phase': pvc.status.phase,
+                'capacity': pvc.spec.resources.requests.get('storage'),
+                'healthy': pvc.status.phase == 'Bound'
+            }
+    
+    return pvc_status
+
+def check_pod_ordering(name, namespace):
+    """Verify pods are in correct order"""
+    sts = apps_v1.read_namespaced_stateful_set(name, namespace)
+    pods = v1.list_namespaced_pod(namespace, label_selector=f"app={name}")
+    
+    pod_names = sorted([p.metadata.name for p in pods.items])
+    expected_names = [f"{name}-{i}" for i in range(sts.spec.replicas)]
+    
+    return {
+        'expected': expected_names,
+        'actual': pod_names,
+        'ordered_correctly': pod_names == expected_names
+    }
+
+def monitor_replication_lag(pod_name, namespace, db_type='mysql'):
+    """Check replication lag in database pod"""
+    # In real code: execute command in pod to check replication lag
+    if db_type == 'mysql':
+        # Run SHOW SLAVE STATUS in MySQL
+        pass
+    elif db_type == 'postgresql':
+        # Run SELECT pg_wal_lsn_diff(...) in PostgreSQL
+        pass
+    
+    return {'replication_lag_bytes': 0, 'healthy': True}
+
+# Example monitoring loop
+def monitor_statefulsets(namespace='default'):
+    """Continuous monitoring"""
+    statefulsets_to_monitor = ['mysql', 'redis', 'kafka']
+    
+    for sts_name in statefulsets_to_monitor:
+        health = check_statefulset_health(sts_name, namespace)
+        pvcs = check_pvc_health(sts_name, namespace)
+        ordering = check_pod_ordering(sts_name, namespace)
+        
+        if not health['healthy']:
+            logging.error(f"StatefulSet {sts_name} unhealthy: {health}")
+        
+        for pvc_name, pvc_health in pvcs.items():
+            if not pvc_health['healthy']:
+                logging.error(f"PVC {pvc_name} unhealthy: {pvc_health}")
+        
+        if not ordering['ordered_correctly']:
+            logging.error(f"Pod ordering incorrect for {sts_name}: {ordering}")
+
+if __name__ == '__main__':
+    monitor_statefulsets()
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Scenario 1: MySQL Master-Replica
+
+```yaml
+StatefulSet creates:
+- mysql-0: Master (first pod)
+- mysql-1: Replica (syncs from mysql-0)
+- mysql-2: Replica (syncs from mysql-0)
+
+Each pod mounts own PVC (mysql-data-0, -1, -2)
+Headless service allows direct pod communication
+Graceful termination: mysql-2 → mysql-1 → mysql-0 (reverse order)
+```
+
+If mysql-0 (master) fails:
+- Pod is recreated, mounts mysql-data-0 (old data recovered)
+- If data corruption: manual intervention (promote replica)
+
+### Scenario 2: Redis Cluster
+
+```yaml
+Redis Cluster (redis-trib)  needs:
+- Stable pod names: redis-0, redis-1, ..., redis-5
+- Headless service for cluster gossip
+- Each pod owns 1-2 slots (data partitions)
+
+When redis-2 fails:
+- New pod redis-2 starts
+- Mounts redis-data-2 (stale data)
+- Rejoin cluster, catchup from gossip
+- Transparent to clients
+```
+
+### Scenario 3: Kafka in Kubernetes
+
+```yaml
+Kafka needs:
+- broker.id = pod ordinal (kafka-0 has broker.id=0)
+- Advertised listeners = pod DNS name
+- Zookeeper quorum for coordination
+
+When kafka-1 fails:
+- New pod starts, reads broker.id=1 from ordinal
+- Zookeeper notifies cluster
+- Clients failover automatically
+- Consumer lag recovered from Zookeeper
+```
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: No PVC Template
+
+```yaml
+❌ WRONG: Using emptyDir (lost on pod restart)
+volumeMounts:
+- name: data
+  mountPath: /data
+volumes:
+- name: data
+  emptyDir: {}
+
+✅ CORRECT: Using volumeClaimTemplates (persistent)
+volumeClaimTemplates:
+- metadata:
+    name: data
+  spec:
+    accessModes: [ "ReadWriteOnce" ]
+    resources:
+      requests:
+        storage: 10Gi
+```
+
+### Mistake 2: Missing Headless Service
+
+```yaml
+❌ WRONG: Using regular service (load balancer)
+Clients get random pod, cluster membership fails
+
+✅ CORRECT: Headless service (clusterIP: None)
+service:
+  clusterIP: None
+  selector:
+    app: mysql
+```
+
+### Mistake 3: Unordered Scaling
+
+```yaml
+❌ WRONG: Scaling too fast, nodes bootstrap simultaneously
+Multiple nodes think they're master
+
+✅ CORRECT: Ordered startup with init containers
+initContainers check cluster before joining
+```
+
+## Production Considerations
+
+### Backup Strategy
+
+- Regular snapshots: Daily PVC snapshots to storage
+- Point-in-time recovery: WAL archival for databases
+- Test restores: Monthly restore drills
+
+### Monitoring
+
+- Pod restart count (data corruption indicator)
+- PVC utilization (prevent full disks)
+- Replication lag (for databases)
+- Cluster membership status
+
+### Scaling
+
+- Scale up: New pod joins, auto-rebalances (depends on app)
+- Scale down: Pod-N terminates, data rebalanced (depends on app)
+- StatefulSet supports limited scaling operations
+
+## Self-Check
+
+- What's the difference between stateful and stateless?
+- Why use StatefulSets instead of Deployments?
+- What's a headless service and why needed?
+- How does persistent storage work with StatefulSets?
+- What happens when a stateful pod crashes?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "StatefulSet used for stateful apps?",
+  "Headless service configured?",
+  "Persistent volume claim template present?",
+  "Pod naming predictable?",
+  "Init containers for setup?",
+  "Graceful termination configured?",
+  "Health checks (liveness + readiness)?",
+  "Ordered pod startup/shutdown?",
+  "Backup/restore process tested?",
+  "Monitoring of pod health?",
+  "Replication lag monitored?",
+  "Scaling strategy documented?"
+]} />
+
+## Next Steps
+
+1. Assess if workload is stateful
+2. Design persistence strategy
+3. Choose storage class
+4. Implement StatefulSet
+5. Configure monitoring
+6. Test pod failure scenarios
+7. Document runbooks
+
+## References
+
+- <a href="https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes StatefulSets ↗</a>
+- <a href="https://cloud.google.com/kubernetes-engine/docs/concepts/statefulset" target="_blank" rel="nofollow noopener noreferrer">Google Cloud: StatefulSets ↗</a>
+- <a href="https://www.postgresql.org/docs/" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL Documentation ↗</a>
+
+## Deep Dive: Stateful Workload Patterns
+
+### Database Replicas in Kubernetes
+
+**PostgreSQL HA with Patroni**:
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-cluster
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: myapp
+  primaryUpdateStrategy: unsupervised  # Automatic failover
+  postgresql:
+    parameters:
+      shared_buffers: 256MB
+      effective_cache_size: 1GB
+      maintenance_work_mem: 64MB
+```
+
+Benefits over self-managed:
+- Automatic failover (< 1 second)
+- Backup management
+- Point-in-time recovery
+- Declarative config
+
+**MySQL Operator**:
+```yaml
+apiVersion: mysql.oracle.com/v2
+kind: InnoDBCluster
+metadata:
+  name: mysql-cluster
+spec:
+  secretName: mysql-secret  # Root password
+  instances: 3
+  router:
+    instances: 1  # MySQL Router for connection pooling
+```
+
+### Stateful Application Patterns
+
+**Single-Master Pattern**:
+- One pod writes (master), others read (replicas)
+- Simple, consistent, but write bottleneck
+- Good for: Databases needing strong consistency
+
+**Multi-Master Pattern**:
+- All pods can write, conflict resolution
+- Complex, eventual consistency
+- Good for: Distributed caches, collaborative apps
+
+**Sharded Pattern**:
+- Data partitioned across pods
+- Each pod owns partition
+- Requires shard key in queries
+- Good for: Massive scale databases
+
+### Operator Frameworks
+
+Instead of writing custom controller logic:
+- Kubernetes Operator: Custom resource + controller
+- Helm: Package manager (doesn't manage state well)
+- Operator Framework: SDKs for building operators
+
+Popular operators:
+- PostgreSQL CNPG
+- MySQL Operator
+- Elasticsearch Operator
+- RabbitMQ Operator
+
+## Troubleshooting Stateful Workloads
+
+### Pod Stuck in Pending
+
+Check:
+```bash
+kubectl describe pod mysql-0
+# Look for: PersistentVolumeClaim waiting for binding
+# Solution: Create storage class, PVs, or use dynamic provisioning
+```
+
+### Data Corruption
+
+Symptoms: Pod restarts, data lost or corrupted
+
+Solutions:
+1. Restore from backup
+2. Check disk health
+3. Verify storage driver (ceph, nfs, local disk)
+4. Review database logs
+
+### Replication Lag
+
+Monitor:
+```bash
+# In Pod
+mysql> SHOW SLAVE STATUS\G
+# Seconds_Behind_Master: replication lag
+
+psql
+# SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0');
+```
+
+High lag causes:
+- Heavy writes on master
+- Slow network
+- Replica CPU/disk bottleneck
+
+## Cost Considerations
+
+StatefulSet cost:
+- Pod resources: CPU, memory
+- Persistent storage: $/GB/month
+- Redundancy (3 replicas): 3x cost
+- Operator overhead: 10-20% extra
+
+vs. Managed Database:
+- RDS/Cloud SQL: 2-3x cost
+- But: Backups, failover, monitoring included
+
+Decision:
+- Small/medium app: Use managed service
+- Large scale: Self-managed (cost savings)
+- Cost-sensitive: Self-managed with careful ops
+
+## Additional Topics
+
+### Backup and Restore for Stateful Workloads
+
+StatefulSets need special backup handling:
+
+```bash
+# Backup persistent volumes
+# Option 1: Native DB tools (most reliable)
+kubectl exec -it postgres-0 -- pg_dump mydb > backup.sql
+
+# Option 2: VolumeSnapshot API (native K8s)
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: postgres-snapshot
+spec:
+  volumeSnapshotClassName: csi-snapshotter
+  source:
+    persistentVolumeClaimName: data-postgres-0
+
+# Restore from snapshot
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-postgres-0
+spec:
+  dataSource:
+    name: postgres-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  # Pod will auto-mount restored data
+```
+
+### Network Policies for Stateful Workloads
+
+Restrict traffic to databases:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-netpol
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: backend  # Only backend pods can access
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+```
+
+### Observability for Stateful Workloads
+
+Monitor:
+- Replica lag (async replication)
+- Disk usage (running out of space?)
+- Connection count (connection limits?)
+- Query performance (slow queries?)
+
+Example monitoring setup:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-exporter-config
+data:
+  queries.yaml: |
+    pg_replication_lag_seconds:
+      query: |
+        SELECT EXTRACT(EPOCH FROM (NOW() - pg_last_wal_receive_time())) 
+        AS replication_lag_seconds
+    pg_database_size_bytes:
+      query: |
+        SELECT sum(pg_database_size(datname)) 
+        AS total_size_bytes FROM pg_database
+    pg_slow_queries:
+      query: |
+        SELECT count(*) FROM pg_stat_statements 
+        WHERE mean_exec_time > 1000  -- > 1 second
+```
+
+### Disaster Scenarios and Recovery
+
+**Scenario 1: Pod CrashLooping**
+```
+Symptoms: Pod restarts repeatedly
+Cause: Data corruption, OOM, disk full
+
+Recovery:
+1. Don't restart immediately
+2. Analyze logs: kubectl logs postgres-0 --previous
+3. If corruption: restore from backup
+4. If disk full: add persistent volume
+5. If OOM: increase memory request
+```
+
+**Scenario 2: PVC Stuck Pending**
+```
+Symptoms: Pod can't start, waiting for PVC
+
+Check:
+kubectl get pvc
+# Look for: Pending
+
+Cause: No PersistentVolume available
+
+Solutions:
+1. Create PersistentVolume manually
+2. Use storage class with automatic provisioning
+3. Check storage backend status (NFS, EBS, etc.)
+```
+
+**Scenario 3: Data Corruption Detected**
+```
+Steps:
+1. Isolate: Stop accepting writes
+2. Diagnose: Check DBCC/FSCK output
+3. Restore: From last known-good backup
+4. Verify: Run full data validation
+5. Monitor: Watch for more corruption signs
+```
+

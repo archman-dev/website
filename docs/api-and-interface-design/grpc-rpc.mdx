@@ -1,0 +1,475 @@
+---
+sidebar_position: 3
+title: "gRPC and RPC"
+description: "Build high-performance binary RPC systems with HTTP/2 streaming"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [gRPC, RPC, Protocol Buffers, streaming, deadlines, multiplexing, binary protocols, microservices, performance]
+image: /img/archman-social-card.webp
+tags: [gRPC, RPC, Protocol-Buffers, streaming, HTTP/2, binary-protocols, microservices, performance, low-latency, contracts]
+hide_title: true
+---
+
+<Hero title="gRPC and RPC" subtitle="Build high-performance binary RPC systems with HTTP/2 streaming" imageAlt="gRPC illustration" size="large" />
+
+## TL;DR
+
+gRPC is a high-performance RPC framework using Protocol Buffers (binary serialization) over HTTP/2. Unlike REST's request-response model, gRPC supports bidirectional streaming, multiplexing multiple requests over one connection, and tight contracts via `.proto` files. Ideal for microservices, low-latency systems, and high-throughput scenarios. Trade-offs: binary format (harder to debug than JSON), HTTP/2 requirement (more complex), learning curve (Protocol Buffers). REST is simpler; gRPC is faster. Choose based on performance needs and team expertise.
+
+## Learning Objectives
+
+- Understand gRPC architecture and Protocol Buffers
+- Design efficient `.proto` service contracts
+- Implement unary, server streaming, and bidirectional streaming
+- Apply deadlines and timeouts correctly
+- Recognize gRPC limitations and trade-offs
+
+## Motivating Scenario
+
+Your microservices architecture has 50 internal APIs. REST with JSON works but latency adds up: serialization overhead, verbose headers, connection per request. A service that aggregates data makes 20 REST calls (~500ms total). Switching to gRPC: binary serialization is faster, HTTP/2 multiplexing reuses connections, and bidirectional streaming eliminates roundtrips. The same aggregation takes ~100ms.
+
+gRPC shines for internal service-to-service communication where performance matters and format flexibility isn't required.
+
+## Core Concepts
+
+### Protocol Buffers
+
+Protocol Buffers (protobuf) are a language-neutral serialization format. Define message and service contracts in `.proto` files. Compilers generate type-safe client and server code.
+
+```protobuf
+syntax = "proto3";
+
+message User {
+  int32 id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+service UserService {
+  rpc GetUser (UserId) returns (User);
+  rpc ListUsers (ListRequest) returns (stream User);
+  rpc CreateUser (User) returns (User);
+}
+```
+
+### Service Models
+
+**Unary**: Client sends request, server responds once (like REST).
+
+**Server Streaming**: Client sends request, server streams responses.
+
+**Client Streaming**: Client streams requests, server responds once.
+
+**Bidirectional**: Both client and server stream simultaneously.
+
+### HTTP/2 and Multiplexing
+
+gRPC runs over HTTP/2, enabling:
+- **Multiplexing**: Multiple logical streams on one TCP connection
+- **Server push**: Server initiates responses
+- **Header compression**: Reduces overhead
+- **Binary framing**: More efficient than text
+
+### Deadlines and Cancellation
+
+Requests have deadlines. If not met, the server cancels work. Prevents cascading timeouts and resource waste in distributed systems.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="proto" label="Protocol Buffer Definition">
+
+```protobuf
+syntax = "proto3";
+
+message User {
+  int32 id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message ListRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message Empty {}
+
+service UserService {
+  // Unary RPC
+  rpc GetUser (User) returns (User);
+
+  // Server streaming
+  rpc ListUsers (ListRequest) returns (stream User);
+
+  // Client streaming
+  rpc UpdateUsers (stream User) returns (Empty);
+
+  // Bidirectional streaming
+  rpc SyncUsers (stream User) returns (stream User);
+}
+```
+
+</TabItem>
+<TabItem value="server" label="Server Implementation (Go)">
+
+```go
+type userService struct{}
+
+// Unary RPC
+func (s *userService) GetUser(ctx context.Context, req *pb.User) (*pb.User, error) {
+  // Check deadline
+  if err := ctx.Err(); err != nil {
+    return nil, err // Context cancelled or deadline exceeded
+  }
+
+  user := db.GetUser(req.Id)
+  return user, nil
+}
+
+// Server streaming
+func (s *userService) ListUsers(req *pb.ListRequest, stream pb.UserService_ListUsersServer) error {
+  users := db.ListUsers(req.Limit, req.Offset)
+  for _, user := range users {
+    if err := stream.Send(user); err != nil {
+      return err
+    }
+  }
+  return nil
+}
+
+// Client streaming
+func (s *userService) UpdateUsers(stream pb.UserService_UpdateUsersServer) error {
+  for {
+    user, err := stream.Recv()
+    if err == io.EOF {
+      return stream.SendAndClose(&empty.Empty{})
+    }
+    if err != nil {
+      return err
+    }
+    db.UpdateUser(user)
+  }
+}
+
+// Bidirectional streaming
+func (s *userService) SyncUsers(stream pb.UserService_SyncUsersServer) error {
+  for {
+    user, err := stream.Recv()
+    if err == io.EOF {
+      return nil
+    }
+    if err != nil {
+      return err
+    }
+    updated := db.SyncUser(user)
+    if err := stream.Send(updated); err != nil {
+      return err
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem value="client" label="Client Usage (Go)">
+
+```go
+// Create client with deadline
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+client := pb.NewUserServiceClient(conn)
+
+// Unary call
+user, err := client.GetUser(ctx, &pb.User{Id: 123})
+
+// Server streaming
+stream, err := client.ListUsers(ctx, &pb.ListRequest{Limit: 10})
+for {
+  user, err := stream.Recv()
+  if err == io.EOF {
+    break
+  }
+  if err != nil {
+    log.Fatal(err)
+  }
+  log.Printf("User: %s", user.Name)
+}
+
+// Bidirectional streaming
+stream, err := client.SyncUsers(ctx)
+for _, localUser := range localUsers {
+  stream.Send(localUser)
+}
+stream.CloseSend()
+for {
+  user, err := stream.Recv()
+  if err == io.EOF {
+    break
+  }
+  db.UpdateUser(user)
+}
+```
+
+</TabItem>
+</Tabs>
+
+## REST vs gRPC
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use REST When",
+    points: [
+      "Public APIs or mobile clients",
+      "Browsers are clients",
+      "JSON flexibility needed",
+      "Debugging without tools important",
+      "Simpler deployment/infrastructure"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use gRPC When",
+    points: [
+      "Internal microservices",
+      "High throughput/low latency critical",
+      "Tight contracts beneficial",
+      "Bidirectional streaming needed",
+      "Language diversity in polyglot systems"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Performance Characteristics
+
+gRPC excels at performance:
+- **Serialization**: Protocol Buffers ~3-10x smaller than JSON
+- **Latency**: Binary format and multiplexing reduce roundtrip time
+- **Throughput**: HTTP/2 multiplexing handles many concurrent requests
+- **CPU**: Less serialization overhead
+
+But monitoring is harder (binary format not human-readable) and debugging requires tools like `grpcurl`.
+
+## Patterns and Pitfalls
+
+**Pitfall**: Ignoring deadlines. Set reasonable timeouts to prevent hanging requests.
+
+**Pitfall**: Using gRPC for public APIs. Browsers can't use gRPC; REST is necessary.
+
+**Pitfall**: Over-streaming. Bidirectional streaming adds complexity; use when truly needed.
+
+**Pattern**: Organize services by business domain. Each `.proto` file represents a service boundary.
+
+**Pattern**: Version services carefully. Protocol Buffers support backward compatibility, but breaking changes require careful migration.
+
+## Design Review Checklist
+
+- [ ] `.proto` files well-organized by service domain
+- [ ] Message types leverage proto3 conventions (no `required`, use `optional`)
+- [ ] Service methods clearly named (GetUser, ListUsers, CreateUser)
+- [ ] Streaming modeled correctly (unary vs server/client/bidirectional)
+- [ ] Deadlines set on client calls
+- [ ] Error handling consistent across methods
+- [ ] Proto files documented with comments
+- [ ] Generated code not manually edited
+- [ ] Version strategy for proto changes defined
+- [ ] Monitoring/observability integrated (gRPC interceptors)
+
+## Self-Check
+
+- When would you use bidirectional streaming instead of unary RPC?
+- How do deadlines prevent cascading failures?
+- What's the advantage of Protocol Buffers over JSON serialization?
+
+:::info One Takeaway
+gRPC is the right tool for fast, internal service-to-service communication; REST remains the standard for public and external APIs.
+
+:::
+
+## Advanced gRPC Patterns
+
+### Interceptors for Cross-Cutting Concerns
+
+Interceptors enable logging, metrics, authentication without modifying service code:
+
+```go
+// Server interceptor for logging and metrics
+func loggingInterceptor(ctx context.Context, req interface{},
+                       info *grpc.UnaryServerInfo,
+                       handler grpc.UnaryHandler) (interface{}, error) {
+    start := time.Now()
+    log.Printf("RPC: %s", info.FullMethod)
+
+    // Call the actual handler
+    resp, err := handler(ctx, req)
+
+    duration := time.Since(start).Seconds()
+    status := codes.OK
+    if err != nil {
+        status = status.Code(err)
+    }
+
+    // Record metrics
+    rpcDuration.WithLabelValues(info.FullMethod, status.String()).Observe(duration)
+
+    log.Printf("RPC completed: %s [%v] - %v", info.FullMethod, status, duration)
+    return resp, err
+}
+
+// Authentication interceptor
+func authInterceptor(ctx context.Context, req interface{},
+                    info *grpc.UnaryServerInfo,
+                    handler grpc.UnaryHandler) (interface{}, error) {
+    // Extract and validate token from context metadata
+    md, ok := metadata.FromIncomingContext(ctx)
+    if !ok {
+        return nil, status.Error(codes.Unauthenticated, "missing metadata")
+    }
+
+    tokens := md.Get("authorization")
+    if len(tokens) == 0 {
+        return nil, status.Error(codes.Unauthenticated, "missing token")
+    }
+
+    token := tokens[0]
+    if !isValidToken(token) {
+        return nil, status.Error(codes.Unauthenticated, "invalid token")
+    }
+
+    // Token valid, proceed
+    return handler(ctx, req)
+}
+
+// Register interceptors
+server := grpc.NewServer(
+    grpc.UnaryInterceptor(authInterceptor),
+    grpc.ChainUnaryInterceptor(loggingInterceptor, metricsInterceptor),
+)
+```
+
+### Client Streaming Performance
+
+For bulk operations, client streaming is far more efficient than unary calls:
+
+```go
+// Unary: 1000 CreateUser calls = 1000 RPC round trips
+for _, user := range users {
+    client.CreateUser(ctx, user)  // 1000 separate calls
+}
+
+// Client streaming: 1 RPC with 1000 messages
+stream, err := client.CreateUsers(ctx)
+for _, user := range users {
+    stream.Send(user)  // All sent in one stream
+}
+ack, err := stream.CloseAndRecv()
+
+// Performance: 100x faster (one round trip vs 1000)
+```
+
+### Service Versioning Strategy
+
+```protobuf
+// v1 - Original version
+service UserServiceV1 {
+  rpc GetUser (UserId) returns (User);
+}
+
+// v2 - New version with breaking changes
+service UserServiceV2 {
+  rpc GetUser (GetUserRequest) returns (GetUserResponse);
+  rpc ListUsers (ListRequest) returns (stream User);
+}
+
+// Migration strategy:
+// 1. Deploy v2 alongside v1 (both services exist)
+// 2. Update clients gradually to use v2
+// 3. Monitor v1 usage metrics
+// 4. Once v1 usage < 5%, deprecate v1
+// 5. Remove v1 after 6-month notice period
+```
+
+### Error Handling Strategy
+
+```go
+// Good: Use standard gRPC error codes
+if user == nil {
+    return nil, status.Error(codes.NotFound, "user not found")
+}
+
+if !hasPermission(ctx, "read_user") {
+    return nil, status.Error(codes.PermissionDenied, "insufficient permissions")
+}
+
+if invalidInput(req) {
+    return nil, status.Error(codes.InvalidArgument, "email required")
+}
+
+// Client-side error handling
+resp, err := client.GetUser(ctx, &pb.UserId{Id: 123})
+if err != nil {
+    st := status.Convert(err)
+    switch st.Code() {
+    case codes.NotFound:
+        // Handle not found (retry unnecessary)
+    case codes.Unavailable:
+        // Handle temporarily unavailable (retry helpful)
+    case codes.PermissionDenied:
+        // Handle auth (refresh token?)
+    default:
+        // Handle unknown error
+    }
+}
+```
+
+## gRPC in Production
+
+### Deployment Considerations
+
+```yaml
+# gRPC requires HTTP/2, which needs careful load balancing
+load_balancer:
+  protocol: "HTTP/2"
+  connection_pooling: "enabled"  # Multiple connections per client
+  keepalive: "every 30 seconds"  # Detect broken connections
+
+# Clients need retry logic for transient failures
+client_retry_policy:
+  max_retries: 3
+  backoff: "exponential"
+  retryable_codes:
+    - UNAVAILABLE
+    - RESOURCE_EXHAUSTED
+    - INTERNAL  # For idempotent operations only
+  non_retryable_codes:
+    - NOT_FOUND
+    - PERMISSION_DENIED
+    - INVALID_ARGUMENT
+
+# Monitoring gRPC services
+metrics:
+  - rpc_calls_total[service, method, status]
+  - rpc_duration_seconds[service, method]
+  - rpc_errors_total[service, method, error_code]
+```
+
+## Next Steps
+
+- Read **Versioning Strategies** for evolving gRPC services
+- Study **API Security** for gRPC authentication and encryption
+- Explore **Async APIs** for event-driven alternatives
+- Learn **Load Balancing** for gRPC (different from HTTP/1.1)
+- Implement **Circuit Breakers** for downstream protection
+- Design **Retry Logic** with exponential backoff
+
+## References
+
+- gRPC Official Documentation (grpc.io)
+- Protocol Buffers Guide (developers.google.com/protocol-buffers)
+- gRPC vs REST (Cloud Native Computing Foundation)
+- gRPC Best Practices (google.com/cloud)
+- "Building Microservices" by Sam Newman (gRPC patterns chapter)

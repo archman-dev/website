@@ -1,0 +1,905 @@
+---
+sidebar_position: 7
+title: "Redundancy, Replication, and Failover"
+description: "Build resilient systems through redundancy and automatic failover."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 18
+lastReviewed: 2025-02-14
+personas: [architect, engineer, sre]
+keywords: [redundancy, replication, failover, high availability, resilience]
+image: /img/archman-social-card.webp
+tags: [availability, reliability, operations]
+hide_title: true
+---
+
+<Hero title="Redundancy, Replication, and Failover" subtitle="Eliminate single points of failure through replication and automatic failover." size="large" />
+
+## TL;DR
+
+Redundancy: Have multiple copies of critical components. Replication: Keep copies synchronized (sync vs. async). Failover: Automatically switch to backup when primary fails. 3 models: active-passive (one instance active, one standby), active-active (both active, load balanced), and cascading (replica of replica). For databases: master-slave (async replication, eventual consistency), multi-master (all write, conflict resolution), or distributed (no master, consensus). Test failover regularly; it's the #1 failure point. RTO (recovery time): how fast can you failover? RPO (recovery point): how much data can you lose?
+
+## Learning Objectives
+
+- Understand redundancy types and tradeoffs
+- Implement replication (sync, async, quorum)
+- Design automatic failover systems
+- Choose replication strategy by consistency needs
+- Measure RTO and RPO
+- Test failover processes
+- Understand split-brain scenarios and resolution
+- Scale redundancy across regions
+
+## Motivating Scenario
+
+Production database crashes. Manual failover: 30 minutes downtime. Lost 2 minutes of transactions (async replication lag). Automatic failover: 2 minutes downtime, no data loss (if quorum replication). Cost difference: redundancy infrastructure (~30% overhead) vs. downtime risk (millions per hour). For critical services, automated failover pays for itself immediately.
+
+## Core Concepts
+
+### Redundancy Types
+
+| Type | Example | RTO | RPO | Cost |
+|------|---------|-----|-----|------|
+| **Active-Passive** | Primary DB + backup | 5-10 minutes | 0-5 min | 2x |
+| **Active-Active** | Two DBs, load balanced | 1-2 minutes | 0 | 2x + complexity |
+| **Cascading** | Replica of replica | 2-5 minutes | 5-10 min | 3x |
+| **Regional** | Multi-region setup | 1 minute | 0 | 3-5x |
+
+### Replication Strategies
+
+| Strategy | Consistency | Latency | Failure Tolerance | Use Case |
+|----------|-------------|---------|-------------------|----------|
+| **Sync** | Strong | Slow (write waits for replicas) | Immediate | Financial systems |
+| **Async** | Eventual | Fast (write returns immediately) | Lag-tolerant | Most services |
+| **Quorum** | Eventual (when majority responds) | Medium | N/2 replicas can fail | Distributed DBs |
+
+### RTO vs. RPO
+
+**RTO (Recovery Time Objective)**: Max acceptable downtime
+- 1 hour RTO: Failover must complete in < 1 hour
+- Automatic failover: Minutes
+- Manual failover: Hours
+
+**RPO (Recovery Point Objective)**: Max acceptable data loss
+- 0 RPO: Zero data loss (sync replication)
+- 5 min RPO: Lose up to 5 minutes of data (async replication)
+
+## Implementation Patterns
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Optional
+from dataclasses import dataclass
+import time
+from enum import Enum
+
+# Replication modes
+class ReplicationMode(Enum):
+    SYNC = "sync"  # Master waits for slave
+    ASYNC = "async"  # Master doesn't wait
+    QUORUM = "quorum"  # Master waits for majority
+
+# Health check
+class HealthStatus(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+
+# Database replica
+@dataclass
+class DatabaseReplica:
+    node_id: str
+    is_master: bool
+    replication_lag_ms: int = 0
+    status: HealthStatus = HealthStatus.HEALTHY
+
+# Active-Passive replication
+class MasterSlaveDatabase:
+    def __init__(self, master_url: str, slave_url: str):
+        self.master = DatabaseReplica(node_id="master", is_master=True)
+        self.slave = DatabaseReplica(node_id="slave", is_master=False)
+        self.master_url = master_url
+        self.slave_url = slave_url
+        self.replication_mode = ReplicationMode.ASYNC
+        self.current_master = self.master
+    
+    def write(self, data: dict) -> bool:
+        """Write to master, replicate to slave"""
+        if self.current_master.status != HealthStatus.HEALTHY:
+            return False
+        
+        # Write to master
+        if not self._write_to_master(data):
+            return False
+        
+        # Replicate based on mode
+        if self.replication_mode == ReplicationMode.SYNC:
+            # Wait for slave to acknowledge
+            return self._replicate_sync(data)
+        elif self.replication_mode == ReplicationMode.ASYNC:
+            # Fire and forget
+            self._replicate_async(data)
+            return True
+        
+        return True
+    
+    def _write_to_master(self, data: dict) -> bool:
+        """Write to master (simulated)"""
+        try:
+            # In real code: POST to master_url
+            print(f"Master: Write {data}")
+            return True
+        except Exception as e:
+            print(f"Master write failed: {e}")
+            return False
+    
+    def _replicate_sync(self, data: dict) -> bool:
+        """Synchronous replication: wait for slave"""
+        try:
+            # In real code: POST to slave_url, wait for response
+            print(f"Slave: Sync write {data}")
+            self.slave.replication_lag_ms = 0
+            return True
+        except Exception as e:
+            print(f"Slave sync replication failed: {e}")
+            return False
+    
+    def _replicate_async(self, data: dict):
+        """Asynchronous replication: don't wait"""
+        # In real code: background task that replicates
+        print(f"Slave: Async write queued {data}")
+        self.slave.replication_lag_ms = 500  # Simulated lag
+    
+    def failover(self):
+        """Failover from master to slave"""
+        print(f"Failover: Promoting {self.slave.node_id} to master")
+        
+        # Check slave status
+        if self.slave.status != HealthStatus.HEALTHY:
+            print("Failover failed: Slave unhealthy")
+            return False
+        
+        # Promote slave to master
+        self.current_master = self.slave
+        self.slave.is_master = True
+        self.master.is_master = False
+        
+        # Reset replication lag
+        self.slave.replication_lag_ms = 0
+        
+        print(f"Failover complete: {self.slave.node_id} is now master")
+        return True
+    
+    def check_health(self) -> HealthStatus:
+        """Monitor master health"""
+        # In real code: HTTP health check
+        return self.current_master.status
+
+# Active-Active replication
+class MultiMasterDatabase:
+    def __init__(self, nodes: List[str]):
+        self.nodes = [DatabaseReplica(node_id=node, is_master=True) for node in nodes]
+        self.write_conflicts = []
+    
+    def write(self, data: dict, client_id: str) -> bool:
+        """Write to all masters"""
+        success_count = 0
+        
+        for node in self.nodes:
+            if node.status == HealthStatus.HEALTHY:
+                # Tag write with client_id and timestamp for conflict resolution
+                tagged_data = {
+                    **data,
+                    '_client': client_id,
+                    '_timestamp': time.time()
+                }
+                
+                if self._write_to_node(node, tagged_data):
+                    success_count += 1
+        
+        # Quorum: succeed if majority write succeeds
+        return success_count > len(self.nodes) / 2
+    
+    def _write_to_node(self, node: DatabaseReplica, data: dict) -> bool:
+        """Write to single node"""
+        try:
+            print(f"Node {node.node_id}: Write {data}")
+            return True
+        except Exception as e:
+            print(f"Node {node.node_id} write failed: {e}")
+            return False
+    
+    def resolve_conflicts(self):
+        """Resolve conflicting writes"""
+        # Last-write-wins (simple but lossy)
+        # Vector clocks (more complex but better)
+        # Custom conflict handler (application-specific)
+        
+        print(f"Resolving {len(self.write_conflicts)} conflicts")
+        
+        for conflict in self.write_conflicts:
+            # Use vector clock to determine causality
+            # If concurrent writes: use Last-Write-Wins or custom resolver
+            print(f"Resolved: {conflict['data']}")
+
+# Cascading replication (replica of replica)
+class CascadingReplication:
+    def __init__(self):
+        self.primary = DatabaseReplica(node_id="primary", is_master=True)
+        self.replica1 = DatabaseReplica(node_id="replica1", is_master=False)
+        self.replica2 = DatabaseReplica(node_id="replica2", is_master=False)
+    
+    def write(self, data: dict) -> bool:
+        """Primary → Replica1 → Replica2"""
+        # Write to primary
+        if not self._write_to_node(self.primary, data):
+            return False
+        
+        # Replicate to replica1
+        if not self._write_to_node(self.replica1, data):
+            return False
+        
+        # Replica1 replicates to replica2
+        if not self._write_to_node(self.replica2, data):
+            return False
+        
+        return True
+    
+    def _write_to_node(self, node: DatabaseReplica, data: dict) -> bool:
+        try:
+            print(f"Node {node.node_id}: Cascade write {data}")
+            return True
+        except:
+            return False
+    
+    def failover(self):
+        """If primary fails, promote replica1"""
+        if self.primary.status != HealthStatus.HEALTHY:
+            print("Primary unhealthy, promoting replica1")
+            
+            # Make replica1 the new primary
+            self.primary = self.replica1
+            self.replica1 = self.replica2
+            # Replica2 becomes a new empty replica (or promoted from elsewhere)
+            
+            return True
+        return False
+
+# Automatic failover
+class FailoverManager:
+    def __init__(self, database: MasterSlaveDatabase):
+        self.database = database
+        self.health_check_interval_sec = 5
+        self.unhealthy_threshold = 3  # Fail after 3 checks
+        self.unhealthy_count = 0
+    
+    def monitor(self):
+        """Continuous health monitoring"""
+        status = self.database.check_health()
+        
+        if status == HealthStatus.HEALTHY:
+            self.unhealthy_count = 0
+            print("Master healthy")
+        else:
+            self.unhealthy_count += 1
+            print(f"Master unhealthy ({self.unhealthy_count}/{self.unhealthy_threshold})")
+            
+            if self.unhealthy_count >= self.unhealthy_threshold:
+                print("Unhealthy threshold exceeded, initiating failover")
+                self.database.failover()
+                self.unhealthy_count = 0
+
+# Example: Detect split-brain
+class SplitBrainDetector:
+    @staticmethod
+    def detect(master1_status: bool, master2_status: bool, network_available: bool) -> bool:
+        """
+        Split-brain: Both masters think they're primary
+        Network partition: Can't communicate between masters
+        
+        Solution: Quorum vote (at least 2 of 3)
+        """
+        if not network_available and master1_status and master2_status:
+            print("SPLIT BRAIN DETECTED: Both masters active, no network")
+            return True
+        
+        return False
+
+# Usage
+db = MasterSlaveDatabase("master:5432", "slave:5432")
+db.replication_mode = ReplicationMode.ASYNC
+
+# Normal operations
+db.write({"id": 1, "value": "data1"})
+
+# Failover scenario
+db.current_master.status = HealthStatus.UNHEALTHY
+db.failover()
+
+# Multi-master
+mm_db = MultiMasterDatabase(["node1", "node2", "node3"])
+mm_db.write({"id": 2, "value": "data2"}, "client1")
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+// Replication mode
+type ReplicationMode int
+
+const (
+	SYNC ReplicationMode = iota
+	ASYNC
+	QUORUM
+)
+
+// Health status
+type HealthStatus int
+
+const (
+	HEALTHY HealthStatus = iota
+	DEGRADED
+	UNHEALTHY
+)
+
+// Database replica
+type DatabaseReplica struct {
+	NodeID            string
+	IsMaster          bool
+	ReplicationLagMS  int
+	Status            HealthStatus
+	mu                sync.RWMutex
+}
+
+// Master-Slave database
+type MasterSlaveDatabase struct {
+	Master             *DatabaseReplica
+	Slave              *DatabaseReplica
+	ReplicationMode    ReplicationMode
+	CurrentMaster      *DatabaseReplica
+	mu                 sync.RWMutex
+}
+
+func NewMasterSlaveDatabase() *MasterSlaveDatabase {
+	master := &DatabaseReplica{NodeID: "master", IsMaster: true, Status: HEALTHY}
+	slave := &DatabaseReplica{NodeID: "slave", IsMaster: false, Status: HEALTHY}
+	
+	return &MasterSlaveDatabase{
+		Master:        master,
+		Slave:         slave,
+		ReplicationMode: ASYNC,
+		CurrentMaster: master,
+	}
+}
+
+func (db *MasterSlaveDatabase) Write(data map[string]interface{}) bool {
+	db.mu.RLock()
+	if db.CurrentMaster.Status != HEALTHY {
+		db.mu.RUnlock()
+		return false
+	}
+	db.mu.RUnlock()
+	
+	// Write to master
+	fmt.Printf("Master: Write %v\n", data)
+	
+	// Replicate
+	if db.ReplicationMode == SYNC {
+		return db.replicateSync(data)
+	} else if db.ReplicationMode == ASYNC {
+		go db.replicateAsync(data)
+		return true
+	}
+	
+	return true
+}
+
+func (db *MasterSlaveDatabase) replicateSync(data map[string]interface{}) bool {
+	fmt.Printf("Slave: Sync write %v\n", data)
+	db.Slave.ReplicationLagMS = 0
+	return true
+}
+
+func (db *MasterSlaveDatabase) replicateAsync(data map[string]interface{}) {
+	fmt.Printf("Slave: Async write queued %v\n", data)
+	db.Slave.ReplicationLagMS = 500
+}
+
+func (db *MasterSlaveDatabase) Failover() bool {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	
+	if db.Slave.Status != HEALTHY {
+		fmt.Println("Failover failed: Slave unhealthy")
+		return false
+	}
+	
+	fmt.Printf("Failover: Promoting %s to master\n", db.Slave.NodeID)
+	
+	db.CurrentMaster = db.Slave
+	db.Slave.IsMaster = true
+	db.Master.IsMaster = false
+	db.Slave.ReplicationLagMS = 0
+	
+	fmt.Println("Failover complete")
+	return true
+}
+
+// Multi-Master database
+type MultiMasterDatabase struct {
+	Nodes []*DatabaseReplica
+	mu    sync.RWMutex
+}
+
+func NewMultiMasterDatabase(nodeNames []string) *MultiMasterDatabase {
+	nodes := make([]*DatabaseReplica, len(nodeNames))
+	for i, name := range nodeNames {
+		nodes[i] = &DatabaseReplica{NodeID: name, IsMaster: true, Status: HEALTHY}
+	}
+	
+	return &MultiMasterDatabase{Nodes: nodes}
+}
+
+func (db *MultiMasterDatabase) Write(data map[string]interface{}, clientID string) bool {
+	db.mu.RLock()
+	successCount := 0
+	
+	for _, node := range db.Nodes {
+		if node.Status == HEALTHY {
+			successCount++
+			fmt.Printf("Node %s: Write %v\n", node.NodeID, data)
+		}
+	}
+	db.mu.RUnlock()
+	
+	// Quorum: majority must succeed
+	return successCount > len(db.Nodes)/2
+}
+
+// Cascading replication
+type CascadingReplication struct {
+	Primary  *DatabaseReplica
+	Replica1 *DatabaseReplica
+	Replica2 *DatabaseReplica
+	mu       sync.RWMutex
+}
+
+func NewCascadingReplication() *CascadingReplication {
+	return &CascadingReplication{
+		Primary:  &DatabaseReplica{NodeID: "primary", IsMaster: true, Status: HEALTHY},
+		Replica1: &DatabaseReplica{NodeID: "replica1", IsMaster: false, Status: HEALTHY},
+		Replica2: &DatabaseReplica{NodeID: "replica2", IsMaster: false, Status: HEALTHY},
+	}
+}
+
+func (cr *CascadingReplication) Write(data map[string]interface{}) bool {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	
+	fmt.Printf("Primary: Write %v\n", data)
+	fmt.Printf("Replica1: Cascade write %v\n", data)
+	fmt.Printf("Replica2: Cascade write %v\n", data)
+	
+	return true
+}
+
+// Automatic failover monitor
+type FailoverManager struct {
+	database                *MasterSlaveDatabase
+	healthCheckIntervalSec  int
+	unhealthyThreshold      int
+	unhealthyCount          int
+	mu                      sync.Mutex
+	stopCh                  chan bool
+}
+
+func NewFailoverManager(database *MasterSlaveDatabase) *FailoverManager {
+	return &FailoverManager{
+		database:               database,
+		healthCheckIntervalSec: 5,
+		unhealthyThreshold:     3,
+		stopCh:                 make(chan bool),
+	}
+}
+
+func (fm *FailoverManager) Monitor() {
+	ticker := time.NewTicker(time.Duration(fm.healthCheckIntervalSec) * time.Second)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-fm.stopCh:
+			return
+		case <-ticker.C:
+			fm.mu.Lock()
+			
+			if fm.database.CurrentMaster.Status == HEALTHY {
+				fm.unhealthyCount = 0
+				fmt.Println("Master healthy")
+			} else {
+				fm.unhealthyCount++
+				fmt.Printf("Master unhealthy (%d/%d)\n", fm.unhealthyCount, fm.unhealthyThreshold)
+				
+				if fm.unhealthyCount >= fm.unhealthyThreshold {
+					fmt.Println("Unhealthy threshold exceeded, initiating failover")
+					fm.database.Failover()
+					fm.unhealthyCount = 0
+				}
+			}
+			
+			fm.mu.Unlock()
+		}
+	}
+}
+
+func main() {
+	db := NewMasterSlaveDatabase()
+	db.ReplicationMode = ASYNC
+	
+	// Normal write
+	db.Write(map[string]interface{}{"id": 1, "value": "data1"})
+	
+	// Simulate master failure
+	db.CurrentMaster.Status = UNHEALTHY
+	
+	// Trigger failover
+	db.Failover()
+	
+	// Write after failover
+	db.Write(map[string]interface{}{"id": 2, "value": "data2"})
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// Replication modes
+const ReplicationMode = {
+  SYNC: 'sync',
+  ASYNC: 'async',
+  QUORUM: 'quorum',
+};
+
+// Health status
+const HealthStatus = {
+  HEALTHY: 'healthy',
+  DEGRADED: 'degraded',
+  UNHEALTHY: 'unhealthy',
+};
+
+// Database replica
+class DatabaseReplica {
+  constructor(nodeId, isMaster) {
+    this.nodeId = nodeId;
+    this.isMaster = isMaster;
+    this.replicationLagMs = 0;
+    this.status = HealthStatus.HEALTHY;
+  }
+}
+
+// Master-Slave database
+class MasterSlaveDatabase {
+  constructor() {
+    this.master = new DatabaseReplica('master', true);
+    this.slave = new DatabaseReplica('slave', false);
+    this.replicationMode = ReplicationMode.ASYNC;
+    this.currentMaster = this.master;
+  }
+
+  write(data) {
+    if (this.currentMaster.status !== HealthStatus.HEALTHY) {
+      return false;
+    }
+
+    console.log(`Master: Write ${JSON.stringify(data)}`);
+
+    if (this.replicationMode === ReplicationMode.SYNC) {
+      return this.replicateSync(data);
+    } else if (this.replicationMode === ReplicationMode.ASYNC) {
+      this.replicateAsync(data);
+      return true;
+    }
+
+    return true;
+  }
+
+  replicateSync(data) {
+    console.log(`Slave: Sync write ${JSON.stringify(data)}`);
+    this.slave.replicationLagMs = 0;
+    return true;
+  }
+
+  replicateAsync(data) {
+    console.log(`Slave: Async write queued ${JSON.stringify(data)}`);
+    this.slave.replicationLagMs = 500;
+  }
+
+  failover() {
+    if (this.slave.status !== HealthStatus.HEALTHY) {
+      console.log('Failover failed: Slave unhealthy');
+      return false;
+    }
+
+    console.log(`Failover: Promoting ${this.slave.nodeId} to master`);
+
+    this.currentMaster = this.slave;
+    this.slave.isMaster = true;
+    this.master.isMaster = false;
+    this.slave.replicationLagMs = 0;
+
+    console.log('Failover complete');
+    return true;
+  }
+
+  checkHealth() {
+    return this.currentMaster.status;
+  }
+}
+
+// Multi-Master database
+class MultiMasterDatabase {
+  constructor(nodeNames) {
+    this.nodes = nodeNames.map(name => new DatabaseReplica(name, true));
+  }
+
+  write(data, clientId) {
+    let successCount = 0;
+
+    for (const node of this.nodes) {
+      if (node.status === HealthStatus.HEALTHY) {
+        console.log(`Node ${node.nodeId}: Write ${JSON.stringify(data)}`);
+        successCount++;
+      }
+    }
+
+    // Quorum: majority must succeed
+    return successCount > this.nodes.length / 2;
+  }
+
+  resolveConflicts() {
+    // Last-write-wins or custom resolver
+    console.log('Resolving conflicts');
+  }
+}
+
+// Cascading replication
+class CascadingReplication {
+  constructor() {
+    this.primary = new DatabaseReplica('primary', true);
+    this.replica1 = new DatabaseReplica('replica1', false);
+    this.replica2 = new DatabaseReplica('replica2', false);
+  }
+
+  write(data) {
+    console.log(`Primary: Write ${JSON.stringify(data)}`);
+    console.log(`Replica1: Cascade write ${JSON.stringify(data)}`);
+    console.log(`Replica2: Cascade write ${JSON.stringify(data)}`);
+    return true;
+  }
+
+  failover() {
+    if (this.primary.status !== HealthStatus.HEALTHY) {
+      console.log('Primary unhealthy, promoting replica1');
+      this.primary = this.replica1;
+      this.replica1 = this.replica2;
+      return true;
+    }
+    return false;
+  }
+}
+
+// Automatic failover
+class FailoverManager {
+  constructor(database) {
+    this.database = database;
+    this.healthCheckIntervalSec = 5;
+    this.unhealthyThreshold = 3;
+    this.unhealthyCount = 0;
+    this.monitorInterval = null;
+  }
+
+  start() {
+    this.monitorInterval = setInterval(() => this.monitor(), this.healthCheckIntervalSec * 1000);
+  }
+
+  stop() {
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval);
+    }
+  }
+
+  monitor() {
+    const status = this.database.checkHealth();
+
+    if (status === HealthStatus.HEALTHY) {
+      this.unhealthyCount = 0;
+      console.log('Master healthy');
+    } else {
+      this.unhealthyCount++;
+      console.log(`Master unhealthy (${this.unhealthyCount}/${this.unhealthyThreshold})`);
+
+      if (this.unhealthyCount >= this.unhealthyThreshold) {
+        console.log('Unhealthy threshold exceeded, initiating failover');
+        this.database.failover();
+        this.unhealthyCount = 0;
+      }
+    }
+  }
+}
+
+// Example usage
+const db = new MasterSlaveDatabase();
+db.replicationMode = ReplicationMode.ASYNC;
+
+db.write({ id: 1, value: 'data1' });
+
+// Simulate failure
+db.currentMaster.status = HealthStatus.UNHEALTHY;
+db.failover();
+
+// Write after failover
+db.write({ id: 2, value: 'data2' });
+
+module.exports = {
+  MasterSlaveDatabase,
+  MultiMasterDatabase,
+  CascadingReplication,
+  FailoverManager,
+  ReplicationMode,
+  HealthStatus,
+};
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Cloud Database: RTO 1 minute, RPO 0
+
+Use: Synchronous multi-region replication
+- Write to primary, wait for replica acks
+- On primary failure: seconds to detect, seconds to failover
+- Total: < 1 minute RTO, 0 RPO
+
+Cost: 2-3x infrastructure
+
+### E-Commerce: RTO 5 minutes, RPO 5 minutes
+
+Use: Async replication with automatic failover
+- Write to primary, async replicate to replica
+- On failure: health check (30s), failover (1 min), application retry (2 min)
+- Total: ~4 minutes RTO, ~5 min RPO (acceptable)
+
+Cost: 2x infrastructure
+
+### Analytics: RTO 1 hour, RPO 1 hour
+
+Use: Daily backups + async replication
+- No real-time replication (expensive)
+- Daily snapshot to S3
+- On failure: restore from yesterday's backup
+- Total: ~1 hour RTO, 24 hour RPO
+
+Cost: 1.5x infrastructure
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: Replication Not Tested
+
+```
+❌ WRONG: Assume replication works
+- Never tested failover
+- Replication breaks in production
+- Failover fails, manual recovery
+
+✅ CORRECT: Monthly failover drills
+- Test failover scenarios
+- Measure actual RTO
+- Fix issues before production
+```
+
+### Mistake 2: Split-Brain Not Handled
+
+```
+❌ WRONG: Both replicas become master
+- Data diverges
+- Conflicts unresolvable
+- Corruption
+
+✅ CORRECT: Quorum voting
+- Require majority vote to become master
+- Prevents split-brain
+- Automatic resolution
+```
+
+### Mistake 3: Replication Lag Ignored
+
+```
+❌ WRONG: "Async replication, data will catch up"
+- Customer reads stale data
+- Writes lost if replica promotes
+
+✅ CORRECT: Monitor replication lag
+- Alert if lag > 10s
+- Reduce batch size if needed
+- Accept eventual consistency
+```
+
+## Production Considerations
+
+### RTO/RPO Testing
+
+- Monthly: Run failover drills
+- Measure actual RTO (include detection + failover)
+- Measure actual RPO (check data loss)
+- Document results
+
+### Monitoring
+
+- Replication lag: Alert if > threshold
+- Master health: Heartbeat every 5s
+- Replica health: Same as master
+- Split-brain: Monitor for simultaneous masters
+
+### Failover Automation
+
+- Automatic detection (health check, heartbeat)
+- Automatic promotion (no manual intervention)
+- Alert on failover (notify ops)
+- Runbook for issues (what if failover fails?)
+
+## Self-Check
+
+- What's the difference between RTO and RPO?
+- When would you use active-passive vs. active-active?
+- How does split-brain occur and how prevent it?
+- What replication mode minimizes data loss?
+- How do you test failover?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Redundancy strategy defined (active-passive, active-active)?",
+  "RTO target defined and measured?",
+  "RPO target defined and measured?",
+  "Replication mode chosen (sync, async, quorum)?",
+  "Automatic failover implemented?",
+  "Health checks configured?",
+  "Split-brain prevention in place?",
+  "Replication lag monitored?",
+  "Monthly failover drills scheduled?",
+  "Runbooks for failover failures?",
+  "Data loss scenarios tested?",
+  "Cost of redundancy justified?"
+]} />
+
+## Next Steps
+
+1. Define RTO and RPO targets
+2. Choose redundancy strategy
+3. Implement replication
+4. Setup automatic failover
+5. Configure monitoring and alerts
+6. Document runbooks
+7. Run monthly failover drills
+
+## References
+
+- <a href="https://en.wikipedia.org/wiki/Replication_(computing)" target="_blank" rel="nofollow noopener noreferrer">Replication (Computing) ↗</a>
+- <a href="https://www.mysql.com/products/replication/" target="_blank" rel="nofollow noopener noreferrer">MySQL Replication ↗</a>
+- <a href="https://www.postgresql.org/docs/current/logical-replication.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL Replication ↗</a>
+

@@ -1,0 +1,642 @@
+---
+sidebar_position: 3
+title: "Blue-Green, Rolling, and Canary Deployments"
+description: "Roll out changes safely with zero-downtime deployment strategies; detect problems before all users are affected."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [deployment, blue-green, rolling, canary, zero-downtime, safety, rollback, traffic-shifting]
+image: /img/archman-social-card.webp
+tags: [deployment, blue-green, rolling-deployment, canary, traffic-shifting, zero-downtime, rollback, safety]
+hide_title: true
+---
+
+<Hero title="Blue-Green, Rolling, and Canary Deployments" subtitle="Roll out changes safely with zero-downtime deployment strategies; detect problems before all users are affected." imageAlt="Deployment illustration" size="large" />
+
+## TL;DR
+
+**Blue-Green**: Two identical production environments. Run on blue. Deploy to green. Test green. Switch traffic instantly. Rollback: flip back. Zero downtime, instant rollback. Cost: doubles infrastructure.
+
+**Rolling**: Replace instances gradually. 1 → 10 → 50 → 100. Longer deployment, less resources, harder rollback.
+
+**Canary**: Route 5% to new, monitor, increase to 100%. Catches regressions early. Production validation. Must handle version differences.
+
+**Choose by risk**: Database migration → blue-green (easy rollback). API change → canary (monitor users). Feature flag → instant rollback (disable).
+
+## Learning Objectives
+
+- Understand tradeoffs of each deployment strategy
+- Implement zero-downtime deployments safely
+- Use canary deployments to catch regressions early
+- Design quick rollback procedures
+- Monitor and automate deployment traffic shifting
+- Choose strategy based on risk and constraints
+
+## Motivating Scenario
+
+Your payment service handles 50,000 transactions/minute. Your latest deploy has a subtle bug that causes 0.1% of transactions to fail silently (no error, just lost).
+
+**With big-bang deployment**: Deploy at 2 AM. At 2:15 AM, bug is live on all 100% of traffic. 83 lost transactions before you notice. Takes 45 minutes to diagnose and rollback. Customer impact: 83 failed payments, angry emails, trust damage.
+
+**With canary deployment**: Deploy to 5% at 2 AM. Monitor error rate for 5 minutes. Error rate spikes 0.1% → 0.3%. Automatic rollback triggers at 2:07 AM. Only 4 transactions affected. No customer impact. Team debugs in staging.
+
+**With blue-green**: Deploy to green at 2 AM. Run smoke tests. Switch traffic at 2:10 AM. Error spike noticed at 2:15 AM. Flip traffic back to blue at 2:16 AM. Total downtime: 1 minute. Fewer lost transactions.
+
+## Core Concepts
+
+### Deployment Strategy Comparison
+
+<Figure>
+  {`graph LR
+    subgraph Strategy["Deployment Strategies"]
+      BG["Blue-Green<br/>2 Full Envs<br/>Instant Switch"]
+      Rolling["Rolling<br/>Gradual Replace<br/>Slow Switch"]
+      Canary["Canary<br/>% Traffic<br/>Auto-rollback"]
+    end
+
+    subgraph Cost
+      BGCost["High Cost<br/>2x Infrastructure"]
+      RollingCost["Low Cost<br/>Single Env"]
+      CanaryCost["Medium Cost<br/>Extra Monitoring"]
+    end
+
+    subgraph Speed
+      BGSpeed["Fast Deployment<br/>10-30 min"]
+      RollingSpeed["Slow Deployment<br/>30-60 min"]
+      CanarySpeed["Medium Deployment<br/>15-45 min"]
+    end
+
+    subgraph Rollback
+      BGRollback["Instant Rollback<br/><1 min"]
+      RollingRollback["Slow Rollback<br/>30+ min"]
+      CanaryRollback["Automatic Rollback<br/>5-10 min"]
+    end
+
+    BG --> BGCost
+    BG --> BGSpeed
+    BG --> BGRollback
+    Rolling --> RollingCost
+    Rolling --> RollingSpeed
+    Rolling --> RollingRollback
+    Canary --> CanaryCost
+    Canary --> CanarySpeed
+    Canary --> CanaryRollback`}
+</Figure>
+
+### Blue-Green Deployment Flow
+
+**Phase 1: Preparation**
+- Blue environment: current production (running v1.0)
+- Green environment: idle, with same infrastructure
+- Load balancer points to blue
+
+**Phase 2: Deploy to Green**
+- Deploy v1.1 to green
+- Run smoke tests against green
+- Green is not serving traffic yet
+- Blue continues serving 100% traffic
+
+**Phase 3: Switch Traffic**
+- Load balancer flips: blue → green
+- All traffic now on v1.1
+- Instant, atomic switch
+- Zero downtime
+
+**Phase 4: Monitor Green**
+- Watch error rate, latency, alerts
+- If issues detected: flip back to blue (instant rollback)
+- If healthy: keep green as new production
+
+**Phase 5: Cleanup**
+- Old blue (v1.0) idles until next deploy
+- Next deploy: switch green → blue
+
+### Rolling Deployment Flow
+
+**Phase 1: Initial State**
+- 10 instances running v1.0
+- Load balancer spreads traffic to all 10
+
+**Phase 2: Rolling Update**
+- Drain traffic from instance #1
+- Deploy v1.1 to #1
+- Health check #1
+- Drain #2, deploy v1.1, health check
+- Continue: #3, #4, ... #10
+- Total time: 30-60 minutes (depends on health check time)
+
+**Phase 3: During Rollout**
+- Old and new versions both running
+- Clients may hit both v1.0 and v1.1
+- Must handle backward compatibility
+- If issue detected: manually stop rollout, manual rollback
+
+### Canary Deployment Flow
+
+**Phase 1: Deploy to Small Subset**
+- Deploy v1.1 to 5% of instances (e.g., 1 out of 20)
+- Load balancer: 95% → v1.0, 5% → v1.1
+- Run for 5-10 minutes
+
+**Phase 2: Monitor Metrics**
+- Error rate: must stay under 0.1% increase
+- Latency p99: must stay under +10%
+- Custom metrics: any regressions?
+- If metrics bad: automatic rollback
+
+**Phase 3: Increase Traffic**
+- 5% → 25% → 50% → 100%
+- Pause 5 minutes between steps
+- Monitor metrics at each step
+- If rollback triggered: revert to v1.0
+
+**Phase 4: Full Rollout**
+- All instances running v1.1
+- Canary strategy complete
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="blue-green-k8s" label="Blue-Green on Kubernetes" default>
+    ```yaml
+    # blue-green-deployment.yaml - Kubernetes Blue-Green
+
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: payment-service-blue
+      labels:
+        app: payment-service
+        variant: blue
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: payment-service
+          variant: blue
+      template:
+        metadata:
+          labels:
+            app: payment-service
+            variant: blue
+        spec:
+          containers:
+          - name: payment-service
+            image: payment-service:1.0.0  # Current version
+            ports:
+            - containerPort: 8080
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 10
+              periodSeconds: 5
+
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: payment-service-green
+      labels:
+        app: payment-service
+        variant: green
+    spec:
+      replicas: 0  # Starts at 0, scaled up during deploy
+      selector:
+        matchLabels:
+          app: payment-service
+          variant: green
+      template:
+        metadata:
+          labels:
+            app: payment-service
+            variant: green
+        spec:
+          containers:
+          - name: payment-service
+            image: payment-service:1.1.0  # New version
+            ports:
+            - containerPort: 8080
+            livenessProbe:
+              httpGet:
+                path: /health
+                port: 8080
+              initialDelaySeconds: 10
+              periodSeconds: 5
+
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: payment-service
+    spec:
+      selector:
+        app: payment-service
+        variant: blue  # Initially points to blue
+      ports:
+      - protocol: TCP
+        port: 80
+        targetPort: 8080
+
+    ---
+    # Deployment script to perform blue-green switch
+    # deploy-blue-green.sh
+
+    #!/bin/bash
+    set -euo pipefail
+
+    NEW_VERSION=$1
+    NAMESPACE=${2:-production}
+
+    echo "Starting Blue-Green deployment of $NEW_VERSION..."
+
+    # Step 1: Scale up GREEN
+    echo "Scaling up green (new version)..."
+    kubectl scale deployment payment-service-green \
+      --replicas=3 -n $NAMESPACE
+
+    # Step 2: Wait for green to be ready
+    echo "Waiting for green to be ready..."
+    kubectl wait --for=condition=available \
+      --timeout=5m \
+      deployment/payment-service-green \
+      -n $NAMESPACE
+
+    # Step 3: Run smoke tests against green
+    echo "Running smoke tests on green..."
+    GREEN_IP=$(kubectl get service payment-service-green \
+      -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+    for i in {1..10}; do
+      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        http://$GREEN_IP:80/health)
+      if [ "$HTTP_CODE" = "200" ]; then
+        echo "Health check passed"
+        break
+      fi
+      if [ $i -eq 10 ]; then
+        echo "Health checks failed, aborting deployment"
+        kubectl scale deployment payment-service-green \
+          --replicas=0 -n $NAMESPACE
+        exit 1
+      fi
+      sleep 10
+    done
+
+    # Step 4: Switch traffic to GREEN
+    echo "Switching traffic from BLUE to GREEN..."
+    kubectl patch service payment-service \
+      -n $NAMESPACE \
+      -p '{"spec":{"selector":{"variant":"green"}}}'
+
+    echo "Deployment complete! Traffic now on GREEN."
+    echo "Monitor metrics. To rollback: kubectl patch service payment-service -p '{\"spec\":{\"selector\":{\"variant\":\"blue\"}}}'"
+
+    # Step 5: Clean up BLUE after verification (5 mins later)
+    sleep 300
+    echo "Scaling down old blue deployment..."
+    kubectl scale deployment payment-service-blue \
+      --replicas=0 -n $NAMESPACE
+
+    echo "Blue-Green deployment finished successfully"
+    ```
+  </TabItem>
+
+  <TabItem value="canary-flagger" label="Canary with Flagger + Istio">
+    ```yaml
+    # canary-deployment.yaml - Flagger automated canary
+
+    apiVersion: flagger.app/v1beta1
+    kind: Canary
+    metadata:
+      name: payment-service
+      namespace: production
+    spec:
+      # Target the deployment
+      targetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: payment-service
+
+      # Service configuration
+      service:
+        port: 8080
+        targetPort: 8080
+
+      # Progressive traffic shifting
+      analysis:
+        # Analysis interval
+        interval: 1m
+
+        # Max number of failed checks before rollback
+        threshold: 5
+
+        # Metrics for validation
+        metrics:
+        - name: request-success-rate
+          thresholdRange:
+            min: 99  # Must be >= 99% success
+          interval: 1m
+
+        - name: request-duration
+          thresholdRange:
+            max: 500  # p99 latency must be < 500ms
+          interval: 1m
+
+        - name: error-rate
+          thresholdRange:
+            max: 0.1  # Error rate must stay < 0.1%
+          interval: 1m
+
+      # Traffic shifting stages
+      skipAnalysis: false
+      progressDeadlineSeconds: 300
+
+      # Gradual traffic shift: 5% → 25% → 50% → 100%
+      maxWeight: 100
+      stepWeight: 25
+      stepWeightPromotion: 50  # Automatically promote if metrics good
+
+      # Webhook notifications
+      skipAnalysis: false
+      webhooks:
+      - name: acceptance-test
+        url: http://flagger-loadtester:80/
+        timeout: 30s
+        metadata:
+          type: smoke
+          cmd: "curl -s http://payment-service:8080/health"
+
+      - name: load-test
+        url: http://flagger-loadtester:80/
+        timeout: 5s
+        metadata:
+          type: bash
+          cmd: "for i in {1..100}; do curl -s http://payment-service:8080/api/charges; done"
+
+    ---
+    # Prometheus alerts for canary
+    apiVersion: flagger.app/v1beta1
+    kind: MetricTemplate
+    metadata:
+      name: error-rate
+      namespace: production
+    spec:
+      provider:
+        name: prometheus
+        address: http://prometheus:9090
+      query: |
+        sum(rate(http_request_total{job="{{ .TargetName }}",status=~"5.."}[5m]))
+        /
+        sum(rate(http_request_total{job="{{ .TargetName }}"}[5m]))
+    ```
+  </TabItem>
+
+  <TabItem value="rolling-terraform" label="Rolling Deployment with Terraform">
+    ```hcl
+    # rolling-deployment.tf - Terraform rolling strategy
+
+    resource "aws_autoscaling_group" "payment_service" {
+      name                = "payment-service-asg"
+      min_size            = 3
+      max_size            = 10
+      desired_capacity    = 5
+      health_check_type   = "ELB"
+      health_check_grace_period = 300
+
+      # Rolling update policy (gradual replacement)
+      instance_refresh {
+        strategy = "Rolling"
+        preferences {
+          min_healthy_percentage = 90  # Keep 90% healthy during update
+          instance_warmup        = 120  # Seconds to consider instance healthy
+          checkpoint_percentage  = 50   # Checkpoint at 50% completion
+          checkpoint_delay       = 300  # 5 min pause between checkpoints
+          skip_matching          = true # Skip matching instances
+        }
+      }
+
+      launch_template {
+        id      = aws_launch_template.payment_service.id
+        version = "$Latest"
+      }
+
+      tag {
+        key                 = "Name"
+        value               = "payment-service"
+        propagate_at_launch = true
+      }
+    }
+
+    # Trigger rolling update by changing launch template
+    resource "aws_launch_template" "payment_service" {
+      name_prefix   = "payment-service-"
+      image_id      = var.ami_id  # New AMI triggers rolling update
+      instance_type = "t3.large"
+
+      iam_instance_profile {
+        name = aws_iam_instance_profile.payment_service.name
+      }
+
+      tag_specifications {
+        resource_type = "instance"
+        tags = {
+          Name = "payment-service"
+        }
+      }
+    }
+
+    # Health check for quick detection
+    resource "aws_lb_target_group" "payment_service" {
+      name        = "payment-service-tg"
+      port        = 8080
+      protocol    = "HTTP"
+      vpc_id      = var.vpc_id
+
+      health_check {
+        healthy_threshold   = 2
+        unhealthy_threshold = 2
+        timeout             = 5
+        interval            = 10  # Quick health checks
+        path                = "/health"
+        matcher             = "200-299"
+      }
+    }
+
+    # Monitor rolling update progress
+    data "aws_autoscaling_group" "payment_service" {
+      name = aws_autoscaling_group.payment_service.name
+    }
+
+    output "rolling_update_status" {
+      value = {
+        desired_capacity    = data.aws_autoscaling_group.payment_service.desired_capacity
+        healthy_instances   = length([for i in data.aws_autoscaling_group.payment_service.instances : i if contains(data.aws_autoscaling_group.payment_service.load_balancers, "payment-service")])
+        in_service_instances = data.aws_autoscaling_group.payment_service.in_service_capacity
+      }
+    }
+    ```
+  </TabItem>
+
+  <TabItem value="traffic-shifting" label="Traffic Shifting Strategy">
+    ```yaml
+    # istio-virtual-service.yaml - Fine-grained traffic control
+
+    apiVersion: networking.istio.io/v1beta1
+    kind: VirtualService
+    metadata:
+      name: payment-service
+      namespace: production
+    spec:
+      hosts:
+      - payment-service
+      http:
+      # Canary: route 10% to v1.1, 90% to v1.0
+      - match:
+        - sourceLabels:
+            canary: "true"  # Special header marks canary traffic
+        route:
+        - destination:
+            host: payment-service
+            port:
+              number: 8080
+            subset: v1-1
+          weight: 100
+
+      # Normal traffic: 90% v1.0, 10% v1.1 (canary percent)
+      - route:
+        - destination:
+            host: payment-service
+            port:
+              number: 8080
+            subset: v1-0
+          weight: 90
+        - destination:
+            host: payment-service
+            port:
+              number: 8080
+            subset: v1-1
+          weight: 10
+
+    ---
+    apiVersion: networking.istio.io/v1beta1
+    kind: DestinationRule
+    metadata:
+      name: payment-service
+      namespace: production
+    spec:
+      host: payment-service
+      trafficPolicy:
+        connectionPool:
+          tcp:
+            maxConnections: 100
+          http:
+            http1MaxPendingRequests: 50
+            h2UpgradePolicy: UPGRADE
+        outlierDetection:
+          consecutive5xxErrors: 5  # Eject after 5 errors
+          interval: 30s
+          baseEjectionTime: 30s
+
+      subsets:
+      - name: v1-0
+        labels:
+          version: v1.0.0
+      - name: v1-1
+        labels:
+          version: v1.1.0
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use Each Strategy
+
+<Vs title="Deployment Strategy Selection" items={[
+{label: "Blue-Green (Instant Rollback)", points: [
+      "Database migrations (hard to rollback)",
+      "Breaking API changes (need instant rollback)",
+      "Large data format changes",
+      "High-risk changes (error budget low)",
+      "Infrastructure doubles available"
+    ]},
+{label: "Canary (Gradual + Auto-rollback)", points: [
+      "New features (monitor user impact)",
+      "Subtle bugs likely (need monitoring)",
+      "API improvements (backward compat)",
+      "Performance changes (validate latency)",
+      "Normal changes (medium risk)"
+    ]}
+]} highlight={[0, 1]} />
+
+**Rolling**: Low-risk changes, resource-constrained, deployment time is acceptable.
+
+**Feature Flags**: Changes that are reversible in code (disable flag = instant rollback).
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Combine Strategies",
+      body: "Use blue-green for risky changes, canary for normal changes, rolling for low-risk. Tailor strategy to risk level. Error budget low? → Blue-green. Error budget high? → Canary."
+    },
+    {
+      label: "Pattern: Automated Rollback Triggers",
+      body: "Canary should auto-rollback if: error rate increases, latency spikes, or custom metric fails. Don't wait for human to notice. Automatic = faster MTTR."
+    },
+    {
+      label: "Pitfall: Version Incompatibility During Rolling",
+      body: "During rolling deploy, old and new versions both serve traffic. If v1.0 can't read v1.1 data formats, customers experience errors. Solution: backward compatibility, feature flags, or use blue-green."
+    },
+    {
+      label: "Pitfall: Canary Metrics Too Strict",
+      body: "Canary rollsback at first blip (normal variation). Metrics 99% success rate = maybe 99.9% is threshold. Solution: set realistic thresholds, include context (time of day, load)."
+    },
+    {
+      label: "Pitfall: Forgetting Connections During Switch",
+      body: "Blue-green switches traffic. Old connections linger, causing errors. Solution: drain connections before switch, or use connection-aware load balancing."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "You have zero-downtime deployment capability (blue-green, canary, or rolling)",
+    "Rollback procedure is tested and takes <5 minutes",
+    "Deployment is monitored with key metrics (error rate, latency, custom)",
+    "Canary (if used) has automated rollback triggers",
+    "Database migrations are backward-compatible or use blue-green",
+    "Health checks are fast and accurate (not false positives)",
+    "Deployment script is version-controlled and runnable by any engineer",
+    "Team has practiced rollback procedure in staging",
+    "Deployment strategy matches change risk level",
+    "Post-deployment monitoring alerts cover new issues"
+  ]}
+/>
+
+## Self-Check
+
+- How long does your current deployment take?
+- How long would a rollback take?
+- Have you experienced a deployment that couldn't be rolled back quickly?
+- Do you monitor error rate and latency during deployments?
+- Can a junior engineer run a deployment without senior help?
+
+## Next Steps
+
+1. **Week 1**: Document current deployment process and rollback procedure
+2. **Week 2**: Identify which changes are risky (need blue-green) vs normal (can use canary)
+3. **Week 3**: Implement blue-green for your highest-risk service
+4. **Week 4**: Automate canary deployment with metric-based rollback
+5. **Ongoing**: Practice rollbacks quarterly; improve deployment speed
+
+## References
+
+1. Humble, J., & Farley, D. (2010). Continuous Delivery. Addison-Wesley.
+2. Newman, S. (2015). Building Microservices. O'Reilly Media.
+3. Flagger Documentation. <a href="https://flagger.app/" target="_blank" rel="nofollow noopener noreferrer">flagger.app ↗️</a>
+4. Istio Traffic Management. <a href="https://istio.io/latest/docs/concepts/traffic-management/" target="_blank" rel="nofollow noopener noreferrer">istio.io/traffic-management ↗️</a>

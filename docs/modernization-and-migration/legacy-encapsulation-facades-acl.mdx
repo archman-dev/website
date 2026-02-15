@@ -1,0 +1,414 @@
+---
+sidebar_position: 4
+title: "Legacy Encapsulation & Facades"
+description: "Wrap legacy systems with facades and anti-corruption layers to reduce their impact."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: [modernization, migration, patterns, refactoring]
+image: /img/archman-social-card.webp
+tags: [modernization, migration, patterns, refactoring]
+hide_title: true
+---
+
+<Hero title="Legacy Encapsulation & Facades" subtitle="Wrap legacy systems with facades and anti-corruption layers to reduce their impact." imageAlt="modernization illustration" size="large" />
+
+## TL;DR
+
+Wrap legacy systems with facades and anti-corruption layers to reduce their impact. Rather than risky big-bang replacements, these patterns enable incremental, low-risk transitions that keep systems running while you modernize. They require discipline and clear governance but dramatically reduce modernization risk.
+
+## Learning Objectives
+
+- Understand the pattern and when to apply it
+- Learn how to avoid common modernization pitfalls
+- Apply risk mitigation techniques for major changes
+- Plan and execute incremental transitions safely
+- Manage team and organizational change during modernization
+
+## Motivating Scenario
+
+You have a legacy system that is becoming a bottleneck. Rewriting it would take a year and risk breaking critical functionality. Instead, you incrementally replace it with new services while keeping the old system running, gradually shifting traffic and functionality. Six months later, the legacy system handles 10 percent of traffic and serves as a fallback. Eventually, you can retire it completely. This pattern turns a risky all-or-nothing gamble into a managed, incremental transition.
+
+## Core Concepts
+
+### Migration Risk
+
+Major system changes carry existential risk: downtime impacts revenue, data corruption destroys trust, performance regression loses customers. These patterns manage that risk through incremental change and careful rollback planning.
+
+### Incremental Transition
+
+Rather than "old system" then "new system", these patterns create "old plus new coexisting" then "new plus old as fallback" then "new only". This gives you multiple checkpoints to verify things are working.
+
+<Admonition type="tip">
+The key insight: You do not need to be perfect on day one. You just need to be good enough to carry traffic safely, with a fallback if something goes wrong.
+</Admonition>
+
+### Dual-Write and Data Consistency
+
+When migrating data, you typically need both systems to have current data for a period. Dual writes keep both systems in sync, backfill catches up old data, and CDC (Change Data Capture) handles streaming updates.
+
+### Abstraction Layers
+
+Rather than replacing a system wholesale, you wrap it with an abstraction (facade or anti-corruption layer). The abstraction routes traffic gradually: initially 100 percent to old, then 99 percent old / 1 percent new, then 50/50, then eventually 100 percent new.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="strangler" label="Strangler Fig Timeline">
+
+```yaml
+Phase 1: Preparation (Weeks 1-4)
+  New service deployed but offline
+  Load balancer configured to route traffic
+  Both systems connected to same database
+  Risk: Low (new service not receiving traffic)
+
+Phase 2: Canary (Weeks 5-6)
+  Traffic Distribution: 1 percent to new, 99 percent to old
+  Monitoring: Compare response times, error rates
+  Verify data consistency
+  Rollback: Instant (revert to 100 percent old)
+  Risk: Very low (affects 1 percent of traffic)
+
+Phase 3: Ramp (Weeks 7-12)
+  Gradual Increase: 5 percent, 10 percent, 25 percent, 50 percent
+  Continuous comparison with old system
+  Alert on any divergence
+  Rollback: Revert traffic distribution instantly
+  Risk: Medium (affects majority by end)
+
+Phase 4: Retirement (Weeks 13+)
+  New service handles all traffic independently
+  Old system monitored but not actively used
+  Archive old system after stable period
+  Extract data and lessons learned
+```
+
+</TabItem>
+<TabItem value="strategies" label="Migration Strategies">
+
+```
+Core Strategies:
+
+Strangler Fig Pattern:
+  Grow new functionality alongside old
+  Gradually shift traffic
+  Old system stays running as safety net
+  Works for mostly stateless systems
+
+Branch by Abstraction:
+  Use feature flags and abstraction layers
+  Hide complexity behind clean interface
+  Transition implementation at runtime
+
+Dual Write and Backfill:
+  New system writes all new data
+  Old system maintains historical data
+  Backfill job copies old data to new system
+  Both stay consistent until cutover
+
+Anti-Corruption Layers:
+  Wrap legacy systems with adapters
+  Translate between old and new interfaces
+  Insulate new code from legacy complexity
+
+Domain-Aligned Decomposition:
+  Decompose monolith along domain boundaries
+  Each domain becomes new microservice
+  Easier to coordinate
+  Reduces coupling
+```
+
+</TabItem>
+<TabItem value="verification" label="Verification Checklist">
+
+```
+Data Consistency:
+  - Old and new systems return identical data
+  - Both systems show same transaction count
+  - Randomly sampled records match in both
+  - Metadata (timestamps, IDs) consistent
+
+Functionality:
+  - All major features work in new system
+  - Error cases handled identically
+  - Edge cases verified
+  - Security rules enforced identically
+
+Performance:
+  - New system has acceptable latency
+  - New system has acceptable error rate
+  - Database resources not over-utilized
+  - No unexpected slow queries
+
+Operations:
+  - Monitoring and alerting working
+  - Logs contain expected entries
+  - Can trace requests across systems
+  - Runbooks updated for new system
+
+Rollback:
+  - Can quickly switch all traffic back
+  - Old system receives traffic without issues
+  - Data not corrupted if rollback needed
+  - Team has tested rollback procedure
+```
+
+</TabItem>
+</Tabs>
+
+## Key Success Factors
+
+1. **Clear success criteria:** You know what "done" looks like
+2. **Incremental approach:** Big changes done in small, verifiable steps
+3. **Comprehensive testing:** Automated tests at multiple levels
+4. **Constant verification:** Continuous comparison between old and new
+5. **Fast rollback:** Can switch back to old system in minutes
+6. **Team alignment:** Everyone understands the approach and timeline
+7. **Transparent communication:** Stakeholders understand progress and risks
+
+## Pitfalls to Avoid
+
+❌ All-or-nothing thinking: "Just rewrite it" instead of incremental migration
+❌ Ignoring data consistency: Assuming old and new data will magically sync
+❌ No fallback plan: If new system fails, you are stuck
+❌ Invisible progress: Weeks of work with no deployed functionality
+❌ Parallel maintenance: Maintaining old and new systems forever
+❌ Rushing to cleanup: Retiring old system before new one is truly stable
+❌ Team turnover: Key knowledge not documented
+
+## Related Patterns
+
+- Strangler Fig: Wrap and gradually replace legacy systems
+- Feature Flags: Control which code path executes at runtime
+- Blue-Green Deployment: Switch entire systems at once
+- Canary Releases: Route small percentage to new version
+
+## Checklist: Before Modernization
+
+- [ ] Clear business case: Why modernize? What is the benefit?
+- [ ] Phased approach defined: How will you migrate incrementally?
+- [ ] Success criteria explicit: What does "done" look like?
+- [ ] Risk mitigation planned: What could go wrong? How will you recover?
+- [ ] Testing strategy defined: How will you verify correctness?
+- [ ] Monitoring in place: Can you detect problems in new system?
+- [ ] Team capacity sufficient: Do you have capacity for both?
+- [ ] Communication plan ready: How will you keep stakeholders informed?
+
+## Self-Check
+
+1. **Can you do this migration in phases?** If not, find a way to break it up.
+2. **Can you roll back in less than 1 hour?** If not, design a faster rollback.
+3. **Have you tested the fallback procedure?** If not, do it now.
+4. **Does everyone understand the timeline?** If not, communicate more clearly.
+
+## Takeaway
+
+Modernization is not about technology—it is about managing risk while delivering business value. The best migrations are the ones teams do not notice: they happen gradually, safely, with multiple checkpoints. Time is your friend in modernization; rushing increases risk without proportional gain.
+
+## Next Steps
+
+1. **Define the scope:** What exactly are you modernizing?
+2. **Identify the risks:** What could go wrong? How will you mitigate?
+3. **Plan in phases:** How can you migrate incrementally?
+4. **Design verification:** How will you prove old and new are equivalent?
+5. **Prepare rollback:** How will you revert if something goes wrong?
+
+## Advanced Facade Patterns
+
+### Facade for Database Schema Translation
+
+Old system uses outdated schema; new system normalizes it.
+
+```python
+class LegacyOrderFacade:
+    """Wraps legacy database, exposes clean new interface"""
+
+    def __init__(self, legacy_db):
+        self.legacy_db = legacy_db
+
+    def get_order(self, order_id):
+        # Legacy stores: order_number, customer_id, order_date, total_cents
+        # New system expects: id, customer_id, created_at, amount_cents, status
+
+        legacy_order = self.legacy_db.query(
+            'SELECT order_number, customer_id, order_date, total_cents FROM orders WHERE id = ?',
+            order_id
+        )
+
+        return {
+            'id': legacy_order['order_number'],
+            'customer_id': legacy_order['customer_id'],
+            'created_at': legacy_order['order_date'].isoformat(),
+            'amount_cents': legacy_order['total_cents'],
+            'status': 'UNKNOWN'  # Legacy didn't track status
+        }
+```
+
+### Anti-Corruption Layer
+
+Isolates new code from legacy complexity:
+
+```python
+# New service code - never touches legacy directly
+class OrderService:
+    def __init__(self, order_repository):
+        self.repository = order_repository  # Could be new or legacy
+
+    def process_payment(self, order_id, payment_info):
+        order = self.repository.get(order_id)
+        # Processes order the new way, regardless of source
+        return { 'status': 'paid', 'order': order }
+
+# Anti-Corruption Adapter
+class LegacyOrderRepository:
+    """ACL: adapts legacy to new interface"""
+
+    def __init__(self, legacy_db):
+        self.legacy_db = legacy_db
+
+    def get(self, order_id):
+        # Translate legacy format to new format
+        legacy_order = self.legacy_db.get_order(order_id)
+        return self._translate(legacy_order)
+
+    def _translate(self, legacy_order):
+        # Hide all translation complexity
+        return {
+            'id': legacy_order.order_number,
+            'amount': legacy_order.total_cents,
+            'created_at': legacy_order.order_date
+        }
+
+# New service doesn't know about legacy weirdness
+service = OrderService(LegacyOrderRepository(legacy_db))
+```
+
+### Facade for API Version Management
+
+Old API returns different structure than new API.
+
+```python
+class V2OrderAPI:
+    """Facade for V2 API: translates V2 calls to V1 API"""
+
+    def __init__(self, legacy_api):
+        self.legacy_api = legacy_api
+
+    def get_order(self, order_id):
+        # V1 returns: {'id': 123, 'cust': 456, 'total': 99.99}
+        v1_response = self.legacy_api.get_order(order_id)
+
+        # V2 returns: {'order_id': 123, 'customer_id': 456, 'amount_cents': 9999}
+        return {
+            'order_id': v1_response['id'],
+            'customer_id': v1_response['cust'],
+            'amount_cents': int(v1_response['total'] * 100)
+        }
+
+    def create_order(self, order_data):
+        # V1 expects: {'cust': ..., 'items': [...]}
+        # V2 sends: {'customer_id': ..., 'line_items': [...]}
+
+        v1_request = {
+            'cust': order_data['customer_id'],
+            'items': order_data['line_items']
+        }
+
+        v1_response = self.legacy_api.create_order(v1_request)
+
+        # Translate response back to V2 format
+        return {
+            'order_id': v1_response['id'],
+            'customer_id': v1_response['cust'],
+            'amount_cents': int(v1_response['total'] * 100),
+            'status': 'pending'  # V2 has new status field
+        }
+
+    def list_orders(self, customer_id, page=1, limit=10):
+        # V1 API: no pagination support
+        # Fetch all, then slice
+        all_orders = self.legacy_api.get_customer_orders(customer_id)
+
+        start = (page - 1) * limit
+        end = start + limit
+
+        return {
+            'orders': [self._translate_order(o) for o in all_orders[start:end]],
+            'page': page,
+            'limit': limit,
+            'total': len(all_orders)
+        }
+
+    def _translate_order(self, v1_order):
+        return {
+            'order_id': v1_order['id'],
+            'customer_id': v1_order['cust'],
+            'amount_cents': int(v1_order['total'] * 100),
+            'created_at': v1_order['date'].isoformat() if v1_order.get('date') else None
+        }
+```
+
+### Facade Layering Strategy
+
+Build facades in layers, from old system upward:
+
+```
+Layer 3: V2 API Facade (what new code uses)
+         - Converts V2 calls to Legacy API calls
+         - Hides all legacy complexity
+
+Layer 2: Legacy API Adapter (standardizes legacy)
+         - Normalizes inconsistent legacy API
+         - Adds missing features (pagination, filtering)
+
+Layer 1: Legacy System
+         - Original monolith, unchanged
+         - Messy, inconsistent, weird APIs
+```
+
+Benefits:
+- V2 API doesn't know legacy exists
+- Adapter can be tested independently
+- Legacy can be replaced layer by layer
+- If legacy changes, only adapter needs updating
+
+## Design Review Checklist (Facades & ACLs)
+
+- Facade/ACL has clear boundary: all legacy interactions go through it
+- No direct imports of legacy code outside facade
+- New code never directly calls legacy API
+- Translation logic is centralized, testable separately
+- Facade implements interface new code depends on
+- Monitoring in place: how often does legacy facade get called?
+- Performance acceptable: is translation adding unacceptable latency?
+- Plan for legacy sunset: when will this facade be removed?
+
+## Self-Check
+
+1. Can you draw the boundary between old and new systems in your architecture?
+2. Are all legacy interactions hidden behind a facade/ACL?
+3. If legacy changes, how many new code files need updating? (Should be just the facade.)
+4. What's the performance cost of the facade layer? (Should be negligible.)
+5. Can you test new code without running legacy system? (Facade makes this possible.)
+
+:::info One Takeaway
+A well-designed facade or anti-corruption layer is the difference between a manageable modernization project and a nightmare of tight coupling. Invest time in designing a clean boundary. The cost pays off immediately as team velocity increases and risk decreases.
+
+:::
+
+## Next Steps
+
+- Implement **Strangler Fig** to gradually replace facades with new systems
+- Design **Event-Driven** communication to decouple systems
+- Study **Bounded Contexts** from DDD for clean architectural boundaries
+- Learn **API Versioning** strategies
+
+## References
+
+1. <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Strangler Fig Application ↗️</a>
+2. <a href="https://www.amazon.com/Building-Microservices-Designing-Fine-Grained-Systems/dp/1491950358" target="_blank" rel="nofollow noopener noreferrer">Sam Newman: Building Microservices ↗️</a>
+3. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+4. <a href="https://www.domainlanguage.com/ddd/" target="_blank" rel="nofollow noopener noreferrer">Eric Evans: Domain-Driven Design ↗️</a>

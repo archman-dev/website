@@ -1,0 +1,575 @@
+---
+sidebar_position: 1
+title: MVVM & Clean Architecture for Mobile
+description: ViewModel, use cases, and repository patterns for maintainable mobile code
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","mobile-lead"]
+keywords: ["mvvm","clean-architecture","viewmodel","repository","use-cases","di","testing"]
+image: /img/archman-social-card.webp
+tags: ["mobile","architecture","testing"]
+hide_title: true
+---
+
+<Hero
+  title="MVVM & Clean Architecture for Mobile"
+  description="Decouple UI, business logic, and data layers for testable, maintainable mobile apps"
+  size="large"
+/>
+
+## TL;DR
+
+**MVVM**: ViewModel holds UI state, separates UI from logic. LiveData/StateFlow for reactive updates. No UI references in ViewModel (testable).
+
+**Clean Architecture**: UI → ViewModel → Use Cases → Repository → Data. Dependency inversion; layers don't depend on outer layers.
+
+**Repository Pattern**: Abstract data sources (API, database, cache). Swap implementations without affecting consumers.
+
+**Dependency Injection**: Provide dependencies from outside (not created inside). Easy mocking for testing.
+
+**Benefits**: Testability without mocking Android Framework, parallel team development, independent feature scaling, framework-agnostic business logic, simplified UI code that only renders state.
+
+**Common Issues & Solutions**: State explosion solved by sealed classes, memory leaks fixed by viewModelScope, configuration changes handled by ViewModel survival across Activity recreation, threading issues resolved with coroutines.
+
+## Learning Objectives
+
+You will be able to:
+- Design ViewModels for state and lifecycle management.
+- Implement Use Cases (business logic) as testable units.
+- Use Repository Pattern to decouple data sources.
+- Apply Dependency Injection for testability.
+- Build scalable, multi-team mobile architectures.
+
+## Motivating Scenario
+
+Your app grows from 2 engineers to 10. Originally, UI code mixes with API calls, database logic, and business rules. Testing requires mocking everything. Adding a new feature touches 5 files. Adding a new data source (Firebase instead of REST API) requires changes throughout codebase.
+
+Clean Architecture solves this:
+- UI layer (Activities/Fragments) only render state
+- ViewModel orchestrates Use Cases
+- Use Cases (business logic) depend on abstract Repository
+- Repository abstracts data sources (API, DB, cache)
+- Easy to test (mock Repository), easy to extend (new data source = new Repository impl)
+
+## Layers
+
+### Layer 1: Presentation (UI)
+
+Activities/Fragments (views), no business logic:
+
+```kotlin title="ProductListActivity.kt" showLineNumbers
+class ProductListActivity : AppCompatActivity() {
+  private val viewModel: ProductListViewModel by viewModels {
+    ViewModelFactory(Injection.repository())
+  }
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(R.layout.activity_product_list)
+
+    // Subscribe to state
+    viewModel.state.observe(this) { state ->
+      when (state) {
+        is ProductListViewModel.State.Loading -> showLoading()
+        is ProductListViewModel.State.Success -> showProducts(state.products)
+        is ProductListViewModel.State.Error -> showError(state.message)
+      }
+    }
+
+    // Don't do business logic here!
+    // Don't call API directly!
+    // Don't access database!
+  }
+}
+```
+
+### Layer 2: Presentation Logic (ViewModel)
+
+State management, event handling:
+
+```kotlin title="ProductListViewModel.kt" showLineNumbers
+class ProductListViewModel(
+  private val getProductsUseCase: GetProductsUseCase,
+  private val searchProductsUseCase: SearchProductsUseCase,
+) : ViewModel() {
+
+  sealed class State {
+    object Loading : State()
+    data class Success(val products: List<Product>) : State()
+    data class Error(val message: String) : State()
+  }
+
+  private val _state = MutableLiveData<State>(State.Loading)
+  val state: LiveData<State> = _state
+
+  init {
+    loadProducts()
+  }
+
+  fun loadProducts() {
+    viewModelScope.launch {
+      _state.value = State.Loading
+      try {
+        val products = getProductsUseCase()
+        _state.value = State.Success(products)
+      } catch (e: Exception) {
+        _state.value = State.Error(e.message ?: "Unknown error")
+      }
+    }
+  }
+
+  fun search(query: String) {
+    viewModelScope.launch {
+      _state.value = State.Loading
+      try {
+        val products = searchProductsUseCase(query)
+        _state.value = State.Success(products)
+      } catch (e: Exception) {
+        _state.value = State.Error(e.message ?: "Unknown error")
+      }
+    }
+  }
+}
+```
+
+### Layer 3: Domain (Use Cases)
+
+Business logic, pure functions, no framework dependencies:
+
+```kotlin title="GetProductsUseCase.kt" showLineNumbers
+// Pure interface (no Android imports!)
+interface ProductRepository {
+  suspend fun getProducts(): List<Product>
+  suspend fun searchProducts(query: String): List<Product>
+}
+
+// Use case: orchestrates domain logic
+class GetProductsUseCase(
+  private val repository: ProductRepository,
+) {
+  suspend operator fun invoke(): List<Product> {
+    return repository.getProducts()
+      .filter { it.price >= 0 } // Validate
+      .sortedByDescending { it.rating } // Apply business rules
+  }
+}
+
+class SearchProductsUseCase(
+  private val repository: ProductRepository,
+) {
+  suspend operator fun invoke(query: String): List<Product> {
+    if (query.length < 2) throw IllegalArgumentException("Query too short")
+    return repository.searchProducts(query)
+      .filter { it.inStock } // Only in-stock items
+  }
+}
+```
+
+### Layer 4: Data (Repository & Data Sources)
+
+Abstract data sources, implementations for API/DB:
+
+```kotlin title="ProductRepositoryImpl.kt" showLineNumbers
+class ProductRepositoryImpl(
+  private val apiClient: ApiClient,
+  private val database: ProductDatabase,
+  private val cache: ProductCache,
+) : ProductRepository {
+
+  override suspend fun getProducts(): List<Product> {
+    return try {
+      // Try network first
+      val products = apiClient.getProducts()
+      database.saveProducts(products)
+      cache.set(products)
+      products
+    } catch (e: Exception) {
+      // Fall back to database
+      database.getProducts()
+    }
+  }
+
+  override suspend fun searchProducts(query: String): List<Product> {
+    return apiClient.searchProducts(query)
+  }
+}
+```
+
+## Dependency Injection
+
+Provide dependencies from outside (for testability):
+
+<Tabs>
+<TabItem value="manual" label="Manual DI">
+```kotlin title="Injection.kt" showLineNumbers
+object Injection {
+  private var apiClient: ApiClient? = null
+  private var database: ProductDatabase? = null
+  private var repository: ProductRepository? = null
+
+  fun repository(): ProductRepository {
+    if (repository == null) {
+      repository = ProductRepositoryImpl(
+        apiClient = apiClient(),
+        database = database(),
+        cache = ProductCache()
+      )
+    }
+    return repository!!
+  }
+
+  fun apiClient(): ApiClient {
+    if (apiClient == null) {
+      apiClient = ApiClientImpl(baseUrl = "https://api.example.com")
+    }
+    return apiClient!!
+  }
+
+  fun database(): ProductDatabase {
+    if (database == null) {
+      database = ProductDatabase(Room.databaseBuilder(...))
+    }
+    return database!!
+  }
+}
+```
+</TabItem>
+<TabItem value="hilt" label="Hilt (Recommended)">
+```kotlin title="Module.kt" showLineNumbers
+@Module
+@InstallIn(SingletonComponent::class)
+object RepositoryModule {
+  @Provides
+  fun provideProductRepository(
+    apiClient: ApiClient,
+    database: ProductDatabase,
+  ): ProductRepository {
+    return ProductRepositoryImpl(apiClient, database, ProductCache())
+  }
+
+  @Provides
+  fun provideApiClient(): ApiClient {
+    return ApiClientImpl("https://api.example.com")
+  }
+
+  @Provides
+  fun provideDatabase(context: Context): ProductDatabase {
+    return Room.databaseBuilder(context, ProductDatabase::class.java, "products").build()
+  }
+}
+
+@HiltViewModel
+class ProductListViewModel @Inject constructor(
+  private val getProductsUseCase: GetProductsUseCase,
+) : ViewModel() { }
+```
+</TabItem>
+</Tabs>
+
+## Testing
+
+With clean architecture, testing is simple (mock Repository):
+
+```kotlin title="ProductListViewModelTest.kt" showLineNumbers
+class ProductListViewModelTest {
+  private val mockRepository = mock<ProductRepository>()
+  private val useCase = GetProductsUseCase(mockRepository)
+  private val viewModel = ProductListViewModel(useCase)
+
+  @Test
+  fun loadProducts_success() {
+    val products = listOf(
+      Product(id = "1", name = "Item 1"),
+      Product(id = "2", name = "Item 2"),
+    )
+    coEvery { mockRepository.getProducts() } returns products
+
+    viewModel.loadProducts()
+
+    val state = viewModel.state.getOrAwaitValue()
+    assertThat(state).isInstanceOf(ProductListViewModel.State.Success::class.java)
+    assertThat((state as Success).products).isEqualTo(products)
+  }
+
+  @Test
+  fun loadProducts_error() {
+    coEvery { mockRepository.getProducts() } throws Exception("Network error")
+
+    viewModel.loadProducts()
+
+    val state = viewModel.state.getOrAwaitValue()
+    assertThat(state).isInstanceOf(ProductListViewModel.State.Error::class.java)
+  }
+}
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Does ViewModel contain no UI references (no Context, Activity)?",
+  "Are Use Cases pure (no framework dependencies)?",
+  "Is Repository interface defined (abstraction)?",
+  "Are dependencies injected (not created inside)?",
+  "Are business rules in Use Cases (not ViewModel/UI)?",
+  "Is caching implemented (Repository responsibility)?",
+  "Are error cases handled (exceptions, null)?",
+  "Is scope management correct (viewModelScope, lifecycleScope)?",
+  "Are unit tests for Use Cases and ViewModels?",
+  "Can data source be swapped (new Repository impl)?"
+]} />
+
+## Advanced Patterns and Considerations
+
+### State Management Approaches
+
+**Sealed Classes for State** provides type-safe state representation with exhaustive when expressions:
+
+```kotlin
+sealed class UIState {
+    object Loading : UIState()
+    data class Success(val data: List<Item>) : UIState()
+    data class Error(val exception: Throwable) : UIState()
+    data class Partial(val data: List<Item>, val loading: Boolean) : UIState()
+}
+```
+
+**Event vs State**: Distinguish between one-time events (snackbar toast) and persistent state (loaded data). Use channels for events, LiveData/StateFlow for state.
+
+### Memory Management
+
+ViewModels survive configuration changes (device rotation) but are cleared when the Activity is finished. Understanding this lifecycle prevents memory leaks:
+
+```kotlin
+override fun onCleared() {
+    super.onCleared()
+    // Cancel ongoing coroutines, clean up resources
+    job.cancel()
+}
+```
+
+### Threading and Coroutines
+
+Use `viewModelScope.launch` for main-safe coroutines automatically linked to ViewModel lifecycle. Avoid GlobalScope (never properly cancelled) and manual job management (error-prone).
+
+### Composition vs Inheritance
+
+Prefer composition of use cases over inheritance. A ViewModel may orchestrate multiple orthogonal use cases:
+
+```kotlin
+class ProductViewModel(
+    private val getProducts: GetProductsUseCase,
+    private val getFavorites: GetFavoritesUseCase,
+    private val searchProducts: SearchProductsUseCase,
+) : ViewModel()
+```
+
+## When to Use / When Not to Use
+
+**Use Clean MVVM When:**
+- Large apps (10+ engineers) with multiple features
+- Multiple data sources (API, DB, cache, remote config)
+- Complex business logic beyond simple CRUD
+- Testing critical (unit test coverage target over 80%)
+- Need to scale to multiple teams working in parallel
+- Project lifetime extends years (ROI on architecture pays off)
+- Different frameworks might be tested (Android Jetpack, multiplatform)
+
+**Simpler Architecture If:**
+- Simple screen (single API call + display list)
+- Single engineer, fast iteration needed
+- Prototyping/MVP validation phase
+- Lifetime under 6 months (short-term projects)
+- No complex state management required
+- No plans for multi-team development
+
+## Real-World Architecture Evolution
+
+### From Monolithic Activity to Clean MVVM
+
+**Stage 1: Monolithic Activity (Anti-pattern)**
+```kotlin
+class ProductListActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Everything in Activity: API, parsing, state, UI
+        val apiClient = ApiClient()
+        val products = apiClient.getProducts()  // Blocking!
+        val filtered = products.filter { it.price > 100 }
+        val sorted = filtered.sortedByDescending { it.rating }
+
+        val adapter = ProductAdapter(sorted)
+        productList.adapter = adapter
+    }
+}
+```
+
+**Stage 2: MVP Pattern (Better, but flawed)**
+```kotlin
+interface ProductListPresenter {
+    fun loadProducts()
+}
+
+class ProductListPresenterImpl(val repository: ProductRepository) : ProductListPresenter {
+    override fun loadProducts() {
+        repository.getProducts { products ->
+            view.showProducts(products)
+        }
+    }
+}
+
+class ProductListActivity : AppCompatActivity(), ProductListView {
+    val presenter = ProductListPresenterImpl(Repository())
+
+    override fun onResume() {
+        super.onResume()
+        presenter.loadProducts()
+    }
+}
+```
+
+**Stage 3: Clean MVVM with Use Cases (Production-Ready)**
+```kotlin
+class ProductListViewModel(
+    private val getProductsUseCase: GetProductsUseCase,
+) : ViewModel() {
+    sealed class State {
+        object Loading : State()
+        data class Success(val products: List<Product>) : State()
+        data class Error(val exception: Throwable) : State()
+    }
+
+    private val _state = MutableLiveData<State>(State.Loading)
+    val state: LiveData<State> = _state
+
+    init {
+        loadProducts()
+    }
+
+    fun loadProducts() {
+        viewModelScope.launch {
+            _state.value = State.Loading
+            try {
+                val products = getProductsUseCase()
+                _state.value = State.Success(products)
+            } catch (e: Exception) {
+                _state.value = State.Error(e)
+            }
+        }
+    }
+}
+
+class ProductListActivity : AppCompatActivity() {
+    private val viewModel: ProductListViewModel by viewModels {
+        ViewModelFactory(Injection.getProductsUseCase())
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_product_list)
+
+        viewModel.state.observe(this) { state ->
+            when (state) {
+                is ProductListViewModel.State.Loading -> showLoading()
+                is ProductListViewModel.State.Success -> showProducts(state.products)
+                is ProductListViewModel.State.Error -> showError(state.exception)
+            }
+        }
+    }
+}
+```
+
+### Testing Evolution
+
+```kotlin
+// Without clean architecture: hard to test
+// Need to mock Activity, Context, Android framework
+
+// With clean architecture: easy to test
+class ProductListViewModelTest {
+    private val mockRepository = mock<ProductRepository>()
+    private val getProductsUseCase = GetProductsUseCase(mockRepository)
+    private val viewModel = ProductListViewModel(getProductsUseCase)
+
+    @Test
+    fun loadProducts_success() {
+        val products = listOf(Product(1, "Laptop"))
+        coEvery { mockRepository.getProducts() } returns products
+
+        viewModel.loadProducts()
+
+        // ViewModel is testable without Android framework
+        assertThat(viewModel.state.value)
+            .isInstanceOf(ProductListViewModel.State.Success::class.java)
+    }
+}
+```
+
+## Common Pitfalls and Solutions
+
+**Pitfall 1: God ViewModel**: A single ViewModel that handles everything on a screen
+- Solution: Break into smaller ViewModels for each sub-feature or use shared ViewModels for related features
+
+**Pitfall 2: Leaky Abstractions**: Repository implementation details leak into ViewModel
+- Solution: Keep Repository interface generic; implementation details stay in data layer
+
+**Pitfall 3: Poor Error Handling**: Generic exceptions without context
+- Solution: Create domain-specific exception hierarchy; map data layer exceptions to domain exceptions
+
+**Pitfall 4: State Conflation**: Mixing state and events (result notifications)
+- Solution: Use channels/Flow for one-time events; StateFlow/LiveData for persistent state
+
+**Pitfall 5: Synchronous Repository**: Blocking calls in Repository
+- Solution: Always use suspend functions in Repository; clients expect async
+
+**Example of correct error handling:**
+
+```kotlin
+sealed class Result<T> {
+    data class Success<T>(val data: T) : Result<T>()
+    data class Error<T>(val exception: Exception) : Result<T>()
+    class Loading<T> : Result<T>()
+}
+
+class GetProductsUseCase(private val repository: ProductRepository) {
+    suspend operator fun invoke(): Result<List<Product>> = try {
+        Result.Success(repository.getProducts())
+    } catch (e: NetworkException) {
+        Result.Error(e)
+    } catch (e: ParseException) {
+        Result.Error(e)
+    }
+}
+```
+
+## Self-Check
+
+1. **Why should ViewModel not import UI classes (Activity, Context)?** To ensure testability without Android Framework and to maintain separation of concerns.
+2. **What's the difference between Use Case and Repository?** Use Case contains business logic/rules; Repository handles data source abstraction.
+3. **Why abstract Repository instead of using concrete API client directly?** To enable swapping data sources (API to database) without changing business logic.
+4. **How do you handle configuration changes (device rotation)?** ViewModel is retained; Activity is recreated. Re-subscribe to ViewModel's LiveData/StateFlow in new Activity.
+5. **When should you use Hilt vs. manual DI?** Hilt for projects where complexity justifies annotation processing overhead; manual for simple apps or to avoid build time overhead.
+
+## Next Steps
+
+- <a href="https://developer.android.com/guide/architecture" target="_blank" rel="nofollow noopener noreferrer">Android Architecture Guide ↗️</a>
+- Learn about <a href="https://developer.android.com/training/dependency-injection/hilt-android" target="_blank" rel="nofollow noopener noreferrer">Hilt Dependency Injection ↗️</a>
+- Study <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/mvc-mv-star-mvvm-mvi-concepts" target="_blank" rel="nofollow noopener noreferrer">MVVM Patterns ↗️</a>
+- Explore <a href="https://www.roberthahn.ca/posts/2019-01-29-clean-architecture-on-android" target="_blank" rel="nofollow noopener noreferrer">Clean Architecture on Android ↗️</a>
+
+## One Takeaway
+
+<Callout tone="info">
+Clean Architecture with MVVM separates concerns: UI layer renders state, ViewModel manages state, Use Cases contain business logic, Repository abstracts data. This enables testability, scalability, and easy swapping of implementations. Start with this structure in medium+ apps.
+</Callout>
+
+## References
+
+1. <a href="https://developer.android.com/guide/architecture" target="_blank" rel="nofollow noopener noreferrer">Android Architecture Guide</a>
+2. <a href="https://developer.android.com/topic/architecture/data-layer" target="_blank" rel="nofollow noopener noreferrer">Android Data Layer Documentation</a>
+3. <a href="https://developer.android.com/training/dependency-injection/hilt-android" target="_blank" rel="nofollow noopener noreferrer">Hilt Dependency Injection</a>
+4. <a href="https://www.roberthahn.ca/posts/2019-01-29-clean-architecture-on-android" target="_blank" rel="nofollow noopener noreferrer">Clean Architecture on Android</a>
+5. <a href="https://www.youtube.com/watch?v=Mosnj7IzNug" target="_blank" rel="nofollow noopener noreferrer">Android Architecture Patterns - Google I/O</a>
+---

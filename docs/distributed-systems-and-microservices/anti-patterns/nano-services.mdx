@@ -1,0 +1,325 @@
+---
+sidebar_position: 4
+title: "Nano-Services Anti-Pattern"
+description: "Services too small to be useful, requiring many inter-service calls and creating excessive complexity."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 20
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [nano-services, anti-pattern, fine-grained, boundaries, coupling, complexity, service-size, microservices-mistakes]
+image: /img/archman-social-card.webp
+tags: [anti-patterns, microservices, architecture, boundaries, design-flaws, complexity, operational-excellence, patterns, best-practices]
+hide_title: true
+---
+
+<Hero title="Nano-Services Anti-Pattern" subtitle="Services too small to be useful, requiring many inter-service calls and creating excessive complexity." imageAlt="Nano-services illustration" size="large" />
+
+## TL;DR
+
+Nano-services are services that are too fine-grained to be useful: single utility functions exposed as microservices. A business operation requires calling 10 nano-services, introducing network latency (100ms+), operational complexity (10 services to manage, monitor, deploy), and fragility (10 failure points). Solution: Services should be coarse-grained, aligned with business capabilities. Start with a monolith; split only when clear scaling benefits emerge.
+
+## Learning Objectives
+
+- Identify nano-services in your architecture
+- Understand the cost of excessive service granularity
+- Align service boundaries with business capabilities (Domain-Driven Design)
+- Decide when to build a service vs. a library
+- Apply the "monolith until it hurts" principle
+- Design services that a single team can own
+
+## Motivating Scenario
+
+A company splits its e-commerce platform into 25 microservices: AuthService, ValidationService, LoggingService, EmailService, PaymentService, InvoiceService, ShippingService, ReportingService, CacheService, MetricsService, NotificationService, PricingService, InventoryService, UserService, ProductService, OrderService, ReviewService, SearchService, AnalyticsService, StorageService, ConfigService, MonitoringService, SecurityService, RateLimitingService, and HealthCheckService.
+
+A simple operation—"create order"—requires calling 8 services: Auth → Validation → Order → Pricing → Inventory → Payment → Invoice → Notification. Each call adds 10ms latency; total = 80ms minimum. The company now manages 25 services instead of one, with 25 deployments, 25 monitoring dashboards, 25 potential failure points. Six months later, they realize the system is slower, more fragile, and harder to change than the original monolith.
+
+## Core Concepts
+
+### The Costs of Fine-Grained Services
+
+Each additional service adds operational burden: deployment pipeline, monitoring, versioning, documentation, team coordination. The benefits (independent scaling, fast deployment) only justify these costs when the service is substantial and used across multiple teams.
+
+<Figure
+  mermaid={`graph TB
+    subgraph Nano["Nano-Service Architecture (Too Fine-Grained)"]
+        Auth["Auth Service"]
+        Val["Validation Service"]
+        Log["Logging Service"]
+        Email["Email Service"]
+        Payment["Payment Service"]
+        Invoice["Invoice Service"]
+        Shipping["Shipping Service"]
+        Report["Reporting Service"]
+    end
+
+    Client["Client Request"]
+    Client -->|Call 1| Auth
+    Auth -->|Call 2| Val
+    Val -->|Call 3| Payment
+    Payment -->|Call 4| Invoice
+    Invoice -->|Call 5| Shipping
+    Shipping -->|Call 6| Report
+
+    style Client fill:#ff6b6b
+    style Auth fill:#ffe0e0
+    style Val fill:#ffe0e0
+    style Log fill:#ffe0e0
+    style Email fill:#ffe0e0
+    style Payment fill:#ffe0e0
+    style Invoice fill:#ffe0e0
+    style Shipping fill:#ffe0e0
+    style Report fill:#ffe0e0
+`}
+/>
+
+### Service Granularity Sweet Spot
+
+The right size for a service depends on team ownership, scaling needs, and business domain boundaries. Too fine and you get nano-services. Too coarse and you're back to a monolith.
+
+| Granularity | Service Count | Characteristics | Problem |
+|-------------|------|----------------|---------|
+| **Monolith** | 1 | Single codebase | Hard to deploy pieces independently; tight coupling |
+| **Nano-Services** | 20+ | Function = service | 20 deployments, 20 failure points; complex tracing |
+| **Right-Sized** | 5-15 | Business capability per service | Balances independence with operational simplicity |
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="nano" label="Nano-Services (Anti-Pattern)" default>
+    ```python
+    # Example: Create order in nano-service world
+    # Client must orchestrate 10 service calls
+
+    class OrderClient:
+        def create_order(self, user_id, items):
+            # Call 1: Auth Service
+            user = self.auth_service.get_user(user_id)
+            if not user:
+                raise Exception("User not found")
+
+            # Call 2: Validation Service
+            if not self.validation_service.validate_items(items):
+                raise Exception("Invalid items")
+
+            # Call 3: Pricing Service
+            total = self.pricing_service.calculate_total(items)
+
+            # Call 4: Inventory Service
+            if not self.inventory_service.check_stock(items):
+                raise Exception("Out of stock")
+
+            # Call 5: Payment Service
+            payment_result = self.payment_service.charge(user.id, total)
+
+            # Call 6: Invoice Service
+            invoice = self.invoice_service.create_invoice(
+                user.id, items, total, payment_result.id
+            )
+
+            # Call 7: Shipping Service
+            shipping = self.shipping_service.reserve(user.id, items)
+
+            # Call 8: Notification Service
+            self.notification_service.send_confirmation(user.email, items, total)
+
+            # Call 9: Reporting Service
+            self.reporting_service.log_order(user.id, total)
+
+            # Call 10: Analytics Service
+            self.analytics_service.track_purchase(user.id, total)
+
+            return {"order_id": order_id}
+
+        # 10 network calls for one business operation
+        # Each call: 5ms overhead + 10ms service processing = 15ms
+        # Total: 150ms minimum
+        # If any service is down: entire operation fails
+    ```
+  </TabItem>
+
+  <TabItem value="rightsized" label="Right-Sized Services (Better)">
+    ```python
+    # Example: Create order with right-sized services
+    # Order Service handles complete business capability
+
+    class OrderService:
+        def __init__(self, payment_service, shipping_service):
+            self.payment_service = payment_service  # Only external dependency
+            self.shipping_service = shipping_service  # Only external dependency
+
+        def create_order(self, user_id, items):
+            # Validation is local (no service call)
+            if not self.validate_items(items):
+                raise Exception("Invalid items")
+
+            # Pricing is local (no service call)
+            total = self.calculate_total(items)
+
+            # Inventory is local (no service call)
+            if not self.check_stock(items):
+                raise Exception("Out of stock")
+
+            # Only call external services for things we can't do locally
+            payment_result = self.payment_service.charge(user_id, total)
+
+            shipping = self.shipping_service.reserve(user_id, items)
+
+            # Create invoice locally (data model owned by Order Service)
+            invoice = self.create_invoice(user_id, items, total, payment_result.id)
+
+            # Send notification locally
+            self.send_confirmation(user_id, items, total)
+
+            # Log data locally
+            self.log_order(user_id, total)
+
+            return {"order_id": self.order_id}
+
+        def validate_items(self, items):
+            # Local validation - no service call
+            return all(item.price > 0 for item in items)
+
+        def calculate_total(self, items):
+            # Local pricing - no service call
+            return sum(item.price for item in items)
+
+        def check_stock(self, items):
+            # Local inventory - no service call
+            return all(self.inventory.get(item.id, 0) > 0 for item in items)
+
+        # 2 external service calls (Payment, Shipping)
+        # Total: 30ms instead of 150ms
+        # One external service down: order still created (queue for later shipping)
+    ```
+  </TabItem>
+
+  <TabItem value="monolith" label="Monolith (Fine for Small Systems)">
+    ```python
+    # When company is small, monolith might be better
+
+    class OrderService:
+        def create_order(self, user_id, items):
+            # Everything in one service - no network calls
+            user = self.users_repo.get(user_id)
+            self.validate_items(items)
+            total = self.calculate_total(items)
+            self.inventory.check_stock(items)
+            payment = self.payments.charge(user.id, total)
+            invoice = self.invoices.create(user.id, items, total)
+            shipping = self.shipping.reserve(user.id, items)
+            self.notifications.send_confirmation(user.email, items, total)
+            self.reporting.log_order(user.id, total)
+
+            return {"order_id": self.orders_repo.create(...).id}
+
+        # Zero network calls - pure in-process function calls
+        # Latency: < 5ms (if DB queries are fast)
+        # Simplicity: One codebase, one deployment
+        # Scaling: Deploy entire monolith (ok for small system)
+        #
+        # As company grows and scaling needs diverge, split:
+        # - Payment processing scales separately (Payment Service)
+        # - Shipping scales separately (Shipping Service)
+        # NOT: Validation Service, Logging Service, etc.
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use / When to Avoid
+
+<Vs highlight={[0]} items={[
+{
+    label: "Nano-Services (Avoid)",
+    points: [
+      "Each utility function becomes a service",
+      "Validation, logging, email as separate services",
+      "Single business operation calls 10+ services",
+      "Network overhead dominates (100+ms latency)",
+      "25 services to deploy, monitor, and maintain",
+      "Distributed tracing required to debug simple operations"
+    ],
+    highlightTone: "warning"
+  },
+{
+    label: "Right-Sized Services (Prefer)",
+    points: [
+      "Services align with business capabilities",
+      "A team owns 1-2 services (two-pizza rule)",
+      "Business operation calls 2-3 services",
+      "Network overhead minimal (20-30ms latency)",
+      "5-15 services total (manageable operationally)",
+      "Clear ownership and deployment boundaries"
+    ]
+  }
+]} />
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Pattern: Domain-Driven Design",
+    body: "Align service boundaries with business subdomains (Orders, Payments, Shipping). Each service represents a coherent business capability, not a technical function."
+  ,
+    body: "Align service boundaries with business subdomains (Orders, Payments, Shipping). Each service represents a coherent business capability, not a technical function.",
+    tone: "positive"
+  },
+  {
+    label: "Pattern: Two-Pizza Teams Rule",
+    body: "A service should be small enough for one team (~6-8 people) to understand, own, and deploy independently. If it requires multiple teams to understand, it's probably too large."
+  },
+  {
+    label: "Pattern: Monolith Until It Hurts",
+    body: "Start with a monolith. Only split into services when clear pain emerges: independent scaling needs, deployment conflicts, or team scaling. Don't architect for scale you don't have."
+  },
+  {
+    label: "Pattern: Library vs. Service Decision",
+    body: "Shared utilities (validation, logging, email) should be libraries (Maven, npm packages), not services. Only extract to a service if it needs independent scaling or deployment."
+  },
+  {
+    label: "Pitfall: Treating Every Function as a Service",
+    body: "Avoid creating ValidationService, LoggingService, CachingService. These belong in libraries or in the monolith until specialization is needed."
+  },
+  {
+    label: "Pitfall: Ignoring Operational Cost",
+    body: "Each service costs in deployment infrastructure, monitoring, documentation, and team coordination. 25 services costs 10x more to operate than 3."
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Service represents a complete business capability?",
+  "Service can be owned/understood by a single team?",
+  "Service has clear, stable boundaries with other services?",
+  "Service scales independently from others?",
+  "Service wouldn't benefit from being a library?",
+  "Fewer than 3 external service dependencies per operation?",
+  "Service has multiple callers (not called by just one other service)?",
+  "Operational burden (monitoring, deployment) justified by benefit?",
+  "Team has capacity to own and operate this service?",
+  "No shared infrastructure service (logging, validation, caching)?"
+]} />
+
+## Self-Check
+
+- **How many services is too many?** Depends on team size and operational maturity. 5-15 services for a typical company. 25+ is a red flag.
+- **What's the minimum viable service?** Something that a team can own and deploy independently, with clear business value.
+- **Should validation be a service?** No—validation logic should be in libraries or in the service that uses it. Same for logging and caching.
+- **When should I split a monolith?** When scaling, deployment, or team size issues emerge. Not preemptively.
+- **How do I know if a service is too small?** If it's called by just one other service, or if it's purely a technical utility. Consider merging it.
+
+## Next Steps
+
+1. **Audit existing services** — Count services; identify truly utilitarian ones
+2. **Map services to teams** — Can each team own its services? If not, too many services
+3. **Identify merged services** — Which services should be combined based on cohesion?
+4. **Plan consolidation** — Gradually merge nano-services; don't do all at once
+5. **Define future boundaries** — Plan services around business capabilities, not technical details
+6. **Establish sizing guidelines** — Document what minimum viable service size is for your org
+
+## References
+
+- <a href="https://www.oreilly.com/library/view/building-microservices/9781491950340/" target="_blank" rel="nofollow noopener noreferrer">Building Microservices (Sam Newman) ↗</a>
+- <a href="https://www.domainlanguage.com/ddd/" target="_blank" rel="nofollow noopener noreferrer">Domain-Driven Design (Eric Evans) ↗</a>
+- <a href="https://martinfowler.com/bliki/MicroservicePrerequisites.html" target="_blank" rel="nofollow noopener noreferrer">Microservice Prerequisites (Martin Fowler) ↗</a>

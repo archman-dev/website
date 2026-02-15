@@ -1,0 +1,386 @@
+---
+sidebar_position: 1
+title: "Unit Testing"
+description: "Test individual functions and classes in isolation."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, qa]
+keywords: [unit testing, test coverage, mocking, assertions, test frameworks, ttd]
+image: /img/archman-social-card.webp
+tags: [testing, unit-tests, quality-assurance]
+hide_title: true
+---
+
+<Hero title="Unit Testing" subtitle="Test individual functions and classes in isolation for fast feedback." size="large" />
+
+## TL;DR
+
+Unit tests verify individual functions work correctly in isolation, without external dependencies (databases, APIs, files). Fast (< 1 second per test), focused (one behavior per test), repeatable (same result every run). Mock dependencies; test one thing at a time. Aim for 80%+ coverage on critical code paths. Use test frameworks (pytest, Jest, JUnit) and make assertions explicit. Write tests before or immediately after code. If a test is slow, hard to understand, or requires real infrastructure, the code design is wrong—refactor to make it testable.
+
+## Learning Objectives
+
+- Write focused, isolated unit tests with mocks
+- Understand test structure (Arrange-Act-Assert)
+- Achieve and measure code coverage (80%+)
+- Mock external dependencies correctly
+- Identify and refactor untestable code
+- Use Test-Driven Development (TDD) for better design
+- Build tests as executable specifications
+
+## Motivating Scenario
+
+A developer builds a payment calculation function without tests. In production, a bug causes 10% of orders to be charged incorrectly. This would have been caught immediately by a unit test. With TDD, the developer would have written the test first, realized the edge case existed, and fixed it before code review. A 5-minute unit test would have saved weeks of incident response and millions in lost customer trust.
+
+Another scenario: A developer writes an untestable function that depends on a global variable, a file on disk, and a network call. Writing a unit test is impossible without mocking all three. This signals bad design. A testable version would take 30 minutes to refactor and save thousands in debugging time later.
+
+## Core Concepts
+
+### Unit Test Anatomy
+
+```python
+def test_discount_calculation():
+    # Arrange: Set up inputs
+    order = Order(subtotal=100)
+    
+    # Act: Execute the function
+    discount = order.calculate_discount(coupon_code="SAVE20")
+    
+    # Assert: Verify output
+    assert discount == 20
+```
+
+- **Arrange**: Set up test data and mocks
+- **Act**: Call the function under test
+- **Assert**: Verify the result
+
+### Test Coverage Benchmarks
+
+| Coverage | Status |
+|----------|--------|
+| < 50% | Many paths untested |
+| 50-70% | Basic coverage |
+| 70-85% | Good coverage; most issues caught |
+| > 85% | High confidence |
+
+Aim for 80%+ meaningful coverage—not just "executed," but "behaviors tested."
+
+## Practical Patterns
+
+### Arrange-Act-Assert (AAA) Pattern
+
+AAA is the standard structure for unit tests. It separates setup from execution from verification.
+
+```python
+def test_calculate_discount_for_bulk_order():
+    # Arrange: Set up test data and mocks
+    order = Order(
+        items=[
+            OrderItem(price=100, quantity=10),  # 1000 total
+            OrderItem(price=50, quantity=5)     # 250 total
+        ]
+    )
+    # Total: 1250
+
+    # Act: Execute the function under test
+    discount = order.calculate_discount()
+
+    # Assert: Verify the result
+    assert discount == 125  # 10% for orders > 1000
+
+def test_no_discount_for_small_order():
+    # Arrange
+    order = Order(items=[OrderItem(price=50, quantity=1)])  # Total: 50
+
+    # Act
+    discount = order.calculate_discount()
+
+    # Assert
+    assert discount == 0  # No discount for orders < 100
+```
+
+### Test One Thing Per Test
+
+Each test should verify one specific behavior. Multiple assertions are fine if they test the same behavior.
+
+```python
+def test_validates_email_format():
+    """Test: Email validation rejects invalid emails"""
+    validator = EmailValidator()
+
+    assert not validator.is_valid("invalid-email")  # No @
+    assert not validator.is_valid("user@")           # No domain
+    assert not validator.is_valid("@example.com")    # No user
+    assert validator.is_valid("user@example.com")    # Valid
+
+def test_sends_confirmation_on_success():
+    """Test: Confirmation email sent after order creation"""
+    service = EmailService(mock_smtp=MockSMTP())
+    service.send_confirmation("user@example.com", order_id=123)
+
+    # Verify SMTP was called with correct parameters
+    assert mock_smtp.send.call_count == 1
+    assert "Order #123" in mock_smtp.send.call_args[0][1]  # Email body
+
+def test_does_not_send_if_invalid_email():
+    """Test: No email sent if address is invalid"""
+    service = EmailService(mock_smtp=MockSMTP())
+    service.send_confirmation("invalid-email", order_id=123)
+
+    # Verify SMTP was NOT called
+    assert mock_smtp.send.call_count == 0
+```
+
+### Mocking Dependencies
+
+Dependencies should be mocked so tests run in isolation without external systems.
+
+<Tabs>
+  <TabItem value="bad-mocking" label="Bad: Hard to Test">
+    ```python
+    # Problem: Function depends on real database, file, and API
+    def get_customer_with_orders(customer_id):
+        # Real database call
+        customer = db.query("SELECT * FROM customers WHERE id = ?", customer_id)
+
+        # Real file read
+        with open("/config/business_rules.json") as f:
+            rules = json.load(f)
+
+        # Real API call
+        orders = requests.get(f"https://api.example.com/orders/{customer_id}")
+
+        return {
+            "customer": customer,
+            "orders": orders.json(),
+            "discount": calculate_discount(customer, rules)
+        }
+
+    # Test is impossible without:
+    # - Setting up database with test data
+    # - Creating config files
+    # - Mocking external API
+    # This test is slow (100ms+) and fragile
+    ```
+  </TabItem>
+
+  <TabItem value="good-mocking" label="Good: Testable">
+    ```python
+    # Solution: Inject dependencies
+    def get_customer_with_orders(
+        customer_id,
+        customer_repo,    # Injected dependency
+        rules_loader,     # Injected dependency
+        order_service     # Injected dependency
+    ):
+        customer = customer_repo.get(customer_id)
+        rules = rules_loader.load()
+        orders = order_service.get_orders(customer_id)
+
+        return {
+            "customer": customer,
+            "orders": orders,
+            "discount": calculate_discount(customer, rules)
+        }
+
+    # Test with mocks
+    def test_get_customer_with_orders():
+        # Arrange
+        mock_repo = MockCustomerRepo()
+        mock_repo.add(Customer(id=1, name="Alice", tier="gold"))
+
+        mock_rules = MockRulesLoader()
+        mock_rules.add_rule("gold_tier", discount=20)
+
+        mock_orders = MockOrderService()
+        mock_orders.add(Order(id=101, amount=500))
+
+        # Act
+        result = get_customer_with_orders(
+            customer_id=1,
+            customer_repo=mock_repo,
+            rules_loader=mock_rules,
+            order_service=mock_orders
+        )
+
+        # Assert
+        assert result["customer"].name == "Alice"
+        assert result["discount"] == 20
+        assert len(result["orders"]) == 1
+
+    # Test is fast (< 1ms), isolated, and reliable
+    ```
+  </TabItem>
+</Tabs>
+
+## Tools and Frameworks
+
+<Showcase sections={[
+  {
+    label: "Python",
+    body: "pytest: Modern, concise, great fixtures. unittest: Built-in, verbose. nose2: Test runner. Mocking: unittest.mock (built-in), pytest-mock (cleaner), monkeypatch. Coverage: coverage.py, pytest-cov."
+  },
+  {
+    label: "JavaScript/TypeScript",
+    body: "Jest: Batteries-included, snapshots, coverage built-in. Mocha: Flexible, requires plugins. Vitest: Fast, modern. Mocking: Jest mocks, Sinon, ts-mockito. Coverage: NYC (nycrc), Jest built-in."
+  },
+  {
+    label: "Java",
+    body: "JUnit 5: Modern, annotations, extensions. TestNG: Powerful, data-driven tests. Mocking: Mockito (most popular), PowerMock (for static methods). Coverage: JaCoCo, Sonarqube."
+  },
+  {
+    label: "Go",
+    body: "testing package: Built-in, minimalist. testify: Assertions, mocking helpers. GoMock: Generate mocks from interfaces. Coverage: go test -cover, go tool cover."
+  },
+  {
+    label: "C#/.NET",
+    body: "xUnit: Modern, works with Visual Studio. NUnit: Traditional. Moq: Popular mocking framework. FluentAssertions: Readable assertions. Coverage: OpenCover, Coverlet."
+  },
+  {
+    label: "Continuous Integration",
+    body: "GitHub Actions, GitLab CI, Jenkins, CircleCI: Run tests on every commit. Fail builds if tests fail or coverage drops. Publish coverage reports; track trends."
+  }
+]} />
+
+## Core Testing Concepts
+
+### Code Coverage vs. Test Quality
+
+Coverage measures how much code is executed by tests, not whether it's tested well.
+
+```
+Coverage %  | Status | Action
+------------|--------|--------
+< 50%       | Poor   | Add tests immediately; many untested paths
+50-70%      | Basic  | Better; add tests for critical paths
+70-85%      | Good   | Covers most; add edge case tests
+> 85%       | High   | Confident; focus on quality over quantity
+
+IMPORTANT: 100% coverage doesn't mean 100% quality.
+You can have 100% coverage with bad tests that don't assert anything.
+
+Example of bad "covered" code:
+  def add(a, b):
+      return a + b
+
+  def test_add():
+      result = add(1, 2)  # Executes the code (covered)
+      # But doesn't assert result == 3 (no verification!)
+```
+
+### Stub vs. Mock
+
+Both replace real objects, but they serve different purposes:
+
+```python
+# Stub: Fake object that returns hardcoded values
+class StubPaymentProcessor:
+    def charge(self, amount):
+        return {"status": "success"}  # Always succeeds
+
+# Test with stub
+def test_order_succeeds():
+    order = Order(total=100)
+    order.process_payment(StubPaymentProcessor())
+    assert order.status == "paid"
+
+# Mock: Fake object that tracks how it was called
+class MockPaymentProcessor:
+    def __init__(self):
+        self.charge_called = False
+        self.charged_amount = None
+
+    def charge(self, amount):
+        self.charge_called = True
+        self.charged_amount = amount
+        return {"status": "success"}
+
+# Test with mock
+def test_payment_processor_called():
+    mock = MockPaymentProcessor()
+    order = Order(total=100)
+    order.process_payment(mock)
+
+    assert mock.charge_called  # Verify it was called
+    assert mock.charged_amount == 100  # Verify with correct amount
+```
+
+### TDD (Test-Driven Development)
+
+Write tests before code. Forces thinking through requirements and edge cases.
+
+```python
+# TDD Workflow
+
+# 1. Write failing test
+def test_discount_applied_for_bulk_orders():
+    order = Order(items=[Item(price=100)] * 15)  # 1500 total
+    assert order.total_with_discount() == 1350  # 10% discount
+
+# 2. Implement minimal code to pass test
+class Order:
+    def total_with_discount(self):
+        subtotal = sum(item.price for item in self.items)
+        if subtotal >= 1000:
+            return subtotal * 0.9  # 10% discount
+        return subtotal
+
+# 3. Refactor if needed
+class Order:
+    def total_with_discount(self):
+        return self.subtotal * self.discount_rate
+
+    @property
+    def discount_rate(self):
+        if self.subtotal >= 1000:
+            return 0.9
+        return 1.0
+
+# Benefits of TDD:
+# - Catches requirements early (test defines behavior)
+# - Prevents overdesign (implement just enough)
+# - Ensures code is testable (written with testing in mind)
+# - Creates living documentation (tests show how to use code)
+```
+
+## Self-Check
+
+- **How do you measure code coverage?** Use tools like coverage.py, Jest, JaCoCo. Look for lines executed, branches covered. Aim for 80%+.
+- **What's the difference between a stub and a mock?** Stub: Returns hardcoded values. Mock: Tracks how it was called and verifies expectations.
+- **Why is TDD beneficial?** Forces thinking through edge cases early. Ensures code is testable. Creates living documentation.
+- **When should you refactor tests?** If test is > 20 lines, duplicates another test, or is hard to understand. Refactor to be clearer.
+- **How do you test code that depends on external services?** Inject dependency as parameter, mock it in test. If not possible, bad design—refactor to inject.
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Unit tests written for all public functions?",
+  "Coverage >= 80% (measure with tools)?",
+  "Meaningful coverage (not just executed, but tested)?",
+  "External dependencies mocked (no real DB/API)?",
+  "Tests follow AAA pattern (Arrange, Act, Assert)?",
+  "Tests run in < 1 second?",
+  "Tests independent (no setup/teardown dependencies)?",
+  "Assertions specific (not just checking existence)?",
+  "Test names descriptive (describe what's being tested)?",
+  "Untestable code refactored?",
+  "Mocks and stubs used appropriately?",
+  "Tests pass consistently (no flakiness)?"
+]} />
+
+## Next Steps
+
+1. **Start with TDD** — Write tests before code
+2. **Mock external dependencies** — Use stubs for databases, APIs, external services
+3. **Aim for 80%+ coverage** — Use coverage tools, focus on critical paths
+4. **Keep tests fast** — Target < 1 second per test
+5. **Refactor untestable code** — If hard to test, bad design (opportunity to improve)
+6. **Automate testing** — CI/CD pipeline runs tests on every commit
+
+## References
+
+- <a href="https://www.oreilly.com/library/view/test-driven-development/0201616416/" target="_blank" rel="nofollow noopener noreferrer">Test-Driven Development (Kent Beck) ↗</a>
+- <a href="https://www.oreilly.com/library/view/working-effectively-with/0131177052/" target="_blank" rel="nofollow noopener noreferrer">Working Effectively with Legacy Code (Michael Feathers) ↗</a>
+- <a href="https://testing.googleblog.com/" target="_blank" rel="nofollow noopener noreferrer">Google Testing Blog ↗</a>
+- <a href="https://docs.pytest.org/" target="_blank" rel="nofollow noopener noreferrer">pytest Documentation ↗</a>

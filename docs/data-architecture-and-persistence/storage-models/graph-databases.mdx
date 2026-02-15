@@ -1,0 +1,521 @@
+---
+sidebar_position: 5
+title: "Graph Databases"
+description: "Optimize relationship traversals with property graphs for knowledge graphs, recommendations, and social networks"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [graph databases, Neo4j, graph queries, relationships, social networks, knowledge graphs, traversal]
+image: /img/archman-social-card.webp
+tags: [databases, graph-databases, Neo4j, relationships, social-networks, knowledge-graphs, queries, cypher]
+hide_title: true
+---
+
+<Hero title="Graph Databases" subtitle="Optimize relationship traversals for social networks, recommendations, and knowledge graphs" size="large" />
+
+## TL;DR
+
+Graph databases (Neo4j, ArangoDB) store nodes and relationships as first-class entities, optimizing traversal queries. Ideal for social networks, recommendation engines, and knowledge graphs. Trade-off: not suitable for analytics-only workloads, less horizontal scale than document stores, relationship counts affect query complexity.
+
+## Learning Objectives
+
+- Understand property graph model (nodes, relationships, properties)
+- Design graph schemas for access patterns
+- Recognize when graph queries outperform relational JOINs
+- Write efficient traversal queries in Cypher
+
+## Motivating Scenario
+
+Social network: find all friends-of-friends who like jazz within 100 miles. Relational requires multiple JOINs. Graph database: single traversal. LinkedIn recommendation: "People You May Know" - find users with mutual connections. Graph: milliseconds. RDBMS: seconds or timeouts.
+
+## Core Concepts
+
+<Figure
+  title="Property Graph Model"
+  description="Nodes with properties connected by relationships with properties"
+  diagram={`
+graph TB
+    Alice["(Person)<br/>Alice<br/>id: 1<br/>age: 30"]
+    Bob["(Person)<br/>Bob<br/>id: 2<br/>age: 28"]
+    Carol["(Person)<br/>Carol<br/>id: 3<br/>age: 31"]
+    Jazz["(Music)<br/>Jazz<br/>genre: jazz"]
+    
+    Alice -->|KNOWS| Bob
+    Alice -->|KNOWS| Carol
+    Bob -->|LIKES| Jazz
+    Carol -->|LIKES| Jazz
+    
+    style Alice fill:#0066cc
+    style Bob fill:#0066cc
+    style Carol fill:#0066cc
+    style Jazz fill:#ff6600
+  `}
+/>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="neo4j" label="Neo4j (Cypher)">
+
+```cypher
+-- Create nodes and relationships
+CREATE (alice:Person {name: 'Alice', age: 30, email: 'alice@example.com'})
+CREATE (bob:Person {name: 'Bob', age: 28})
+CREATE (carol:Person {name: 'Carol', age: 31})
+CREATE (jazz:Genre {name: 'Jazz'})
+CREATE (rock:Genre {name: 'Rock'})
+
+-- Create relationships with properties
+CREATE (alice)-[:KNOWS {since: 2020}]->(bob)
+CREATE (alice)-[:KNOWS {since: 2021}]->(carol)
+CREATE (bob)-[:KNOWS {since: 2019}]->(carol)
+CREATE (alice)-[:LIKES]->(jazz)
+CREATE (bob)-[:LIKES]->(jazz)
+CREATE (carol)-[:LIKES]->(rock)
+
+-- Find Alice's friends
+MATCH (alice:Person {name: 'Alice'})-[:KNOWS]->(friend)
+RETURN friend.name, friend.age
+
+-- Find friends-of-friends (two-hop)
+MATCH (alice:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(fof)
+RETURN DISTINCT fof.name
+
+-- Find mutual friends
+MATCH (alice:Person {name: 'Alice'})-[:KNOWS]->(mutual)
+<-[:KNOWS]-(bob:Person {name: 'Bob'})
+RETURN mutual.name
+
+-- Find users interested in same music
+MATCH (alice:Person {name: 'Alice'})-[:LIKES]->(genre)
+<-[:LIKES]-(similar:Person)
+RETURN similar.name, genre.name
+
+-- Collaborative filtering: books liked by similar users
+MATCH (me:Person {name: 'Alice'})-[:LIKES]->(thing)
+<-[:LIKES]-(similar:Person)
+-[:LIKES]->(recommendation)
+WHERE NOT (me)-[:LIKES]->(recommendation)
+RETURN recommendation.name, COUNT(*) as score
+ORDER BY score DESC
+
+-- Shortest path
+MATCH (alice:Person {name: 'Alice'}), (carol:Person {name: 'Carol'})
+CALL apoc.algo.dijkstra(alice, carol, 'KNOWS', 'weight')
+YIELD path, weight
+RETURN path, weight
+
+-- With aggregation
+MATCH (person:Person)-[r:KNOWS]->()
+RETURN person.name, COUNT(r) as friend_count
+ORDER BY friend_count DESC
+LIMIT 10
+```
+
+</TabItem>
+<TabItem value="python" label="Python + Neo4j Driver">
+
+```python
+from neo4j import GraphDatabase
+
+class SocialGraphDB:
+    def __init__(self, uri, user, password):
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+    
+    def close(self):
+        self.driver.close()
+    
+    def create_person(self, name, age, email):
+        with self.driver.session() as session:
+            session.run(
+                "CREATE (p:Person {name: $name, age: $age, email: $email})",
+                name=name, age=age, email=email
+            )
+    
+    def add_friendship(self, person1_name, person2_name):
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (p1:Person {name: $p1}), (p2:Person {name: $p2})
+                CREATE (p1)-[:KNOWS]->(p2)
+                """,
+                p1=person1_name, p2=person2_name
+            )
+    
+    def get_friends_of_friends(self, person_name):
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (p:Person {name: $name})-[:KNOWS]->()-[:KNOWS]->(fof)
+                RETURN DISTINCT fof.name as name, fof.age as age
+                """,
+                name=person_name
+            )
+            return [dict(record) for record in result]
+    
+    def recommend_connections(self, person_name, limit=10):
+        """People you may know: mutual friends"""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (p:Person {name: $name})-[:KNOWS]->(mutual)
+                <-[:KNOWS]-(recommendation:Person)
+                WHERE NOT (p)-[:KNOWS]->(recommendation)
+                RETURN recommendation.name as name, COUNT(mutual) as mutual_friends
+                ORDER BY mutual_friends DESC
+                LIMIT $limit
+                """,
+                name=person_name, limit=limit
+            )
+            return [dict(record) for record in result]
+
+# Usage
+db = SocialGraphDB("bolt://localhost:7687", "neo4j", "password")
+
+# Create people
+db.create_person("Alice", 30, "alice@example.com")
+db.create_person("Bob", 28, "bob@example.com")
+db.create_person("Carol", 31, "carol@example.com")
+
+# Create connections
+db.add_friendship("Alice", "Bob")
+db.add_friendship("Alice", "Carol")
+db.add_friendship("Bob", "Carol")
+
+# Get recommendations
+recommendations = db.recommend_connections("Alice", limit=5)
+for person in recommendations:
+    print(f"{person['name']} ({person['mutual_friends']} mutual friends)")
+
+db.close()
+```
+
+</TabItem>
+<TabItem value="node" label="Node.js + Neo4j">
+
+```javascript
+const neo4j = require('neo4j-driver');
+
+class SocialGraph {
+  constructor(uri, user, password) {
+    this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password));
+  }
+  
+  async close() {
+    await this.driver.close();
+  }
+  
+  async createPerson(name, age, email) {
+    const session = this.driver.session();
+    try {
+      await session.run(
+        'CREATE (p:Person {name: $name, age: $age, email: $email})',
+        { name, age, email }
+      );
+    } finally {
+      await session.close();
+    }
+  }
+  
+  async addFriendship(person1, person2) {
+    const session = this.driver.session();
+    try {
+      await session.run(
+        `MATCH (p1:Person {name: $p1}), (p2:Person {name: $p2})
+         CREATE (p1)-[:KNOWS]->(p2)`,
+        { p1: person1, p2: person2 }
+      );
+    } finally {
+      await session.close();
+    }
+  }
+  
+  async getFriendOfFriends(personName) {
+    const session = this.driver.session();
+    try {
+      const result = await session.run(
+        `MATCH (p:Person {name: $name})-[:KNOWS]->()-[:KNOWS]->(fof)
+         RETURN DISTINCT fof.name as name, fof.age as age`,
+        { name: personName }
+      );
+      
+      return result.records.map(record => ({
+        name: record.get('name'),
+        age: record.get('age')
+      }));
+    } finally {
+      await session.close();
+    }
+  }
+  
+  async recommendConnections(personName, limit = 10) {
+    const session = this.driver.session();
+    try {
+      const result = await session.run(
+        `MATCH (p:Person {name: $name})-[:KNOWS]->(mutual)
+           <-[:KNOWS]-(recommendation:Person)
+         WHERE NOT (p)-[:KNOWS]->(recommendation)
+         RETURN recommendation.name as name, COUNT(mutual) as mutual_friends
+         ORDER BY mutual_friends DESC
+         LIMIT $limit`,
+        { name: personName, limit }
+      );
+      
+      return result.records.map(record => ({
+        name: record.get('name'),
+        mutualFriends: record.get('mutual_friends').toNumber()
+      }));
+    } finally {
+      await session.close();
+    }
+  }
+}
+
+// Usage
+(async () => {
+  const graph = new SocialGraph('bolt://localhost:7687', 'neo4j', 'password');
+  
+  await graph.createPerson('Alice', 30, 'alice@example.com');
+  await graph.createPerson('Bob', 28, 'bob@example.com');
+  
+  await graph.addFriendship('Alice', 'Bob');
+  
+  const recommendations = await graph.recommendConnections('Alice', 5);
+  recommendations.forEach(r => {
+    console.log(`${r.name} (${r.mutualFriends} mutual friends)`);
+  });
+  
+  await graph.close();
+})();
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Graph Databases / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Graph Databases When",
+    points: ["Relationship traversals are common", "Multi-hop queries frequent (friends-of-friends)", "Recommendation engine needed", "Knowledge graphs or semantic search", "Social networks, collaboration"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use RDBMS When",
+    points: ["Simple queries without traversals", "Primarily analytical workloads", "Schema is mostly tables without relationships", "High-volume write throughput needed", "Complex multi-table transactions"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Recursive Queries",
+      description: "Use APOC library for recursive traversals. Set depth limits to prevent runaway",
+      tags: ["queries", "performance"]
+    }, {
+      title: "Relationship Direction",
+      description: "Directional relationships affect query design. Plan directions for common traversals",
+      tags: ["design", "queries"]
+    }, {
+      title: "Cartesian Products",
+      description: "Avoid queries that create huge cartesian products. Use relationship predicates early",
+      tags: ["performance", "optimization"]
+    }, {
+      title: "Index Strategy",
+      description: "Index nodes by labels and properties. Use composite indexes for multi-property filters",
+      tags: ["performance", "optimization"]
+    }, {
+      title: "Caching Recommendations",
+      description: "Pre-compute recommendations and cache in Redis. Regenerate periodically",
+      tags: ["performance", "caching"]
+    }, {
+      title: "Memory Management",
+      description: "Graph stays in memory. Monitor heap usage for large graphs"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Node types and relationship types clearly defined",
+    "Relationship directions optimize common queries",
+    "Properties indexed appropriately",
+    "Recursive queries have depth limits",
+    "Query patterns don't create cartesian products",
+    "Recommendation caching strategy defined",
+    "Backup and recovery procedures documented",
+    "Graph size monitored for memory constraints",
+    "Query performance profiled and optimized",
+    "Monitoring for slow queries and timeouts"
+  ]}
+/>
+
+## Graph Database Design Patterns
+
+### Social Network Graph Design
+
+**Nodes**: Person, followed by depth of connections
+**Relationships**: FOLLOWS (directed), KNOWS (undirected), BLOCKS (directional)
+
+```cypher
+-- Design: follows are directional (A follows B doesn't mean B follows A)
+CREATE (alice:Person {name: 'Alice'})
+CREATE (bob:Person {name: 'Bob'})
+CREATE (carol:Person {name: 'Carol'})
+
+-- Alice follows Bob (Alice sees Bob's tweets)
+CREATE (alice)-[:FOLLOWS]->(bob)
+-- Bob follows Alice (Bob sees Alice's tweets)
+CREATE (bob)-[:FOLLOWS]->(alice)
+-- Carol follows Bob
+CREATE (carol)-[:FOLLOWS]->(bob)
+
+-- Find followers (who follows me?)
+MATCH (alice:Person {name: 'Alice'})<-[:FOLLOWS]-(follower)
+RETURN follower.name
+
+-- Find following (who do I follow?)
+MATCH (alice:Person {name: 'Alice'})-[:FOLLOWS]->(following)
+RETURN following.name
+
+-- Find mutuals (we follow each other)
+MATCH (alice:Person {name: 'Alice'})-[:FOLLOWS]->(mutual)
+<-[:FOLLOWS]-(alice)
+RETURN mutual.name
+
+-- Recommend: users followed by my followers
+MATCH (alice:Person {name: 'Alice'})-[:FOLLOWS]->(follower)
+-[:FOLLOWS]->(recommendation:Person)
+WHERE NOT (alice)-[:FOLLOWS]->(recommendation)
+  AND recommendation != alice
+RETURN DISTINCT recommendation.name, COUNT(*) as mutual_followers
+ORDER BY mutual_followers DESC
+LIMIT 10
+```
+
+### Recommendation Graph
+
+```cypher
+-- Nodes: User, Product, Category
+-- Relationships: LIKES, IN_CATEGORY, SIMILAR_TO
+
+-- Find products liked by similar users
+MATCH (me:User {id: 'user123'})
+-[:LIKES]->(product)<-[:LIKES]-(similar:User)
+-[:LIKES]->(recommendation:Product)
+WHERE NOT (me)-[:LIKES]->(recommendation)
+  AND recommendation != product
+WITH recommendation, COUNT(similar) as score
+ORDER BY score DESC
+LIMIT 5
+RETURN recommendation.name, score
+```
+
+### Knowledge Graph
+
+```cypher
+-- Nodes: Concept, Person, Place
+-- Relationships: IS_A, RELATED_TO, LOCATED_IN, AUTHORED_BY
+
+-- Find all related concepts to AI
+MATCH (ai:Concept {name: 'AI'})
+-[:RELATED_TO*1..3]-(related:Concept)
+RETURN DISTINCT related.name
+
+-- Find experts on a topic
+MATCH (topic:Concept)<-[:AUTHORED_BY]-(expert:Person)
+RETURN expert.name, COUNT(*) as papers
+ORDER BY papers DESC
+```
+
+## Performance Optimization
+
+### Preventing Cartesian Products
+
+```cypher
+-- BAD: Creates cartesian product (all combinations)
+MATCH (a:Person)-[:KNOWS]-(b:Person)
+MATCH (c:Person)-[:KNOWS]-(d:Person)
+RETURN *
+-- If there are 1000 KNOWS relationships, returns 1,000,000 rows
+
+-- GOOD: Filter early to reduce combinations
+MATCH (a:Person {name: 'Alice'})-[:KNOWS]-(b:Person)
+MATCH (b)-[:KNOWS]-(c:Person)
+WHERE c.name != 'Alice'
+RETURN DISTINCT c.name
+-- Finds friends-of-friends; filters reduce result set
+```
+
+### Query Planning with EXPLAIN
+
+```cypher
+-- Analyze query execution plan
+EXPLAIN MATCH (p:Person)-[:KNOWS]->(:Person)-[:LIKES]->(m:Movie)
+RETURN p, m
+
+-- Output shows:
+-- - Which indexes are used
+-- - Estimated rows at each step
+-- - Search methods (node index, relationship scan, etc.)
+```
+
+### Index Strategy
+
+```cypher
+-- Create indexes for common query starts
+CREATE INDEX ON :Person(name)
+CREATE INDEX ON :User(email)
+
+-- Compound indexes for multi-property filters
+CREATE INDEX ON :Product(category, price)
+
+-- Relationship type indexes
+CREATE INDEX ON :KNOWS
+
+-- Full-text search index
+CALL db.index.fulltext.createNodeIndex("personSearch", ["Person"], ["name", "bio"])
+```
+
+## Graph Database Limitations
+
+**Memory Constraints**: Graph stays in memory. Large graphs (millions of nodes) may not fit in memory.
+
+**No Complex Transactions**: ACID transactions limited to single node or small subgraph.
+
+**Not for Bulk Analytics**: Analytics workloads (scanning all nodes) less efficient than data warehouses.
+
+**Sharding Complexity**: Distributing graphs across servers is hard (relationships cross shards).
+
+## Self-Check
+
+- **How would you design a follow graph for Twitter?** Nodes: User. Relationships: FOLLOWS (directed). User A follows User B if A wants to see B's tweets.
+- **What's the difference between friend and follower relationships?** FRIEND: bidirectional (both must accept). FOLLOWS: directional (one-way).
+- **When would you use a graph instead of relational JOINs?** When relationship traversals are frequent, deep, and multi-hop (friends-of-friends). RDBMS becomes slow with many JOINs.
+- **How do you prevent cartesian explosions?** Filter early; use WHERE clauses to reduce result set size before subsequent MATCH clauses. Set depth limits on recursive queries.
+
+**Example**: Finding "People You May Know"
+- Graph: Simple traversal (find friends' friends, exclude existing friends)
+- RDBMS: Complex JOINs across User, Friendship, User tables; slower and harder to understand.
+
+:::info
+Graph databases excel at relationship traversals and recommendation algorithms, but aren't suitable for analytics-only workloads. Use them when multi-hop queries are frequent and relationships are first-class citizens in your domain model.
+:::
+
+## Next Steps
+
+- Explore **Social Network Patterns** for follower/following design
+- Learn **Recommendation Algorithms** using graph traversals
+- Study **Knowledge Graph** design patterns
+- Dive into **Query Optimization** for Cypher
+
+## References
+
+- Neo4j Official Documentation
+- "Graph Databases" by Ian Robinson
+- Cypher Query Language Guide
+- APOC Library Documentation

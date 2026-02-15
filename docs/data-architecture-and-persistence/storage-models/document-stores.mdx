@@ -1,0 +1,554 @@
+---
+sidebar_position: 3
+title: "Document Stores"
+description: "Flexible JSON/BSON schemas for nested data with horizontal scalability and query flexibility"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [document stores, MongoDB, CouchDB, Firebase, NoSQL, JSON, flexible schema, denormalization]
+image: /img/archman-social-card.webp
+tags: [databases, NoSQL, MongoDB, CouchDB, document-stores, JSON, flexible-schema, denormalization, scalability]
+hide_title: true
+---
+
+<Hero title="Document Stores" subtitle="Schema-flexible JSON documents with powerful query engines and horizontal scaling" size="large" />
+
+## TL;DR
+
+Document stores like MongoDB and Firebase store self-describing JSON documents instead of rows. Perfect for evolving schemas, nested data, and applications where flexibility matters. Trade-off: no ACID across documents (MongoDB 4.0+ added multi-document transactions), eventual consistency in distributed setups, denormalization encourages data duplication.
+
+## Learning Objectives
+
+- Understand document-oriented data modeling
+- Design denormalized schemas for access patterns
+- Recognize trade-offs of embedding vs referencing
+- Choose between document stores and RDBMS
+
+## Motivating Scenario
+
+Building a content management system where articles have variable metadata (some have tags, some have categories, some have both). RDBMS requires schema migration. MongoDB accepts any JSON structure, supporting evolution naturally. Users add new fields without deployment.
+
+## Core Concepts
+
+<Figure
+  title="Document Store Model"
+  description="Self-describing documents with flexible, nested structure"
+  diagram={`
+graph TB
+    DB["MongoDB Database"]
+    Col["Collection: articles"]
+    Doc1["Document 1<br/>{<br/>  title: 'RDBMS Guide',<br/>  author: 'Alice',<br/>  tags: ['sql', 'db'],<br/>  comments: [...],<br/>  metadata: {...}<br/>}"]
+    Doc2["Document 2<br/>{<br/>  title: 'NoSQL Tips',<br/>  author: 'Bob',<br/>  categories: ['nosql'],<br/>  views: 1000<br/>}"]
+    
+    DB --> Col
+    Col --> Doc1
+    Col --> Doc2
+    
+    style Doc1 stroke:#0066cc
+    style Doc2 stroke:#0066cc
+  `}
+/>
+
+## Advanced Query Operations
+
+### Aggregation Pipeline: Computing Summary Statistics
+
+```javascript
+// Complex aggregation: group products by category, calculate avg price, count inventory
+db.products.aggregate([
+    { $match: { status: 'active' } },
+    {
+        $group: {
+            _id: '$category',
+            avg_price: { $avg: '$price' },
+            max_price: { $max: '$price' },
+            min_price: { $min: '$price' },
+            product_count: { $sum: 1 },
+            total_inventory: { $sum: '$stock' }
+        }
+    },
+    { $sort: { product_count: -1 } },
+    { $limit: 10 }
+])
+```
+
+### Complex Filtering with $elemMatch
+
+```javascript
+// Find all orders containing laptops ordered in last 30 days
+db.orders.find({
+    items: {
+        $elemMatch: {
+            product_type: 'laptop',
+            price: { $gt: 500 },
+            quantity: { $gte: 1 }
+        }
+    },
+    created_at: { $gte: ISODate('2025-01-15') }
+})
+```
+
+### Embedding vs Referencing
+
+The fundamental design choice in document stores:
+
+```
+EMBEDDING (Denormalized):
+{
+  _id: 123,
+  title: "Article",
+  author: {  // Embedded
+    name: "Alice",
+    email: "alice@example.com"
+  },
+  comments: [  // Embedded array
+    { text: "Great!", author_id: 456 },
+    { text: "Thanks!", author_id: 789 }
+}
+
+REFERENCING (Normalized):
+{
+  _id: 123,
+  title: "Article",
+  author_id: 456,  // Reference
+  comment_ids: [1, 2, 3]  // References
+}
+```
+
+**Embedding**: Fast reads (everything in one document), but slower updates and data duplication
+**Referencing**: Slower reads (multiple queries), but updates affect single document
+
+## Practical Example
+
+<Tabs>
+<TabItem value="mongodb" label="MongoDB">
+
+```javascript
+const { MongoClient } = require('mongodb');
+
+const client = new MongoClient('mongodb://localhost:27017');
+
+async function main() {
+  const db = client.db('ecommerce');
+  const products = db.collection('products');
+  
+  // Insert document with flexible structure
+  await products.insertOne({
+    _id: 'PROD-001',
+    name: 'Laptop',
+    price: 999.99,
+    stock: 50,
+    // Flexible fields - no schema enforcement
+    specs: {
+      cpu: 'Intel i7',
+      ram: '16GB',
+      storage: '512GB SSD'
+    },
+    tags: ['electronics', 'computers'],
+    reviews: [
+      { rating: 5, text: 'Great product', user_id: 'USER-123' },
+      { rating: 4, text: 'Good value', user_id: 'USER-456' }
+    ],
+    // Some documents might have different fields
+    bundle_products: ['PROD-002', 'PROD-003']
+  });
+  
+  // Query with flexible structure
+  const expensive = await products.find({ price: { $gt: 500 } }).toArray();
+  
+  // Query nested fields
+  const highRating = await products.find({
+    'reviews.rating': { $gte: 4 }
+  }).toArray();
+  
+  // Array operations
+  const hasTag = await products.find({
+    tags: 'electronics'
+  }).toArray();
+  
+  // Update with embedded document
+  await products.updateOne(
+    { _id: 'PROD-001' },
+    {
+      $push: {  // Add to array
+        reviews: { rating: 5, text: 'Excellent!', user_id: 'USER-789' }
+      },
+      $set: {  // Update field
+        'specs.ram': '32GB'
+      }
+    }
+  );
+  
+  // Aggregation pipeline
+  const pipeline = [
+    { $match: { price: { $gt: 500 } } },
+    {
+      $group: {
+        _id: null,
+        avg_price: { $avg: '$price' },
+        total_stock: { $sum: '$stock' }
+      }
+    },
+  ];
+  const stats = await products.aggregate(pipeline).toArray();
+}
+```
+
+</TabItem>
+<TabItem value="firebase" label="Firebase/Firestore">
+
+```javascript
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+async function createProduct() {
+  // Add document with auto-generated ID
+  const docRef = await addDoc(collection(db, 'products'), {
+    name: 'Laptop',
+    price: 999.99,
+    stock: 50,
+    specs: {  // Nested document
+      cpu: 'Intel i7',
+      ram: '16GB',
+      storage: '512GB SSD'
+    },
+    tags: ['electronics', 'computers'],
+    reviews: [
+      { rating: 5, text: 'Great product', timestamp: new Date() }
+    ],
+    created_at: new Date(),
+    updated_at: new Date()
+  });
+  
+  return docRef.id;
+}
+
+async function getProductsByTag(tag) {
+  // Query documents
+  const q = query(
+    collection(db, 'products'),
+    where('tags', 'array-contains', tag),
+    where('price', '<', 1000)
+  );
+  
+  const querySnapshot = await getDocs(q);
+  const products = [];
+  
+  querySnapshot.forEach(doc => {
+    products.push({
+      id: doc.id,
+      ...doc.data()
+    });
+  });
+  
+  return products;
+}
+
+// Subcollections for relationships
+async function addProductReview(productId, review) {
+  const reviewRef = await addDoc(
+    collection(db, 'products', productId, 'reviews'),
+    {
+      ...review,
+      created_at: new Date()
+    }
+  );
+  return reviewRef.id;
+}
+```
+
+</TabItem>
+<TabItem value="python" label="Python + PyMongo">
+
+```python
+from pymongo import MongoClient
+from datetime import datetime
+
+client = MongoClient('mongodb://localhost:27017')
+db = client['ecommerce']
+products = db['products']
+
+# Insert with flexible schema
+product = {
+    'name': 'Laptop',
+    'price': 999.99,
+    'stock': 50,
+    'specs': {  # Nested
+        'cpu': 'Intel i7',
+        'ram': '16GB',
+        'storage': '512GB SSD'
+    },
+    'tags': ['electronics', 'computers'],
+    'reviews': [
+        {
+            'rating': 5,
+            'text': 'Great product',
+            'user_id': 'USER-123',
+            'created_at': datetime.utcnow()
+        },
+  ],
+    'created_at': datetime.utcnow()
+}
+
+result = products.insert_one(product)
+product_id = result.inserted_id
+
+# Query nested fields
+expensive = list(products.find({'price': {'$gt': 500}}))
+
+# Query arrays
+with_reviews = list(products.find({
+    'reviews.rating': {'$gte': 4}
+}))
+
+# Update operations
+products.update_one(
+    {'_id': product_id},
+    {
+        '$push': {  # Add to array
+            'reviews': {
+                'rating': 4,
+                'text': 'Good value',
+                'user_id': 'USER-456',
+                'created_at': datetime.utcnow()
+            }
+        },
+        '$set': {  # Update field
+            'stock': 45,
+            'updated_at': datetime.utcnow()
+        }
+    }
+)
+
+# Aggregation
+pipeline = [
+    {'$match': {'price': {'$gt': 500}}},
+    {
+        '$group': {
+            '_id': None,
+            'avg_price': {'$avg': '$price'},
+            'total_stock': {'$sum': '$stock'},
+            'product_count': {'$sum': 1}
+        }
+    }
+
+stats = list(products.aggregate(pipeline))
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Document Stores / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Use Document Stores When",
+    points: ["Schema frequently evolves", "Nested/hierarchical data natural fit", "Horizontal scaling required", "JSON/unstructured data", "Developer flexibility valued"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use RDBMS When",
+    points: ["Complex relationships between entities", "Multi-document ACID required", "Data normalization important", "Complex analytical queries", "Structured, stable schema"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Denormalization by Design",
+      description: "Embed related data in documents for fast reads. Accept data duplication",
+      tags: ["performance", "design"]
+    }, {
+      title: "Document Size Limits",
+      description: "MongoDB: 16MB per document. Design with size constraints",
+      tags: ["limitations", "design"]
+    }, {
+      title: "Array Queries",
+      description: "Querying arrays is powerful but can be slow. Index array fields",
+      tags: ["queries", "performance"]
+    }, {
+      title: "Schema Validation",
+      description: "Define validation rules even with flexible schema. Prevent garbage data",
+      tags: ["quality", "validation"]
+    }, {
+      title: "Indexing Strategy",
+      description: "Index frequently queried fields. Compound indexes for multi-field queries",
+      tags: ["performance", "optimization"]
+    }, {
+      title: "Transaction Limitations",
+      description: "Multi-document transactions available but costly. Design for atomic operations per document"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Document structure matches access patterns",
+    "Embedding vs referencing decision documented",
+    "Document size monitored (stays under limits)",
+    "Indexes defined for query performance",
+    "Replication configured for HA",
+    "Sharding strategy planned for scale",
+    "Schema validation rules enforced",
+    "Backup and point-in-time recovery configured",
+    "Monitoring for hot shards/imbalance",
+    "Data consistency guarantees understood"
+  ]}
+/>
+
+## Scaling Strategies
+
+### Horizontal Scaling: Sharding
+
+Break documents across multiple servers by shard key:
+
+```javascript
+// Shard by user_id: each user's orders go to one shard
+// User 1-100 → Shard A, User 101-200 → Shard B
+db.orders.createIndex({ user_id: 1 })
+
+// Query single shard (efficient)
+db.orders.find({ user_id: 50 })
+
+// Query across shards (slower, hits multiple shards)
+db.orders.find({ product_id: 'PROD-123' })
+```
+
+### Replication for Redundancy
+
+```javascript
+// Primary: write, read
+// Secondary: read-only replicas
+rs.initiate({
+  _id: "rs0",
+  members: [
+    { _id: 0, host: "primary:27017" },
+    { _id: 1, host: "secondary1:27017" },
+    { _id: 2, host: "secondary2:27017" }
+  ]
+})
+```
+
+### Indexing Strategy
+
+```javascript
+// Single field index
+db.products.createIndex({ category: 1 })
+
+// Compound index for common queries
+db.products.createIndex({ category: 1, price: -1 })
+
+// Array field index
+db.products.createIndex({ tags: 1 })
+
+// Text index for full-text search
+db.products.createIndex({ name: "text", description: "text" })
+
+// Partial index (only indexed docs matching filter)
+db.products.createIndex(
+  { user_id: 1 },
+  { partialFilterExpression: { status: "active" } }
+)
+```
+
+## Real-World Comparison: Document vs. RDBMS
+
+### E-commerce Product Catalog
+
+**Document Store Advantage**: Products have different attributes
+- Laptop: CPU, RAM, Storage
+- Book: ISBN, Author, Pages
+- Clothing: Size, Color, Material
+
+One collection handles all; RDBMS requires many tables or JSON columns.
+
+**RDBMS Advantage**: Complex analytics
+- "Which authors' books are purchased most by users in California?"
+- Requires JOINs across Users, Orders, Items, Authors, etc.
+- RDBMS optimizes these; document store doesn't.
+
+### Social Media Timeline
+
+**Document Store Advantage**: Timeline post structure varies
+- Text posts: text, likes, comments
+- Image posts: images, captions, likes, comments
+- Video posts: video URL, duration, captions, likes, comments
+
+One timeline collection; RDBMS requires subtables.
+
+**RDBMS Advantage**: Complex relationship queries
+- "Show me my friends' posts sorted by mutual friends' activity"
+- Friend graph traversal
+
+### Recommendation Engine
+
+**Document Store Advantage**: Flexible recommendation metadata
+- Movie recommendations: genres, actors, ratings, similar movies
+- Product recommendations: category, price, user ratings, related products
+
+Both handle well, but denormalization helps document stores avoid JOINs.
+
+## Performance Tuning
+
+### Query Optimization
+
+```javascript
+// Bad: No index, full collection scan
+db.orders.find({ user_id: 123, status: "completed" })
+
+// Good: Compound index matches query
+db.orders.createIndex({ user_id: 1, status: 1 })
+db.orders.find({ user_id: 123, status: "completed" })
+
+// Analyze query plan
+db.orders.find({ user_id: 123 }).explain("executionStats")
+// Look for "totalDocsExamined" vs "nReturned"
+// If examined >> returned, need better index
+```
+
+### Aggregation Pipeline for Reporting
+
+```javascript
+// Complex aggregation avoids application-level processing
+db.orders.aggregate([
+  { $match: { created_at: { $gte: ISODate("2025-01-01") } } },
+  { $group: {
+      _id: "$user_id",
+      total_spent: { $sum: "$amount" },
+      order_count: { $sum: 1 }
+    }
+  },
+  { $sort: { total_spent: -1 } },
+  { $limit: 10 }
+])
+```
+
+## Self-Check
+
+- When would you embed vs reference in a document? Embed for small, bounded data accessed together. Reference for large, frequently-updated, or shared data.
+- What's the 16MB limit in MongoDB and how do you design around it? Max document size. Solution: split large documents, move big arrays to subcollections, archive historical data.
+- How do you query nested arrays efficiently? Create indexes on array fields. Use $elemMatch for complex filters on array elements.
+- Why might you choose MongoDB over PostgreSQL? Flexible schema evolution, horizontal sharding, document structure matches domain model (no O/R impedance).
+
+:::info
+Document stores excel at flexible schemas and horizontal scaling, but require careful design of embedding vs referencing. Use them when schema evolution is frequent and nested data is natural; stick with RDBMS for complex relational queries.
+:::
+
+## Next Steps
+
+- Learn **Data Modeling & Access** patterns specific to document stores
+- Explore **Sharding Strategies** for distributing documents
+- Study **Indexing Strategies** for query optimization
+- Dive into **Caching Patterns** for layering Redis on top
+
+## References
+
+- MongoDB Official Documentation
+- Firestore Database Guide
+- "NoSQL Distilled" by Pramod Sadalage
+- "Building Microservices" by Sam Newman

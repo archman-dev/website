@@ -1,0 +1,464 @@
+---
+sidebar_position: 1
+title: "Performance Budgets"
+description: "Define and enforce performance targets that align with user experience and business goals."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: ["performance", "budgets"]
+image: /img/archman-social-card.webp
+tags: [reliability, performance, patterns, scalability]
+hide_title: true
+---
+
+<Hero title="Performance Budgets" subtitle="Define and enforce performance targets that align with user experience and business goals." imageAlt="performance budgets illustration" size="large" />
+
+## TL;DR
+
+Define and enforce performance targets that align with user experience and business goals. This pattern is proven in production at scale and requires thoughtful implementation, continuous tuning, and rigorous monitoring to realize its benefits.
+
+## Learning Objectives
+
+- Understand the problem this pattern solves
+- Learn when and how to apply it correctly
+- Recognize trade-offs and failure modes
+- Implement monitoring to validate effectiveness
+- Apply the pattern in your own systems
+
+## Motivating Scenario
+
+Your payment processing system experiences sudden traffic spikes. Without graceful degradation, the entire system degrades. With it, you maintain 95% functionality for critical paths while gracefully shedding non-essential features. Or your checkout times out waiting for a slow recommendation engine. With timeouts and retries, you serve customers instantly while collecting recommendations asynchronously. These patterns prevent cascading failures and keep systems available under adverse conditions.
+
+## Core Concepts
+
+### Pattern Purpose
+
+Performance Budgets addresses specific reliability and performance challenges proven at scale. It enables systems to handle failures, slowdowns, and overload without cascading failures or complete outages.
+
+### Key Principles
+
+1. **Fail fast, not loud:** Detect problems and take corrective action quickly
+2. **Graceful degradation:** Maintain partial functionality under stress
+3. **Isolation:** Prevent failures from cascading to other components
+4. **Feedback loops:** Monitor constantly and adapt
+
+### When to Use
+
+- Handling distributed system failures gracefully
+- Performance or reliability critical to business
+- Preventing cascading failures across systems
+- Managing variable and unpredictable load
+
+### When NOT to Use
+
+- Simplicity is more important than fault tolerance
+- Failures are rare and acceptable
+- Pattern overhead exceeds the benefit
+
+## Practical Example
+
+<Tabs>
+<TabItem value="patterns" label="Core Patterns">
+
+```yaml
+# Performance Budgets Patterns and Their Use
+
+Circuit Breaker:
+  Purpose: Prevent cascading failures by stopping requests to failing service
+  When_Failing: Return fast with cached or degraded response
+  When_Recovering: Gradually allow requests to verify recovery
+  Metrics_to_Track: Failure rate, response time, circuit trips
+
+Timeout & Retry:
+  Purpose: Handle transient failures and slow responses
+  Implementation: Set timeout, wait, retry with backoff
+  Max_Retries: 3-5 depending on operation cost and urgency
+  Backoff: Exponential (1s, 2s, 4s) to avoid overwhelming failing service
+
+Bulkhead:
+  Purpose: Isolate resources so one overload doesn't affect others
+  Implementation: Separate thread pools, connection pools, queues
+  Example: Checkout path has dedicated database connections
+  Benefit: One slow query doesn't affect other traffic
+
+Graceful Degradation:
+  Purpose: Maintain partial service when components fail
+  Example: Show cached data when personalization service is down
+  Requires: Knowledge of what's essential vs. nice-to-have
+  Success: Users barely notice the degradation
+
+Load Shedding:
+  Purpose: Shed less important work during overload
+  Implementation: Reject low-priority requests when queue is full
+  Alternative: Increase latency for all rather than reject some
+  Trade-off: Some customers don't get served vs. all customers are slow
+```
+
+</TabItem>
+<TabItem value="config" label="Configuration Example">
+
+```yaml
+Reliability_Configuration:
+  service_timeouts:
+    payment_api: 5s
+    recommendation_engine: 2s
+    user_auth: 1s
+  
+  retry_policy:
+    transient_errors: [408, 429, 503, 504]
+    max_retries: 3
+    backoff_multiplier: 2
+    initial_delay: 100ms
+  
+  circuit_breaker:
+    failure_threshold: 50%
+    window: 10 requests
+    open_timeout: 30s
+    
+  load_shedding:
+    queue_threshold: 1000
+    shed_non_essential: true
+    reject_priority: low
+```
+
+</TabItem>
+<TabItem value="metrics" label="Monitoring">
+
+```
+Essential Metrics:
+
+Latency:
+  - P50, P95, P99 response times
+  - Alert if P99 > acceptable threshold
+  
+Failure Rates:
+  - Error rate percentage
+  - Alert if >5% errors
+  
+Pattern-Specific:
+  - Circuit breaker trips (alert if >3 in 5min)
+  - Retry count distribution
+  - Load shed requests
+  - Bulkhead resource utilization
+
+Example Dashboard:
+  - Real-time traffic flow with failures highlighted
+  - Circuit breaker state (Open/Closed/Half-Open)
+  - Retry success rates by service
+  - Queue depths and shedding rates
+```
+
+</TabItem>
+</Tabs>
+
+## Implementation Guide
+
+1. **Identify the Problem:** What specific failure mode are you protecting against?
+2. **Choose the Right Pattern:** Different problems need different solutions
+3. **Implement Carefully:** Half-implemented patterns are worse than nothing
+4. **Configure Based on Data:** Don't copy thresholds from blog posts
+5. **Monitor Relentlessly:** Validate the pattern actually solves your problem
+6. **Tune Continuously:** Thresholds need adjustment as load and systems change
+
+## Characteristics of Effective Implementation
+
+✓ Clear objectives: Can state in one sentence what you're solving
+✓ Proper monitoring: Can see whether pattern is working
+✓ Appropriate thresholds: Based on data from your system
+✓ Graceful failure mode: Unacceptable in production
+✓ Well-tested: Failure scenarios explicitly tested
+✓ Documented: Future maintainers understand why it exists
+
+## Pitfalls to Avoid
+
+❌ Blindly copying patterns: Thresholds from one system don't work for another
+❌ Over-retrying: Making failing service worse by hammering it
+❌ Forgetting timeouts: Retries without timeouts extend the pain
+❌ Silent failures: If circuit breaker opens, someone needs to know
+❌ No monitoring: Deploying patterns without metrics to validate
+❌ Set and forget: Patterns need tuning as load and systems change
+
+## Related Patterns
+
+- **Bulkheads:** Isolate different use cases so failures don't cascade
+- **Graceful Degradation:** Degrade functionality when load is high
+- **Health Checks:** Detect failures requiring retry or circuit breaker
+- **Observability:** Metrics and logs showing whether pattern works
+
+## Checklist: Implementation Readiness
+
+- [ ] Problem clearly identified and measured
+- [ ] Pattern selected is appropriate for the problem
+- [ ] Thresholds based on actual data from your system
+- [ ] Failure mode is explicit and acceptable
+- [ ] Monitoring and alerts configured before deployment
+- [ ] Failure scenarios tested explicitly
+- [ ] Team understands the pattern and trade-offs
+- [ ] Documentation explains rationale and tuning
+
+## Self-Check
+
+1. **Can you state in one sentence why you need this pattern?** If not, you might not need it.
+2. **Have you measured baseline before and after?** If not, you don't know if it helps.
+3. **Did you tune thresholds for your system?** Or copy them from a blog post?
+4. **Can someone on-call understand what triggers and what it does?** If not, document better.
+
+## Real-World Case Studies
+
+### Case Study 1: E-Commerce Checkout Performance Budget
+
+**Context**: A major e-commerce platform saw cart abandonment increase when checkout took over 5 seconds. They implemented performance budgets.
+
+**Budgets defined**:
+- Page load: under 2 seconds
+- Form validation: under 500ms
+- Payment authorization: under 5 seconds
+- Order confirmation: under 1 second
+
+**Strategies**:
+- Lazy-load non-critical images (save 1.2s)
+- Cache frequently-accessed data (save 800ms)
+- Move analytics to background worker (save 300ms)
+- Use CDN for global distribution (save 400ms)
+
+**Results**:
+- Load time reduced from 6.2s to 3.1s
+- Cart abandonment down 15%
+- Revenue increase proportional to reduced load time
+
+### Case Study 2: Mobile App Cold Start Time Budget
+
+**Context**: A mobile banking app had 4-second cold start (app launch to usable). Users were switching to competitors with 2-second starts.
+
+**Budgets defined**:
+- Splash screen visible: under 500ms
+- UI interactive: under 2 seconds
+- Data loaded: under 3 seconds
+
+**Strategies**:
+- Reduce bundle size (tree-shaking, code splitting)
+- Lazy-load non-critical features
+- Pre-warm databases on app background
+- Use local cache for common data
+
+**Results**:
+- Cold start reduced from 4s to 1.8s
+- User retention improved
+- App store rating increased
+
+## Setting Performance Budgets for Your System
+
+### Step 1: Measure Current State
+```yaml
+current_metrics:
+  api_response_time:
+    p50: 150ms
+    p95: 800ms
+    p99: 2500ms
+  database_query:
+    p50: 20ms
+    p95: 150ms
+    p99: 500ms
+  page_load:
+    p50: 1.2s
+    p95: 3.5s
+    p99: 8.0s
+```
+
+### Step 2: Define Acceptable Degradation
+```yaml
+performance_budget:
+  # Define what's acceptable based on business impact
+  checkout_flow:
+    p95: 3.0s  # 95% of checkouts must be under 3s
+    threshold: 3.5s  # Alert if consistently above this
+
+  search_results:
+    p95: 1.5s
+    threshold: 2.0s
+
+  recommendation_api:
+    p95: 800ms
+    threshold: 1.5s  # Can be slower; non-critical
+```
+
+### Step 3: Monitor and Alert
+```yaml
+monitoring:
+  metrics:
+    - name: p95_checkout_latency
+      alert_if_above: 3.2s  # 5% buffer
+      check_interval: 1m
+      lookback_window: 5m  # Average of last 5 min
+
+    - name: p99_search_latency
+      alert_if_above: 1.8s
+      check_interval: 5m
+
+  dashboard:
+    - Current latencies (p50, p95, p99)
+    - Trend over time (7-day, 30-day)
+    - Budget vs actual comparison
+    - Slowest endpoints (find quick wins)
+    - Outliers/spikes
+```
+
+### Step 4: Investigate Budget Violations
+When performance budget exceeded:
+1. Check for code changes (deployments)
+2. Check for infrastructure changes (database, network)
+3. Check for load spikes (unexpected traffic)
+4. Check for external factors (third-party service slowdown)
+5. Decide: Fix now or adjust budget?
+
+## Performance Budget Anti-Patterns
+
+### Anti-Pattern 1: Unrealistic Budgets
+**Problem**: Set budget without understanding baseline
+```
+Baseline: p95 = 5000ms
+Budget: p95 = 1000ms
+Result: Permanently violated, noise in alerts
+```
+
+**Solution**: Set budget 10-20% tighter than current performance
+```
+Baseline: p95 = 5000ms
+Budget: p95 = 4500ms (10% tighter)
+Action: When violated, investigate cause
+Stretch goal: Get to 4000ms (20% improvement)
+```
+
+### Anti-Pattern 2: Budget Creep
+**Problem**: Keep raising budget without fixing root cause
+```
+Month 1: Budget: 1s, Actual: 1.2s
+Month 2: Budget: 1.2s, Actual: 1.4s
+Month 3: Budget: 1.4s, Actual: 1.6s
+→ Service slowly degrades with no action
+```
+
+**Solution**: Investigate violations, set deadlines for improvements
+```
+Budget: 1s
+Violation: 1.2s
+Root cause: Database N+1 query
+Timeline: Fix within 2 weeks
+If not fixed: Escalate, reduce new feature work
+```
+
+### Anti-Pattern 3: Ignoring P99
+**Problem**: Focus only on average (p50)
+```
+p50: 200ms (budget: 200ms, looks good)
+p95: 1000ms
+p99: 5000ms (99% of users fine, 1% suffer)
+```
+
+**Solution**: Set budgets for p95 and p99
+```
+Budget p50: 200ms
+Budget p95: 800ms
+Budget p99: 2000ms (critical for user experience)
+```
+
+## Performance Budget Success Metrics
+
+### Key Performance Indicators
+
+**1. Budget Compliance Rate**
+- Percentage of time budget is met
+- Target: 95%+ compliance
+- Below 80%: Budget too tight or systemic issues
+
+**2. Budget Violation Root Causes**
+- Code changes: 40%
+- Infrastructure changes: 30%
+- Traffic spikes: 20%
+- External factors: 10%
+- If code changes high: Team needs training on performance testing
+
+**3. Mean Time to Recovery (MTTR)**
+- How long after violation until restored
+- Target: under 1 hour
+- Measure of team responsiveness
+
+**4. Budget Trend (Month over Month)**
+- Is performance improving?
+- Stable?
+- Degrading?
+
+## Performance Budget Tools and Integration
+
+### CI/CD Integration
+```yaml
+# Check performance budget in deployment pipeline
+steps:
+  - name: Run performance tests
+    command: npm run perf:test
+
+  - name: Compare to baseline
+    command: |
+      if actual_latency > budget; then
+        echo "Performance budget exceeded"
+        exit 1  # Deployment blocked
+      fi
+
+  - name: Alert if close to budget
+    command: |
+      if actual_latency > (budget * 0.9); then
+        alert_slack "Performance warning: close to budget"
+      fi
+
+# Only allow budget overages with explicit approval
+budget_override:
+  requires: ["performance-exception-approval"]
+  approvers: ["performance-lead"]
+  duration: 7 days
+```
+
+### Real-Time Monitoring Dashboard
+```yaml
+dashboard_panels:
+  - name: "Budget Compliance"
+    metric: "p95_latency"
+    budget: 1000ms
+    actual: 950ms
+    status: "✓ Within budget"
+    trend: "↑ +50ms last hour"
+
+  - name: "Slowest Endpoints"
+    data:
+      - "/api/search": 1200ms (140% of budget)
+      - "/api/recommendations": 800ms (80% of budget)
+      - "/api/products": 200ms (20% of budget)
+
+  - name: "Budget Trend (Last 30 days)"
+    chart: "line graph showing p95 over time vs budget"
+
+  - name: "Violation History"
+    violations:
+      - "2025-09-10 10:00: Deploy version 1.2.0 caused spike"
+      - "2025-09-09 14:00: Database slow query"
+      - "2025-09-08 08:00: Traffic spike, auto-scaled"
+```
+
+## Takeaway
+
+These patterns are powerful because proven in production. But power comes with complexity. Implement only what you need, tune based on data, and monitor relentlessly. A well-implemented pattern you understand is worth far more than several half-understood patterns copied from examples. Start with one critical path, establish its budget, and expand from there.
+
+## Next Steps
+
+1. **Identify the problem:** What specific failure mode are you protecting against?
+2. **Gather baseline data:** Measure current behavior before implementing
+3. **Implement carefully:** Start simple, add complexity only if needed
+4. **Monitor and measure:** Validate the pattern actually helps
+5. **Tune continuously:** Adjust thresholds based on production experience
+
+## References
+
+1. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+2. <a href="https://www.amazon.com/Site-Reliability-Engineering-Production-Systems/dp/149192912X" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book ↗️</a>
+3. <a href="https://martinfowler.com/bliki/CircuitBreaker.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Circuit Breaker Pattern ↗️</a>

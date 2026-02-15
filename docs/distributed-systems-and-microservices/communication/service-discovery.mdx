@@ -1,0 +1,424 @@
+---
+sidebar_position: 5
+title: "Service Discovery"
+description: "Master client-side and server-side service discovery. Enable services to find each other in dynamic, horizontally-scaling environments."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [service discovery, client-side, server-side, DNS, service registry, load balancing, health checking]
+image: /img/archman-social-card.webp
+tags: [service-discovery, client-side, server-side, DNS, service-registry, load-balancing, health-check, dynamic]
+hide_title: true
+---
+
+<Hero title="Service Discovery" subtitle="Enable services to find each other in dynamic environments where instances scale and fail" imageAlt="Service discovery illustration" size="large" />
+
+## TL;DR
+
+Services don't have fixed addresses; instances scale up/down and fail. Service discovery enables Service A to find Service B. Two approaches: client-side (client queries registry, picks instance), server-side (client contacts load balancer, which picks instance). Combined with health checking: remove failed instances automatically. Health checks detect failures; discovery updates are eventually consistent.
+
+## Learning Objectives
+
+- Understand client-side and server-side service discovery
+- Implement health checking and instance registration
+- Handle stale instances and eventual consistency
+- Recognize the tension between consistency and availability
+
+## Motivating Scenario
+
+You hardcode "payment-service.example.com" in your code. It works until you scale the payment service to 3 instances. Which one does your code connect to? If one fails, your code doesn't know. Adding a new payment service requires updating all dependent services. Hard-coded addresses don't work in scalable systems.
+
+Service discovery solves this: When payment service starts, it registers itself. When it stops, it deregisters. Other services query the registry: "Give me a healthy payment service instance."
+
+## Client-Side Discovery
+
+**Definition:** Client queries a service registry, gets a list of instances, picks one.
+
+**Characteristics:**
+- Client responsibility to query, pick, retry
+- Flexible (client can implement smart selection)
+- Simple infrastructure
+- Client sees all instances (can fail over)
+- Stale registry data impacts client
+
+**Flow:**
+
+```
+1. Payment service starts → registers in registry
+2. Order service queries registry: "Give me payment service instances"
+3. Order service gets [payment1:3000, payment2:3000, payment3:3000]
+4. Order service picks one (round-robin, random, etc.)
+5. Order service calls payment1:3000
+6. If payment1 fails, order service retries with another instance
+```
+
+<Tabs>
+<TabItem value="client-discovery" label="Client-Side Example">
+```python
+# Service registration
+registry = ServiceRegistry('consul.example.com')
+
+class PaymentService:
+    def __init__(self):
+        # Register when starting
+        registry.register(
+            name='payment-service',
+            address='payment1.internal',
+            port=3000,
+            health_check='http://payment1:3000/health'
+        )
+
+    def shutdown(self):
+        # Deregister when stopping
+        registry.deregister(name='payment-service')
+
+# Client-side discovery
+class OrderService:
+    def process_payment(self, amount):
+        # Query registry for instances
+        instances = registry.get_instances('payment-service')
+
+        # Pick one (simple round-robin)
+        instance = self.pick_instance(instances)
+
+        # Call it
+        try:
+            return requests.post(
+                f'http://{instance.address}:{instance.port}/charge',
+                json={'amount': amount}
+            )
+        except RequestException:
+            # If failed, retry with different instance
+            return self.retry_with_fallback(amount, instances)
+```
+</TabItem>
+</Tabs>
+
+## Server-Side Discovery
+
+**Definition:** Client calls a load balancer. Load balancer queries registry, picks an instance, forwards request.
+
+**Characteristics:**
+- Load balancer responsibility
+- Simpler client code (just call one address)
+- Centralized intelligence
+- Load balancer can optimize picks (warm instances, latency, etc.)
+- Load balancer becomes critical component
+
+**Flow:**
+
+```
+1. Payment service starts → registers in registry
+2. Load balancer monitors registry for payment service
+3. Order service calls load balancer: "payment-service.internal"
+4. Load balancer queries registry, picks healthy instance
+5. Load balancer forwards request to picked instance
+6. Load balancer retries if needed
+```
+
+## Comparison
+
+<Vs items={[
+{
+    label: "Client-Side Discovery",
+    points: [
+      "Consul",
+      "Eureka",
+      "Custom registry"
+    ]
+  },
+{
+    label: "Server-Side Discovery",
+    points: [
+      "Kubernetes Services",
+      "AWS ELB",
+      "NGINX"
+    ]
+  }
+]} />
+
+## Health Checking
+
+Failed instances must be removed from rotation:
+
+**Passive Checks:** Client detects failure and retries with different instance.
+
+**Active Checks:** Registry periodically calls /health on each instance. Remove if unresponsive.
+
+<Tabs>
+<TabItem value="health-check" label="Health Check Example">
+```python
+# Service health endpoint
+@app.get('/health')
+def health_check():
+    return {
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'dependencies': {
+            'database': check_database_connection(),
+            'cache': check_cache_connection()
+        }
+    }
+
+# Registry health checking
+class HealthChecker:
+    def check_instance(self, instance):
+        try:
+            response = requests.get(
+                f'http://{instance.address}:{instance.port}/health',
+                timeout=5
+            )
+            return response.status_code == 200
+        except (RequestException, Timeout):
+            return False
+
+    def monitor_instances(self):
+        for service_name in registry.services():
+            instances = registry.get_instances(service_name)
+            for instance in instances:
+                if not self.check_instance(instance):
+                    # Remove failed instance
+                    registry.deregister_instance(
+                        service_name, instance
+                    )
+```
+</TabItem>
+</Tabs>
+
+## Eventual Consistency in Discovery
+
+Service registry changes are eventually consistent:
+
+1. Instance fails
+2. Health check fails (5-10 seconds later)
+3. Registry removes instance
+4. Clients query registry and get updated list
+5. Total time: 10-30 seconds
+
+During this window, clients may try dead instances. You need:
+
+- **Fast timeouts** (short timeout catches failures quickly)
+- **Retries** (try next instance if one fails)
+- **Circuit breaker** (stop trying failed service after N failures)
+
+## Advanced Topics
+
+### DNS-Based Service Discovery
+
+DNS is a simpler alternative to service registries for some use cases:
+
+```
+# Simple approach: single DNS record per service
+# Example: payment-service.internal → Single IP (load balancer)
+
+Pros:
+  - Built-in to operating systems
+  - No special client libraries needed
+  - Language-agnostic
+  - Simple and reliable
+
+Cons:
+  - DNS TTL means stale entries (5-60 seconds)
+  - Load balancing is single point of failure
+  - Health checks must be at load balancer level
+  - Not suitable for rapid instance changes
+
+# Modern DNS-SD (DNS Service Discovery)
+# SRV records: _service._proto.name
+# Example: _payment._tcp.internal → [payment1:3000, payment2:3000, payment3:3000]
+
+Pros:
+  - Multiple instances in single DNS query
+  - Service metadata in DNS
+  - No client-side load balancing (clients still see all instances)
+  - Better than single A record
+
+Cons:
+  - Requires SRV record support (not all systems)
+  - Still has DNS TTL issues
+  - Updates take time to propagate
+```
+
+### Handling Network Partitions
+
+Service discovery becomes complex during network splits:
+
+```
+Scenario: Network partition (client can't reach registry for 30 seconds)
+
+Client behavior (should be):
+  - Use cached registry data
+  - Try known instances
+  - If all fail, use stale data (better than failing)
+  - Once partition heals, refresh from registry
+
+Bad behavior:
+  - Client loses registry connection → panic
+  - Tries random instances
+  - Fails all requests during partition
+
+Implementation:
+  class ServiceDiscoveryClient:
+      def __init__(self):
+          self.cached_instances = {}  # From last successful query
+          self.cache_age = {}          # When cache was updated
+
+      def get_instances(self, service_name):
+          try:
+              # Query fresh from registry
+              fresh = self.registry.query(service_name)
+              self.cached_instances[service_name] = fresh
+              self.cache_age[service_name] = datetime.now()
+              return fresh
+          except RegistryUnreachable:
+              # Use cache if available
+              if service_name in self.cached_instances:
+                  age = datetime.now() - self.cache_age[service_name]
+                  logger.warn(f"Using stale cache ({age.seconds}s old)")
+                  return self.cached_instances[service_name]
+              else:
+                  # No cache, truly isolated
+                  raise ServiceDiscoveryUnavailable()
+```
+
+### Practical Deployment Examples
+
+**Kubernetes (Built-in Service Discovery)**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+spec:
+  selector:
+    app: payment
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP
+
+# Kubernetes DNS automatically creates:
+# payment-service.default.svc.cluster.local → 10.0.0.1 (virtual IP)
+# Kube-proxy load balances traffic to all backend pods
+
+# Clients simply call: payment-service:3000
+```
+
+**Consul (Explicit Service Discovery)**
+
+```python
+import consul
+
+consul_client = consul.Consul('consul.example.com:8500)
+
+# Service registration (runs on application startup)
+consul_client.agent.service.register(
+    name='payment-service',
+    service_id='payment-1',
+    address='payment1.internal',
+    port=3000,
+    check=consul.Check.http(
+        'http://payment1:3000/health',
+        interval='5s',
+        timeout='1s',
+        deregister='10s'  # Deregister if 10s of failed health checks
+    )
+)
+
+# Service discovery (client queries)
+index, services = consul_client.health.service(
+    'payment-service',
+    passing=True  # Only healthy instances
+)
+
+# Usage: randomly pick one
+instance = random.choice(services)
+```
+
+**Docker Swarm (Built-in DNS)**
+
+```yaml
+version: '3'
+services:
+  payment-service:
+    image: payment:latest
+    replicas: 3  # 3 instances
+    # Docker DNS automatically load-balances across replicas
+    # Clients call: payment-service:3000 (resolved by Swarm)
+```
+
+## Observing Service Discovery
+
+Monitor discovery health to catch issues:
+
+```python
+class ServiceDiscoveryMonitoring:
+    def monitor_stale_instances(self):
+        """Alert if old instances are still registered"""
+        all_instances = self.registry.all_instances()
+        for instance in all_instances:
+            age = datetime.now() - instance.registered_at
+            if age > 7_days:
+                logger.error(f"Stale instance {instance.id} ({age.days} days)")
+
+    def monitor_discovery_latency(self):
+        """Track how long service discovery queries take"""
+        start = time.time()
+        instances = self.registry.get_instances('payment-service')
+        latency = time.time() - start
+
+        if latency > 100:  # ms
+            logger.warn(f"Service discovery latency: {latency}ms")
+
+    def monitor_health_check_coverage(self):
+        """Verify all instances have health checks"""
+        for instance in self.registry.all_instances():
+            if not instance.has_health_check:
+                logger.error(f"Instance {instance.id} has no health check!")
+
+    def alert_on_discovery_outage(self):
+        """Alert if service discovery itself is down"""
+        try:
+            self.registry.ping()
+        except:
+            logger.critical("Service discovery is unreachable!")
+            # Trigger page (critical)
+```
+
+## Self-Check
+
+1. **What happens when a service instance fails? How long until clients know?**
+   - Passive: Clients try instance, it fails, they retry with different instance. Time: 1-5 seconds (depends on timeout).
+   - Active health checks: Registry detects failure in 5-10 seconds. Clients query registry, see updated list. Time: 5-10 seconds.
+
+2. **Is your service registration automatic or manual?**
+   - Should be automatic. Services register themselves on startup (or orchestrator registers for them).
+   - Manual registration is error-prone and doesn't work at scale.
+
+3. **Do your health checks actually verify the service works?**
+   - Check: HTTP GET /health returns 200. Problem: Service returns 200 but database is down.
+   - Better: /health endpoint checks critical dependencies (database, cache). Returns 200 only if all OK.
+
+:::info One Takeaway
+Service discovery enables horizontal scaling. Use active health checks to remove failed instances quickly. Combine with retries and timeouts for reliability. Cache discovery results to handle registry outages gracefully.
+
+:::
+
+## Next Steps
+
+1. **Service Mesh:** Read [Service Mesh](/docs/distributed-systems-and-microservices/communication/service-mesh) for advanced features (retries, timeouts, circuit breakers)
+2. **Resilience:** Learn [Circuit Breaker](/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/circuit-breaker)
+3. **Communication:** Explore [Synchronous vs Asynchronous](/docs/distributed-systems-and-microservices/communication/sync-vs-async)
+4. **Load Balancing:** Study [Load Balancing](/docs/cloud-native-and-runtime-topology/networking/load-balancing-l4-l7)
+
+## References
+
+- Newman, S. (2015). "Building Microservices". O'Reilly Media.
+- Richardson, C. (n.d.). "Service Discovery Pattern". microservices.io.
+- Burns, B., Grant, B., Oppenheimer, D., Brewer, E., & Wilkes, J. (2016). "Borg, Omega, and Kubernetes". ACM Queue.
+- <a href="https://www.consul.io/docs/discovery/dns" target="_blank" rel="nofollow noopener noreferrer">Consul Service Discovery ↗</a>
+- <a href="https://kubernetes.io/docs/concepts/services-networking/service/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes Services ↗</a>
+

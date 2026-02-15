@@ -1,0 +1,701 @@
+---
+sidebar_position: 4
+title: SSR, SSG, ISR - Rendering Strategies
+description: Server-side rendering, static generation, and incremental static regeneration
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","frontend-lead"]
+keywords: ["ssr","ssg","isr","rendering","performance","hydration","jamstack"]
+image: /img/archman-social-card.webp
+tags: ["frontend","performance","rendering"]
+hide_title: true
+---
+
+<Hero
+  title="SSR, SSG, ISR - Rendering Strategies"
+  description="Server rendering, static generation, and incremental updates for optimal performance and SEO"
+  size="large"
+/>
+
+### TL;DR
+
+**SSR (Server-Side Rendering)**: Server renders HTML on each request. Dynamic content, always fresh, slower TTFB. Good for SEO.
+
+**CSR (Client-Side Rendering)**: Browser renders HTML from JavaScript. Fast TTFB, slow FCP, poor SEO. SPAs default.
+
+**SSG (Static Site Generation)**: Pre-render to HTML at build-time. Blazing fast CDN delivery, zero server cost, static content only.
+
+**ISR (Incremental Static Regeneration)**: Pre-render at build + revalidate on-demand. Best of both: static performance + dynamic freshness.
+
+**Hydration**: Browser receives pre-rendered HTML, then loads JavaScript to attach event listeners and interactivity.
+
+### Learning Objectives
+
+You will be able to:
+- Choose rendering strategy (SSR vs. SSG vs. CSR vs. ISR) based on content freshness and performance requirements.
+- Understand and implement hydration for SSR applications.
+- Design ISR revalidation strategies for semi-dynamic content.
+- Optimize rendering performance for each strategy.
+- Monitor and measure rendering performance impact.
+
+### Motivating Scenario
+
+Your product listing page needs dynamic pricing (changes hourly), but most users don't need realtime prices. With pure SSR, every request hits the server → slow TTFB (1-2s). With pure CSR, users see blank page → slow FCP (3s+). With pure SSG, prices are stale.
+
+ISR solves this: pre-render pages at build, cache on CDN (instant delivery), revalidate in background when someone visits. First user sees cached page (fast), subsequent request triggers revalidation, fresh data available for next visitor. Win-win: fast + fresh.
+
+## Rendering Strategies Explained
+
+### CSR (Client-Side Rendering)
+
+Browser renders HTML from JavaScript bundle.
+
+```
+[Browser] → Fetch index.html (empty div)
+         → Load app.js (React, Vue, Angular)
+         → Render HTML in JavaScript
+         → Hydrate event listeners
+         → App interactive
+```
+
+**Timeline**:
+- TTFB: Fast (just HTML + headers)
+- FCP (First Contentful Paint): Slow (wait for JS parse + eval + render)
+- TTI: Slow (same as FCP, all JS must load)
+
+**Pros**:
+- Simple to build (no server infrastructure)
+- Fully dynamic (real-time updates, personalizations)
+- Smaller server load
+
+**Cons**:
+- Poor SEO (search engines see blank page initially)
+- Slow first paint (users see blank page)
+- Bandwidth inefficient (send JS + repeat rendering in browser)
+
+**Use when**:
+- Internal apps (no SEO needed)
+- Real-time, highly personalized content
+- Single Page Apps (SPAs) where navigation doesn't require server
+
+<Tabs>
+<TabItem value="csr-app" label="CSR App Example">
+```jsx title="src/App.jsx" showLineNumbers
+
+export default function App() {
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Fetch data after page loads
+    fetch('/api/products')
+      .then(r => r.json())
+      .then(data => {
+        setProducts(data);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <h1>Products</h1>
+      {products.map(p => (
+        <div key={p.id}>{p.name}</div>
+      ))}
+    </div>
+  );
+}
+```
+</TabItem>
+<TabItem value="csr-index" label="CSR HTML">
+```html title="public/index.html" showLineNumbers
+<!DOCTYPE html>
+<html>
+<body>
+  <div id="root"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
+```
+</TabItem>
+</Tabs>
+
+### SSR (Server-Side Rendering)
+
+Server renders HTML on each request, sends to browser.
+
+```
+[Browser Request]
+       ↓
+[Server]
+├─ Fetch data
+├─ Render React to HTML
+├─ Send HTML to browser
+       ↓
+[Browser]
+├─ Display HTML (FCP fast)
+├─ Load JS for hydration
+├─ Attach event listeners
+└─ App interactive
+```
+
+**Timeline**:
+- TTFB: Slow (server processing)
+- FCP: Fast (HTML with content)
+- TTI: Moderate (JS must hydrate)
+
+**Pros**:
+- Great SEO (search engine sees full HTML)
+- Fast First Contentful Paint (HTML includes content)
+- Personalization easy (render different HTML per user)
+- Dynamic content (fetch fresh data per request)
+
+**Cons**:
+- Slow TTFB (server processing on every request)
+- Server cost (CPU rendering every request)
+- Complexity (manage server, handle errors, timeouts)
+
+**Use when**:
+- SEO critical
+- Highly personalized content per user
+- Content changes frequently
+- Users accept slower TTFB for fresh data
+
+<Tabs>
+<TabItem value="ssr-server" label="SSR Server (Node.js with React)">
+```js title="server.js" showLineNumbers
+
+const app = express();
+
+app.get('/', async (req, res) => {
+  // Fetch data
+  const products = await fetchProducts();
+
+  // Render component to HTML on server
+  const html = renderToString(
+    <App products={products} />
+  );
+
+  // Send HTML to browser (FCP fast)
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head><title>Products</title></head>
+      <body>
+        <div id="root">${html}</div>
+        <script>
+          window.__INITIAL_STATE__ = ${JSON.stringify({ products })};
+        </script>
+        <script src="/app.js"></script>
+      </body>
+    </html>
+  `);
+});
+
+app.listen(3000);
+```
+</TabItem>
+<TabItem value="ssr-client" label="SSR Client Hydration">
+```jsx title="src/App.jsx" showLineNumbers
+
+function App({ products }) {
+  return (
+    <div>
+      <h1>Products</h1>
+      {products.map(p => (
+        <div key={p.id}>{p.name}</div>
+      ))}
+    </div>
+  );
+}
+
+// Hydrate: attach event listeners to server-rendered HTML
+const root = hydrateRoot(
+  document.getElementById('root'),
+  <App products={window.__INITIAL_STATE__.products} />
+);
+```
+</TabItem>
+</Tabs>
+
+### SSG (Static Site Generation)
+
+Pre-render all pages to HTML files at build-time. Deploy as static files.
+
+```
+[Build time]
+├─ Fetch data (products, blog posts)
+├─ Render each page to HTML file
+└─ Output: products-1.html, products-2.html, blog-post-1.html, ...
+
+[Runtime]
+└─ Serve static HTML files from CDN (instant)
+```
+
+**Timeline**:
+- Build: Slow (pre-render all pages)
+- TTFB: Blazing fast (CDN serves static files)
+- FCP: Fast (HTML complete)
+- TTI: Fast (minimal JS needed)
+
+**Pros**:
+- Blazing fast (CDN, no server computation)
+- Cheap to host (CDN only, no server)
+- Great SEO (search engines see full HTML)
+- Simple to scale (static files scale infinitely)
+
+**Cons**:
+- Static content only (no dynamic pricing, personalization)
+- Rebuild required for updates (can't update without rebuild)
+- Long build times (pre-render millions of pages = slow builds)
+
+**Use when**:
+- Content rarely changes (blog, docs, product catalog)
+- High traffic, low variance
+- Budget-conscious (no server cost)
+
+<Tabs>
+<TabItem value="ssg-next" label="SSG with Next.js">
+```jsx title="pages/products/[id].jsx" showLineNumbers
+export default function ProductPage({ product }) {
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>${product.price}</p>
+    </div>
+  );
+}
+
+// Fetch data at build-time
+export async function getStaticProps({ params }) {
+  const product = await fetchProduct(params.id);
+
+  return {
+    props: { product },
+    revalidate: false, // Never revalidate (static)
+  };
+}
+
+// Generate pages for these params at build-time
+export async function getStaticPaths() {
+  const products = await fetchAllProducts();
+
+  return {
+    paths: products.map(p => ({
+      params: { id: p.id },
+    })),
+    fallback: false, // 404 for unknown IDs
+  };
+}
+```
+</TabItem>
+<TabItem value="ssg-build" label="Build Output">
+```
+out/
+├─ products/
+│  ├─ 1/
+│  │  └─ index.html  (pre-rendered HTML)
+│  ├─ 2/
+│  │  └─ index.html
+│  └─ 3/
+│     └─ index.html
+└─ _next/
+   └─ static/        (JS, CSS bundles)
+
+# Deploy to CDN (no server needed)
+```
+</TabItem>
+</Tabs>
+
+### ISR (Incremental Static Regeneration)
+
+Hybrid: pre-render at build, but revalidate on-demand. Best of SSG + SSR.
+
+```
+[Build-time]
+├─ Pre-render frequently accessed pages
+└─ Cache on CDN
+
+[Runtime - First request after cache expires]
+├─ Return stale cached page (fast)
+├─ Trigger revalidation in background
+└─ Update cache with fresh content
+
+[Runtime - Subsequent request]
+└─ Serve updated cached page (fast + fresh)
+```
+
+**Pros**:
+- Blazing fast (static CDN delivery)
+- Fresh content (background revalidation)
+- On-demand fallback (generate new page if doesn't exist)
+- Scales infinitely (no per-request server load)
+
+**Cons**:
+- Complexity (manage revalidation strategy)
+- Stale content temporarily (first user after expiry sees old data)
+- Requires ISR-capable hosting (Next.js, Remix, etc.)
+
+**Use when**:
+- Semi-dynamic content (prices change, but not every second)
+- High traffic (revalidation more efficient than per-request rendering)
+- SEO + performance both important
+
+<Tabs>
+<TabItem value="isr-next" label="ISR with Next.js">
+```jsx title="pages/products/[id].jsx" showLineNumbers
+export default function ProductPage({ product }) {
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>${product.price}</p>
+    </div>
+  );
+}
+
+export async function getStaticProps({ params }) {
+  const product = await fetchProduct(params.id);
+
+  return {
+    props: { product },
+    revalidate: 3600, // Revalidate every 1 hour
+  };
+}
+
+export async function getStaticPaths() {
+  // Pre-render popular products at build
+  const products = await fetchPopularProducts();
+
+  return {
+    paths: products.map(p => ({
+      params: { id: p.id },
+    })),
+    fallback: 'blocking', // Generate new pages on-demand
+  };
+}
+```
+</TabItem>
+<TabItem value="isr-on-demand" label="On-Demand Revalidation">
+```js title="pages/api/revalidate.js" showLineNumbers
+// Webhook endpoint: trigger revalidation manually
+export default async function handler(req, res) {
+  // Verify request is from your CMS/admin
+  if (req.query.secret !== process.env.REVALIDATE_SECRET) {
+    return res.status(401).json({ message: 'Invalid token' });
+  }
+
+  try {
+    // Revalidate specific page
+    await res.revalidate(`/products/${req.body.productId}`);
+    return res.json({ revalidated: true });
+  } catch (err) {
+    return res.status(500).send('Error revalidating');
+  }
+}
+```
+
+Usage from CMS:
+```js
+// When product price updates
+fetch('https://example.com/api/revalidate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    secret: process.env.REVALIDATE_SECRET,
+    productId: '123',
+  }),
+});
+```
+</TabItem>
+</Tabs>
+
+## Hydration Deep Dive
+
+Hydration bridges server-rendered HTML and client-side interactivity:
+
+```
+[Server sends HTML]
+└─ <div id="root"><h1>Hello</h1></div>
+
+[Browser receives]
+├─ Display HTML immediately (fast FCP)
+├─ Load JavaScript
+├─ React hydrates: traverse DOM, attach event listeners
+└─ App becomes interactive
+
+[User can now click, type, etc.]
+```
+
+**Hydration mismatch**: Server renders one thing, client renders another → React warns, may cause bugs.
+
+```jsx title="mismatch-example.jsx" showLineNumbers
+// BAD: server renders current time, client renders different time
+export default function Clock() {
+  const [time, setTime] = useState(new Date());
+
+  return <div>{time.toLocaleString()}</div>;
+}
+
+// Server renders: "2025-02-14 10:00:00 AM"
+// Browser renders: "2025-02-14 10:00:01 AM" (time moved forward)
+// React warning: hydration mismatch
+
+// GOOD: suppress hydration on first render
+function Clock() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) return null; // Skip render on server
+
+  return <div>{new Date().toLocaleString()}</div>;
+}
+```
+
+## Comparison & Decision Matrix
+
+<Figure caption="Rendering strategies: performance vs. freshness">
+```
+                Fresh Data Freshness
+                    ↑
+                    │
+      SSR (dynamic) │        ISR
+                    │      (hybrid)
+                    │        /
+                    │      /
+                    │    /
+                    │  /
+                    │/
+Performance Cost    └─────────────────→ SSG (static)
+                     Build Complexity
+```
+</Figure>
+
+<Tabs>
+<TabItem value="decision" label="Decision Tree">
+```
+Start: Choose Rendering Strategy
+
+Is content mostly static?
+├─ YES: Use SSG
+│       ├─ Content changes rarely? → Pure SSG
+│       └─ Content changes sometimes? → ISR with revalidation
+│
+├─ NO: Is personalization per-user required?
+   ├─ YES: Use SSR
+   │       (render fresh HTML per user)
+   │
+   └─ NO: Is SEO critical?
+      ├─ YES: Use ISR (balance freshness + speed)
+      └─ NO: Use CSR (simpler, internal apps)
+```
+</TabItem>
+<TabItem value="matrix" label="Comparison Matrix">
+```
+                SSG    ISR    SSR    CSR
+Build Time      Slow   Slow   None   None
+TTFB            Fast   Fast   Slow   Fast
+FCP             Fast   Fast   Fast   Slow
+SEO             Good   Good   Good   Bad
+Dynamic Content No     Limited Yes    Yes
+Scale           ∞      ∞      Limited ∞
+Cost            Low    Low    High   Low
+```
+</TabItem>
+</Tabs>
+
+## Patterns & Pitfalls
+
+### Pattern: Per-Route Strategy
+
+Use different strategies per route:
+
+```jsx title="pages/index.jsx" showLineNumbers
+// Homepage: mostly static, occasional updates → ISR
+export async function getStaticProps() {
+  return {
+    props: { data: await fetchData() },
+    revalidate: 600, // 10 min
+  };
+}
+```
+
+```jsx title="pages/products/[id].jsx" showLineNumbers
+// Popular products: pre-render at build
+// New products: generate on-demand
+export async function getStaticPaths() {
+  return {
+    paths: await getPopularProductIds(),
+    fallback: 'blocking',
+  };
+}
+
+export async function getStaticProps({ params }) {
+  return {
+    props: { product: await fetchProduct(params.id) },
+    revalidate: 3600, // 1 hour
+  };
+}
+```
+
+```jsx title="pages/admin/analytics.jsx" showLineNumbers
+// User-specific data: always SSR
+export async function getServerSideProps(context) {
+  const user = await auth(context);
+  return {
+    props: { data: await fetchUserAnalytics(user.id) },
+  };
+}
+```
+
+### Pitfall: ISR Stale Content
+
+**Problem**: User sees old price after revalidation triggered but not completed.
+
+**Mitigation**: Use stale-while-revalidate headers, inform users data may be stale:
+
+```js title="api-response.js" showLineNumbers
+res.setHeader(
+  'Cache-Control',
+  'public, s-maxage=3600, stale-while-revalidate=86400'
+);
+
+// Response can be stale up to 86400s (1 day)
+// while revalidation happens in background
+```
+
+### Pitfall: Build Time Explosion
+
+**Problem**: Pre-rendering 1M pages takes 8 hours. New deploy blocked.
+
+**Mitigation**: Use ISR with `fallback: 'blocking'`. Pre-render only popular pages:
+
+```jsx
+export async function getStaticPaths() {
+  // Only pre-render top 1000 pages
+  return {
+    paths: await getTopProducts(1000),
+    fallback: 'blocking', // Other pages generated on first request
+  };
+}
+```
+
+## Operational Considerations
+
+### Monitoring Rendering Performance
+
+Track rendering metrics:
+
+```js title="metrics.js" showLineNumbers
+// Measure SSR render time on server
+const start = performance.now();
+const html = renderToString(<App />);
+const renderTime = performance.now() - start;
+
+console.log(`SSR render time: ${renderTime}ms`);
+
+// ISR revalidation time
+const revalidateStart = Date.now();
+const newHTML = await revalidate();
+console.log(`Revalidation took ${Date.now() - revalidateStart}ms`);
+```
+
+### Cache Headers for Each Strategy
+
+```nginx
+# SSG: cache forever (content is static)
+location /static/ {
+  add_header Cache-Control "public, max-age=31536000, immutable";
+}
+
+# ISR: cache until revalidation
+location /products/ {
+  add_header Cache-Control "public, s-maxage=3600, stale-while-revalidate=86400";
+}
+
+# SSR: don't cache (always fresh)
+location /api/ {
+  add_header Cache-Control "no-cache, must-revalidate";
+}
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is rendering strategy chosen based on content freshness requirements?",
+  "Are TTFB, FCP, TTI measured for chosen strategy?",
+  "Is hydration tested for mismatches (SSR/ISR)?",
+  "Are ISR revalidation strategies defined (time or on-demand)?",
+  "Is build time monitored (SSG/ISR)?",
+  "Are cache headers correct per strategy?",
+  "Is SEO verified (open graph, meta tags, schema)?",
+  "Are performance budgets set?",
+  "Is per-route strategy documented (different routes, different strategies)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Choose SSG When:**
+- Content rarely changes (blog, docs, product catalog)
+- High traffic expected
+- Budget-conscious (no server cost)
+
+**Choose ISR When:**
+- Content changes occasionally (hourly, daily)
+- High traffic, low variance
+- Want both speed and freshness
+
+**Choose SSR When:**
+- Personalized per-user content
+- Real-time data required
+- Can afford server cost
+
+**Avoid CSR When:**
+- SEO critical (use SSR, SSG, or ISR instead)
+- Users on slow networks (load JS first)
+
+## Showcase: Rendering Strategy Impact
+
+<Figure caption="Performance impact of rendering choice">
+```
+                     TTFB   FCP   TTI   SEO   Cost
+SSG (blog)          100ms  100ms  200ms Good  Low
+ISR (product list)  100ms  100ms  200ms Good  Low
+SSR (personalized)  1000ms 800ms  1200ms Good  High
+CSR (SPA)           50ms   2000ms 3000ms Bad   Low
+```
+</Figure>
+
+## Self-Check
+
+1. **When would you choose ISR over pure SSG? What's the trade-off?**
+2. **What is hydration, and why can mismatches cause bugs?**
+3. **You have 1M products. Pre-rendering all takes 12 hours. How would you optimize?**
+
+## Next Steps
+
+- <a href="https://nextjs.org/docs/basic-features/pages" target="_blank" rel="nofollow noopener noreferrer">Next.js Rendering Documentation ↗️</a>
+- Explore <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/performance-ttfb-tti-core-web-vitals-conceptual" target="_blank" rel="nofollow noopener noreferrer">Core Web Vitals ↗️</a>
+- Learn about <a href="https://remix.run/docs/en/main/guides/data-loading" target="_blank" rel="nofollow noopener noreferrer">Remix Loaders & Actions ↗️</a>
+- Study <a href="https://vercel.com/docs" target="_blank" rel="nofollow noopener noreferrer">Vercel Edge Functions ↗️</a>
+
+### One Takeaway
+
+<Callout tone="info">
+ISR (Incremental Static Regeneration) is the sweet spot for most modern web apps: pre-render for speed, revalidate for freshness. Use SSG for truly static content, SSR for highly personalized, CSR for internal tools.
+</Callout>
+
+## References
+
+1. <a href="https://nextjs.org/docs/basic-features/pages" target="_blank" rel="nofollow noopener noreferrer">Next.js: Rendering Strategies</a>
+2. <a href="https://remix.run/" target="_blank" rel="nofollow noopener noreferrer">Remix: Full Stack Web Framework</a>
+3. <a href="https://astro.build/" target="_blank" rel="nofollow noopener noreferrer">Astro: Static Site Builder</a>
+4. <a href="https://react.dev/reference/react-dom/server" target="_blank" rel="nofollow noopener noreferrer">React Server Rendering API</a>
+5. <a href="https://web.dev/rendering-on-the-web/" target="_blank" rel="nofollow noopener noreferrer">Google: Rendering on the Web</a>
+---

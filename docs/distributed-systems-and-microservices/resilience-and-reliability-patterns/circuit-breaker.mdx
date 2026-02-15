@@ -1,0 +1,512 @@
+---
+sidebar_position: 2
+title: "Circuit Breaker"
+description: "Master the circuit breaker pattern: stop sending requests to failing services, prevent cascades, and recover gradually."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [circuit breaker, cascading failures, fail-fast, gradual recovery, fault tolerance, health detection]
+image: /img/archman-social-card.webp
+tags: [circuit-breaker, cascading-failure-prevention, fail-fast, gradual-recovery, resilience, fault-tolerance]
+hide_title: true
+---
+
+<Hero title="Circuit Breaker" subtitle="Prevent cascading failures by failing fast and recovering gradually" imageAlt="Circuit breaker illustration" size="large" />
+
+## TL;DR
+
+Circuit Breaker prevents cascading failures by detecting when a dependency is failing and stopping requests to it immediately. Three states: Closed (normal, counting failures), Open (failing, reject immediately), Half-Open (testing recovery). When failures exceed a threshold (e.g., 5 failures in 10 seconds), the circuit opens and rejects all requests without delay. After a timeout (e.g., 30 seconds), it enters half-open state and allows a test request. If the test succeeds, close the circuit; if it fails, stay open. Prevents cascades, enables faster recovery, and allows backends to recover gracefully.
+
+## Learning Objectives
+
+- Understand the three-state circuit breaker pattern and state transitions
+- Implement failure detection thresholds and recovery timeouts
+- Design appropriate fallback behavior for open circuits
+- Choose which services and dependencies need circuit breakers
+- Configure thresholds based on dependency reliability and criticality
+
+## Motivating Scenario
+
+A payment service depends on a fraud-detection API. The fraud API becomes overloaded (processing backlog). Payments wait for fraud response (60-second timeout). All payment threads block. Frontend times out. Users can't complete purchases. With circuit breaker: after 5 consecutive fraud API failures (5 seconds), the circuit opens. New payment requests immediately fail (fail-fast). Service handles downtime gracefully (no fraud check = manual review later). After 30 seconds, circuit tests fraud API. If recovered, circuit closes. If not, stays open. Frontend is responsive throughout.
+
+## Core Concepts
+
+<Figure
+  caption="Circuit Breaker State Transitions"
+  content={`
+graph TB
+    A["CLOSED<br/>Normal Operation<br/>Count Failures"]
+    B["OPEN<br/>Failing Fast<br/>Reject All"]
+    C["HALF-OPEN<br/>Testing Recovery<br/>Allow Test Request"]
+
+    A -->|Failures >= Threshold<br/>e.g., 5 in 10s| B
+    B -->|Timeout Expired<br/>e.g., 30s| C
+    C -->|Test Success| A
+    C -->|Test Failure| B
+
+    style A fill:#c8e6c9
+    style B fill:#ffcccc
+    style C fill:#fff9c4
+`}
+/>
+
+**Closed State:** Normal operation. Requests pass through. Failures are counted. If failure count exceeds threshold, transition to Open.
+
+**Open State:** Service is failing. Reject all new requests immediately with an error or fallback value. Don't wait for timeout. Allow bounded time for recovery.
+
+**Half-Open State:** Service might be recovering. Allow a single test request through. If it succeeds, close the circuit and resume normal traffic. If it fails, return to Open.
+
+Each state has configurable thresholds: failure count, window duration, timeout to half-open, and max test requests.
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="python" label="Python">
+```python
+import time
+import threading
+from enum import Enum
+from collections import deque
+
+class CircuitState(Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+class CircuitBreaker:
+    def __init__(
+        self,
+        failure_threshold=5,
+        success_threshold=1,
+        timeout=30,
+        window_size=10
+    ):
+        """
+        failure_threshold: failures to trigger open
+        success_threshold: successes to close from half-open
+        timeout: seconds before open -> half-open
+        window_size: seconds to count failures in
+        """
+        self.failure_threshold = failure_threshold
+        self.success_threshold = success_threshold
+        self.timeout = timeout
+        self.window_size = window_size
+
+        self.state = CircuitState.CLOSED
+        self.failures = deque()
+        self.successes = 0
+        self.last_failure_time = None
+        self.opened_at = None
+        self.lock = threading.Lock()
+
+    def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection"""
+        with self.lock:
+            if self.state == CircuitState.OPEN:
+                if time.time() - self.opened_at > self.timeout:
+                    self.state = CircuitState.HALF_OPEN
+                    self.successes = 0
+                else:
+                    raise Exception("Circuit breaker is open")
+
+        try:
+            result = func(*args, **kwargs)
+            self._record_success()
+            return result
+        except Exception as e:
+            self._record_failure()
+            raise e
+
+    def _record_success(self):
+        with self.lock:
+            if self.state == CircuitState.HALF_OPEN:
+                self.successes += 1
+                if self.successes >= self.success_threshold:
+                    self.state = CircuitState.CLOSED
+                    self.failures.clear()
+                    self.successes = 0
+            elif self.state == CircuitState.CLOSED:
+                # Clear old failures (outside window)
+                now = time.time()
+                while self.failures and now - self.failures[0] > self.window_size:
+                    self.failures.popleft()
+
+    def _record_failure(self):
+        with self.lock:
+            now = time.time()
+            self.failures.append(now)
+            self.last_failure_time = now
+
+            # Clear old failures (outside window)
+            while self.failures and now - self.failures[0] > self.window_size:
+                self.failures.popleft()
+
+            failure_count = len(self.failures)
+
+            if self.state == CircuitState.CLOSED:
+                if failure_count >= self.failure_threshold:
+                    self.state = CircuitState.OPEN
+                    self.opened_at = now
+
+            elif self.state == CircuitState.HALF_OPEN:
+                # Any failure in half-open returns to open
+                self.state = CircuitState.OPEN
+                self.opened_at = now
+                self.successes = 0
+
+    def get_state(self):
+        with self.lock:
+            return {
+                "state": self.state.value,
+                "failures": len(self.failures),
+                "successes": self.successes if self.state == CircuitState.HALF_OPEN else None
+            }
+
+# Example usage
+breaker = CircuitBreaker(failure_threshold=3, timeout=5)
+
+def unreliable_api(fail=False):
+    if fail:
+        raise Exception("API failed")
+    return "Success"
+
+# Test with failures
+for i in range(10):
+    try:
+        breaker.call(unreliable_api, fail=(i < 3))
+        print(f"Request {i}: OK")
+    except Exception as e:
+        print(f"Request {i}: {e}, State: {breaker.get_state()['state']}")
+```
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+type CircuitState string
+
+const (
+    Closed   CircuitState = "closed"
+    Open     CircuitState = "open"
+    HalfOpen CircuitState = "half-open"
+)
+
+type CircuitBreaker struct {
+    state              CircuitState
+    failureThreshold   int
+    successThreshold   int
+    timeout            time.Duration
+    windowSize         time.Duration
+    failures           []time.Time
+    successes          int
+    openedAt           time.Time
+    mu                 sync.Mutex
+}
+
+func NewCircuitBreaker(
+    failureThreshold int,
+    successThreshold int,
+    timeout time.Duration,
+    windowSize time.Duration,
+) *CircuitBreaker {
+    return &CircuitBreaker{
+        state:            Closed,
+        failureThreshold: failureThreshold,
+        successThreshold: successThreshold,
+        timeout:          timeout,
+        windowSize:       windowSize,
+        failures:         []time.Time{},
+    }
+}
+
+func (cb *CircuitBreaker) Call(fn func() error) error {
+    cb.mu.Lock()
+
+    if cb.state == Open {
+        if time.Since(cb.openedAt) > cb.timeout {
+            cb.state = HalfOpen
+            cb.successes = 0
+        } else {
+            cb.mu.Unlock()
+            return fmt.Errorf("circuit breaker is open")
+        }
+    }
+
+    cb.mu.Unlock()
+
+    err := fn()
+    if err != nil {
+        cb.recordFailure()
+        return err
+    }
+
+    cb.recordSuccess()
+    return nil
+}
+
+func (cb *CircuitBreaker) recordSuccess() {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+
+    if cb.state == HalfOpen {
+        cb.successes++
+        if cb.successes >= cb.successThreshold {
+            cb.state = Closed
+            cb.failures = []time.Time{}
+            cb.successes = 0
+        }
+    } else if cb.state == Closed {
+        now := time.Now()
+        // Clear old failures
+        for len(cb.failures) > 0 &&
+            now.Sub(cb.failures[0]) > cb.windowSize {
+            cb.failures = cb.failures[1:]
+        }
+    }
+}
+
+func (cb *CircuitBreaker) recordFailure() {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+
+    now := time.Now()
+    cb.failures = append(cb.failures, now)
+
+    // Clear old failures
+    for len(cb.failures) > 0 &&
+        now.Sub(cb.failures[0]) > cb.windowSize {
+        cb.failures = cb.failures[1:]
+    }
+
+    failureCount := len(cb.failures)
+
+    if cb.state == Closed {
+        if failureCount >= cb.failureThreshold {
+            cb.state = Open
+            cb.openedAt = now
+        }
+    } else if cb.state == HalfOpen {
+        cb.state = Open
+        cb.openedAt = now
+        cb.successes = 0
+    }
+}
+
+func (cb *CircuitBreaker) GetState() map[string]interface{} {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+
+    return map[string]interface{}{
+        "state":    cb.state,
+        "failures": len(cb.failures),
+    }
+}
+```
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js">
+```javascript
+const States = {
+    CLOSED: 'closed',
+    OPEN: 'open',
+    HALF_OPEN: 'half-open'
+};
+
+class CircuitBreaker {
+    constructor(options = {}) {
+        this.state = States.CLOSED;
+        this.failureThreshold = options.failureThreshold || 5;
+        this.successThreshold = options.successThreshold || 1;
+        this.timeout = options.timeout || 30000; // ms
+        this.windowSize = options.windowSize || 10000; // ms
+
+        this.failures = [];
+        this.successes = 0;
+        this.openedAt = null;
+    }
+
+    async call(fn) {
+        if (this.state === States.OPEN) {
+            if (Date.now() - this.openedAt > this.timeout) {
+                this.state = States.HALF_OPEN;
+                this.successes = 0;
+            } else {
+                throw new Error('Circuit breaker is OPEN');
+            }
+        }
+
+        try {
+            const result = await fn();
+            this.recordSuccess();
+            return result;
+        } catch (error) {
+            this.recordFailure();
+            throw error;
+        }
+    }
+
+    recordSuccess() {
+        if (this.state === States.HALF_OPEN) {
+            this.successes++;
+            if (this.successes >= this.successThreshold) {
+                this.state = States.CLOSED;
+                this.failures = [];
+                this.successes = 0;
+            }
+        } else if (this.state === States.CLOSED) {
+            const now = Date.now();
+            this.failures = this.failures.filter(t => now - t <= this.windowSize);
+        }
+    }
+
+    recordFailure() {
+        const now = Date.now();
+        this.failures.push(now);
+
+        // Clear old failures
+        this.failures = this.failures.filter(t => now - t <= this.windowSize);
+
+        const failureCount = this.failures.length;
+
+        if (this.state === States.CLOSED) {
+            if (failureCount >= this.failureThreshold) {
+                this.state = States.OPEN;
+                this.openedAt = now;
+            }
+        } else if (this.state === States.HALF_OPEN) {
+            this.state = States.OPEN;
+            this.openedAt = now;
+            this.successes = 0;
+        }
+    }
+
+    getState() {
+        return {
+            state: this.state,
+            failures: this.failures.length,
+            successes: this.state === States.HALF_OPEN ? this.successes : null
+        };
+    }
+}
+
+// Example usage
+const breaker = new CircuitBreaker({
+    failureThreshold: 3,
+    timeout: 5000
+});
+
+const unreliableApi = async (shouldFail = false) => {
+    if (shouldFail) throw new Error('API failed');
+    return 'Success';
+};
+
+(async () => {
+    for (let i = 0; i < 10; i++) {
+        try {
+            await breaker.call(() => unreliableApi(i < 3));
+            console.log(`Request ${i}: OK`);
+        } catch (error) {
+            console.log(`Request ${i}: ${error.message}, State: ${breaker.getState().state}`);
+        }
+    }
+})();
+```
+  </TabItem>
+</Tabs>
+
+## When to Use vs. When NOT to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "Use Circuit Breakers",
+    points: [
+      "External APIs with variable reliability",
+      "Databases with potential overload/failover"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid Circuit Breakers",
+    points: [
+      "Services with known performance issues",
+      "Systems where cascading failure is costly",
+      "Protecting limited resources (thread pools, connections)"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Fallback Value on Open",
+      body: "When circuit opens, don't error. Return a safe default (empty list, cached value, degraded mode). Example: recommendations offline -> show popular items instead of erroring."
+    },
+    {
+      label: "Pattern: Different Failure Types",
+      body: "Timeout (likely overload) opens circuit. 4xx error (bad request) doesn't count. 5xx error counts. Distinguish between transient (retry) and persistent (circuit open) failures."
+    },
+    {
+      label: "Pitfall: Threshold Too Low",
+      body: "Circuit opens after 1-2 failures. Flaky network causes unnecessary open state. Threshold should be 3-5 failures in a 10-second window for most services."
+    },
+    {
+      label: "Pitfall: Timeout Too Long",
+      body: "Circuit stays open 5 minutes. Service recovers in 30 seconds, but still rejects traffic. Timeout should be 30-60 seconds; test recovery eagerly."
+    },
+    {
+      label: "Pattern: Fallback to Cache",
+      body: "When circuit to auth service opens, use cached auth tokens (with expiration). When circuit to recommendation API opens, show previously recommended items. Graceful degradation."
+    },
+    {
+      label: "Pitfall: Shared State Without Sync",
+      body: "Circuit breaker in multiple instances without shared state. Each instance tracks failures independently. Service might receive requests from 10 breakers, all in HALF_OPEN state. Use shared state (Redis) or eventual consistency."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Circuit breaker wraps all calls to external services and unreliable dependencies",
+    "Failure threshold is configured based on dependency reliability (3-5 failures typical)",
+    "Failure window is appropriate (10-30 seconds for most systems)",
+    "Timeout to half-open is configured (30-60 seconds typical)",
+    "Success threshold for closing is > 1 (prevents oscillation)",
+    "Fallback behavior is defined for open state (error, cache, default value)",
+    "Different error types are handled differently (timeout vs. 5xx vs. 4xx)",
+    "Circuit state is monitored and alerted (transitions to OPEN, time in OPEN)",
+    "Multiple breaker instances coordinate (shared state if needed)",
+    "Tests verify fallback behavior when circuit is open"
+  ]}
+/>
+
+## Self-Check
+
+- Can you draw the three states and transitions?
+- What's the difference between Closed and Half-Open?
+- How do you choose failure threshold and timeout values?
+- What should happen when circuit opens (fail or fallback)?
+- How do multiple service instances coordinate circuit state?
+
+## Next Steps
+
+1. **Bulkhead Isolation:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/bulkhead-isolation" target="_blank" rel="nofollow noopener noreferrer">Bulkhead Isolation ↗️</a> to prevent resource exhaustion
+2. **Rate Limiting:** Learn <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/rate-limiting-and-throttling" target="_blank" rel="nofollow noopener noreferrer">Rate Limiting and Throttling ↗️</a> for proactive flow control
+3. **Health Probes:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/health-probes" target="_blank" rel="nofollow noopener noreferrer">Health Probes ↗️</a> to detect service failures early
+
+## References
+
+- Nygard, M. J. (2007). Release It!: Design and Deploy Production-Ready Software. Pragmatic Programmers.
+- Fowler, M. (2014). <a href="https://martinfowler.com/bliki/CircuitBreaker.html" target="_blank" rel="nofollow noopener noreferrer">Circuit Breaker ↗️</a>. martinfowler.com
+- Netflix. <a href="https://github.com/Netflix/Hystrix/wiki" target="_blank" rel="nofollow noopener noreferrer">Hystrix: Latency and Fault Tolerance Library ↗️</a>

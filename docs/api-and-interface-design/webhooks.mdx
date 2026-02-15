@@ -1,0 +1,536 @@
+---
+sidebar_position: 7
+title: "Webhooks"
+description: "Push events to external systems reliably with webhooks"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [webhooks, event delivery, retries, signatures, idempotency, webhook security, event delivery guarantees]
+image: /img/archman-social-card.webp
+tags: [webhooks, event-delivery, async-communication, retries, signatures, security, idempotency, reliability, best-practices]
+hide_title: true
+---
+
+<Hero title="Webhooks" subtitle="Push events to external systems reliably" imageAlt="Webhooks illustration" size="large" />
+
+## TL;DR
+
+Webhooks are how your system pushes events to external systems. When an order ships, you POST to a client-provided URL. Unlike polling (client repeatedly asks "Did it change?"), webhooks notify clients immediately. Design webhooks for reliability: sign requests (clients verify authenticity), retry with exponential backoff (network failures happen), provide idempotency keys (client deduplicates), and track delivery status. Expect failures, timeouts, and out-of-order events. Clients must handle these gracefully.
+
+## Learning Objectives
+
+- Design webhook request structure and signatures
+- Implement reliable delivery with retries
+- Handle failures and timeouts gracefully
+- Secure webhooks against spoofing
+- Provide visibility into delivery status
+
+## Motivating Scenario
+
+A payment processor sends webhook to your app when payment completes: `POST https://your-app.com/webhooks/payment`. Your webhook handler is slow. The processor times out after 5 seconds and gives up. Payment status never updates. Customer support is confused.
+
+With proper retry logic, the processor tries again. Your handler eventually processes the event. With idempotency keys, even duplicate deliveries (if network hiccups cause resends) don't cause double-charges.
+
+## Core Concepts
+
+### Webhook Request Structure
+
+Include metadata to help clients:
+
+```json
+{
+  "id": "evt-123456",
+  "timestamp": "2025-02-14T10:00:00Z",
+  "type": "order.shipped",
+  "data": {
+    "order_id": "ord-123",
+    "tracking_number": "TRK-456"
+  },
+  "delivery_attempt": 1
+}
+```
+
+- **id**: Unique webhook ID for idempotency
+- **type**: Event type (order.created, order.shipped)
+- **timestamp**: When event occurred
+- **data**: Event payload
+- **delivery_attempt**: Retry count
+
+### Signing Requests
+
+Clients must verify that webhooks come from you, not an attacker:
+
+```bash
+POST /webhooks/payment
+X-Signature: sha256=abcd1234...
+Content-Type: application/json
+
+{
+  "id": "evt-789",
+  "type": "payment.completed"
+}
+```
+
+Server signs request with secret key. Client verifies signature using same key. Prevents spoofing.
+
+### Retry Strategy
+
+Network failures are inevitable. Retry with exponential backoff:
+
+- Attempt 1: Immediate
+- Attempt 2: After 5 seconds
+- Attempt 3: After 30 seconds (5s * 6)
+- Attempt 4: After 3 minutes
+- Attempt 5: After 18 minutes
+- Give up after 24 hours
+
+This balances retry aggressiveness with server load.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="request" label="Webhook Request">
+
+```bash
+POST https://customer-app.com/webhooks/order
+X-Webhook-ID: evt-abc123def456
+X-Webhook-Timestamp: 1707906000
+X-Webhook-Signature: sha256=abcd1234ef5678...
+Content-Type: application/json
+User-Agent: PaymentProcessor/1.0
+
+{
+  "id": "evt-abc123def456",
+  "timestamp": "2025-02-14T10:00:00Z",
+  "type": "order.shipped",
+  "data": {
+    "order_id": "ord-789",
+    "customer_id": "cust-456",
+    "tracking_number": "TRK-2025-02-14-001",
+    "estimated_delivery": "2025-02-16T18:00:00Z"
+  },
+  "delivery_attempt": 1
+}
+```
+
+Headers signal authenticity and idempotency.
+
+</TabItem>
+<TabItem value="verification" label="✅ Client Verification">
+
+```javascript
+// Client verifies webhook signature
+const crypto = require('crypto');
+
+app.post('/webhooks/order', (req, res) => {
+  const signature = req.headers['x-webhook-signature'];
+  const timestamp = req.headers['x-webhook-timestamp'];
+  const secret = process.env.WEBHOOK_SECRET;
+
+  // Verify timestamp (prevent replay attacks)
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestamp) > 300) { // 5 minute window
+    return res.status(401).json({ error: 'Timestamp too old' });
+  }
+
+  // Verify signature
+  const signedContent = `${timestamp}.${JSON.stringify(req.body)}`;
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(signedContent)
+    .digest('hex');
+
+  if (signature !== `sha256=${expected}`) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  // Verify idempotency (don't process same webhook twice)
+  const webhookId = req.headers['x-webhook-id'];
+  if (await db.webhookProcessed(webhookId)) {
+    return res.status(200).json({ message: 'Already processed' });
+  }
+
+  // Process webhook
+  processPayment(req.body.data);
+  await db.markWebhookProcessed(webhookId);
+
+  res.json({ success: true });
+});
+```
+
+Client verifies signature and idempotency before processing.
+
+</TabItem>
+<TabItem value="retry" label="Server-Side Retry Logic">
+
+```javascript
+// Server retries webhook delivery
+const retryBackoff = [0, 5, 30, 180, 1080]; // seconds (0, 5s, 30s, 3m, 18m)
+
+async function deliverWebhook(webhook, attempt = 0) {
+  try {
+    const signature = createSignature(webhook);
+    const response = await fetch(webhook.url, {
+      method: 'POST',
+      headers: {
+        'X-Webhook-ID': webhook.id,
+        'X-Webhook-Timestamp': Math.floor(Date.now() / 1000),
+        'X-Webhook-Signature': signature,
+        'Content-Type': 'application/json',
+        'User-Agent': 'PaymentProcessor/1.0'
+      },
+      body: JSON.stringify({
+        ...webhook.payload,
+        delivery_attempt: attempt + 1
+      }),
+      timeout: 10000 // 10 second timeout
+    });
+
+    if (response.ok) {
+      await db.updateWebhook(webhook.id, { status: 'delivered' });
+      return;
+    }
+
+    // 4xx client errors: don't retry
+    if (response.status >= 400 && response.status < 500) {
+      await db.updateWebhook(webhook.id, { status: 'failed' });
+      return;
+    }
+
+    // 5xx or other errors: retry
+    throw new Error(`Server error: ${response.status}`);
+  } catch (error) {
+    if (attempt < retryBackoff.length - 1) {
+      // Schedule retry
+      const delay = retryBackoff[attempt + 1] * 1000;
+      setTimeout(() => deliverWebhook(webhook, attempt + 1), delay);
+    } else {
+      // Max retries exceeded
+      await db.updateWebhook(webhook.id, { status: 'failed' });
+    }
+  }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Event Types and Best Practices
+
+Define webhook event types clearly:
+
+```
+order.created
+order.confirmed
+order.shipped
+order.delivered
+order.cancelled
+
+payment.authorized
+payment.captured
+payment.failed
+payment.refunded
+```
+
+Document each event type with example payloads and required fields.
+
+## Webhook Management Features
+
+**Delivery Log**: Clients see delivery history (timestamp, status, request/response).
+
+**Manual Retry**: Let clients retry failed deliveries without rebuilding the event.
+
+**Test Webhook**: Send sample webhook to verify client URL and signature verification.
+
+**Webhook Failure Alerts**: Notify client when deliveries fail repeatedly (email, dashboard alert).
+
+## Patterns and Pitfalls
+
+**Pitfall**: No signature verification. Attackers send fake webhooks.
+
+**Pitfall**: No retry logic. Single network hiccup loses data.
+
+**Pitfall**: No idempotency. Retried webhooks cause duplicate actions.
+
+**Pitfall**: Slow webhook endpoints. Hitting a slow webhook blocks your system. Use async, fire-and-forget.
+
+**Pattern**: Idempotency keys. Clients should include a key; don't process the same key twice.
+
+**Pattern**: Webhook delivery status dashboard. Clients trust systems they can see.
+
+## Design Review Checklist
+
+- [ ] Webhook requests signed (client can verify authenticity)
+- [ ] Signature verification documented with examples
+- [ ] Request includes webhook ID and timestamp
+- [ ] Retry logic implements exponential backoff
+- [ ] Max retry duration set (e.g., 24 hours)
+- [ ] Idempotency supported (don't process same webhook twice)
+- [ ] Timeout set on webhook requests (e.g., 10 seconds)
+- [ ] Delivery log available to clients
+- [ ] Test webhook endpoint provided
+- [ ] Webhook failure alerts configured
+
+## Advanced Webhook Patterns
+
+### Webhook Filtering and Subscriptions
+
+Let clients subscribe to specific event types:
+
+```python
+class WebhookSubscription:
+    """Client can subscribe to specific events."""
+    def __init__(self, client_id: str, url: str):
+        self.client_id = client_id
+        self.url = url
+        self.events = []  # Empty = subscribe to all
+        self.active = True
+
+subscription = WebhookSubscription(
+    client_id="client-123",
+    url="https://client-app.com/webhooks"
+)
+subscription.events = [
+    "order.created",
+    "order.shipped",
+    "payment.failed"
+]
+# Client only receives these 3 event types
+
+# When emitting events
+def emit_webhook(event_type: str, data: dict):
+    for subscription in get_subscriptions():
+        # Only send if subscribed (or subscribed to all)
+        if not subscription.events or event_type in subscription.events:
+            deliver_webhook(subscription.url, {
+                "type": event_type,
+                "data": data
+            })
+```
+
+### Webhook Replay Functionality
+
+Allow clients to replay failed deliveries:
+
+```python
+class WebhookDeliveryLog:
+    """Track webhook delivery attempts."""
+
+    def __init__(self):
+        self.logs = {}  # webhook_id -> delivery record
+
+    def record_delivery(self, webhook_id: str, subscription_url: str,
+                       payload: dict, status_code: int, response_body: str):
+        """Record delivery attempt."""
+        self.logs[webhook_id] = {
+            "id": webhook_id,
+            "url": subscription_url,
+            "payload": payload,
+            "status_code": status_code,
+            "response": response_body,
+            "timestamp": datetime.utcnow().isoformat(),
+            "success": 200 <= status_code < 300
+        }
+
+    def get_delivery_history(self, webhook_id: str, limit: int = 10):
+        """Get delivery history for a webhook."""
+        log = self.logs.get(webhook_id)
+        return log if log else None
+
+    async def replay_webhook(self, webhook_id: str):
+        """Replay a webhook delivery."""
+        log = self.logs[webhook_id]
+
+        # Resend with same payload
+        response = await fetch(
+            log["url"],
+            method="POST",
+            json=log["payload"],
+            headers={"X-Webhook-Replay": "true"}
+        )
+
+        # Record replay attempt
+        self.logs[f"{webhook_id}-replay"] = {
+            "original_webhook_id": webhook_id,
+            "status_code": response.status_code,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+# Client API
+class WebhookManagementAPI:
+    async def get_delivery_status(self, webhook_id: str):
+        """GET /webhooks/{webhook_id}/status"""
+        log = delivery_log.get_delivery_history(webhook_id)
+        return {
+            "webhook_id": webhook_id,
+            "status": "delivered" if log["success"] else "failed",
+            "timestamp": log["timestamp"],
+            "response_code": log["status_code"]
+        }
+
+    async def replay_delivery(self, webhook_id: str):
+        """POST /webhooks/{webhook_id}/replay"""
+        await delivery_log.replay_webhook(webhook_id)
+        return {"status": "replayed"}
+```
+
+### Circuit Breaker for Webhook Endpoints
+
+Stop trying to deliver to broken endpoints:
+
+```python
+class WebhookCircuitBreaker:
+    """Prevent hammering dead webhook endpoints."""
+
+    def __init__(self, threshold: int = 5, timeout: float = 3600):
+        self.state = {}  # url -> state (closed, open, half_open)
+        self.failure_counts = {}  # url -> count
+        self.threshold = threshold
+        self.timeout = timeout
+        self.last_failure_time = {}
+
+    async def execute(self, url: str, delivery_func):
+        """Execute webhook delivery with circuit breaker."""
+        state = self.state.get(url, "closed")
+
+        if state == "open":
+            # Circuit is open: fail fast
+            if time.time() - self.last_failure_time.get(url, 0) > self.timeout:
+                # Timeout elapsed: try again (half-open)
+                self.state[url] = "half_open"
+            else:
+                raise Exception(f"Circuit open for {url}")
+
+        try:
+            result = await delivery_func()
+            # Success: close circuit
+            self.state[url] = "closed"
+            self.failure_counts[url] = 0
+            return result
+        except Exception as e:
+            # Failure: increment counter
+            self.failure_counts[url] = self.failure_counts.get(url, 0) + 1
+            self.last_failure_time[url] = time.time()
+
+            if self.failure_counts[url] >= self.threshold:
+                # Too many failures: open circuit
+                self.state[url] = "open"
+
+            raise
+
+# Usage
+breaker = WebhookCircuitBreaker(threshold=5)
+
+async def deliver(subscription):
+    await breaker.execute(
+        subscription.url,
+        lambda: deliver_webhook_http(subscription.url, payload)
+    )
+```
+
+### Webhook Batching
+
+Reduce network overhead by batching multiple events:
+
+```python
+class WebhookBatcher:
+    """Batch multiple events into single webhook."""
+
+    def __init__(self, batch_size: int = 10, flush_interval: float = 5.0):
+        self.batch_size = batch_size
+        self.flush_interval = flush_interval
+        self.batches = {}  # url -> list of events
+        self.flush_tasks = {}
+
+    async def queue_event(self, subscription_url: str, event: dict):
+        """Queue event for batching."""
+        if subscription_url not in self.batches:
+            self.batches[subscription_url] = []
+
+        self.batches[subscription_url].append(event)
+
+        # Flush if batch is full
+        if len(self.batches[subscription_url]) >= self.batch_size:
+            await self.flush(subscription_url)
+        # Or schedule flush after timeout
+        elif subscription_url not in self.flush_tasks:
+            self.flush_tasks[subscription_url] = asyncio.create_task(
+                self._schedule_flush(subscription_url)
+            )
+
+    async def _schedule_flush(self, url: str):
+        """Flush after interval."""
+        await asyncio.sleep(self.flush_interval)
+        await self.flush(url)
+
+    async def flush(self, subscription_url: str):
+        """Send batched events."""
+        events = self.batches.get(subscription_url, [])
+        if not events:
+            return
+
+        # Send batch
+        payload = {
+            "batch_size": len(events),
+            "events": events,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        await send_webhook(subscription_url, payload)
+        self.batches[subscription_url] = []
+
+# Usage: Emit 100 events, batch into ~10 webhooks
+for i in range(100):
+    await batcher.queue_event(
+        "https://client-app.com/webhooks",
+        {"type": "order.created", "order_id": f"ord-{i}"}
+    )
+```
+
+## Webhook vs. Polling Comparison
+
+```
+WEBHOOK (Push):
+  Setup: Client provides URL
+  Latency: Immediate (few milliseconds)
+  Reliability: At-least-once (with retries)
+  Bandwidth: Only on events
+  Complexity: Moderate (signing, retries, DLQs)
+  Best for: Time-critical events (payments, shipments)
+
+POLLING (Pull):
+  Setup: Client implements polling loop
+  Latency: Delayed (polling interval)
+  Reliability: Eventual consistency
+  Bandwidth: Fixed (even if no events)
+  Complexity: Low
+  Best for: Non-urgent updates (reports, analytics)
+```
+
+## Self-Check
+
+- Why must webhook requests be signed? Prevent spoofing: attacker can't impersonate your service without the signing secret.
+- What should a client do if it receives the same webhook twice? Check webhook ID or use idempotency key. Don't process same webhook twice.
+- Why use exponential backoff instead of immediate retries? Prevents hammering failed service. Allows time for recovery. Reduces load during outages.
+- How do subscriptions help webhook systems? Allow clients to receive only relevant events. Reduces noise and bandwidth.
+- When should you use webhook batching? High-volume events (100+ per second). Reduces number of HTTP requests but increases latency.
+
+:::info One Takeaway
+Webhooks are async and unreliable by nature. Design them for failure: sign for authenticity, retry with backoff for resilience, deduplicate with idempotency keys, and provide visibility with delivery logs. Consider circuit breakers for dead endpoints and batching for high-volume scenarios.
+
+:::
+
+## Next Steps
+
+- Read **Async APIs** for event-driven alternatives
+- Study **API Security** for webhook signature schemes
+- Explore **Observability** for monitoring webhook delivery
+
+## References
+
+- Webhook Best Practices (stripe.com, github.com)
+- HMAC Signature Verification (RFC 2104)
+- Event-Driven Architecture Patterns
+- Webhook Security (OWASP)

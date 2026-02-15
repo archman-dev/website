@@ -1,0 +1,504 @@
+---
+sidebar_position: 4
+title: "Error Formats and Problem Details"
+description: "Design consistent, actionable error responses that guide API consumers"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [error handling, problem details, RFC 7807, error formats, API errors, validation errors, error codes]
+image: /img/archman-social-card.webp
+tags: [REST, API-design, error-handling, problem-details, HTTP-status-codes, debugging, developer-experience]
+hide_title: true
+---
+
+<Hero title="Error Formats and Problem Details" subtitle="Guide API consumers with clear, actionable error responses" imageAlt="Error handling illustration" size="large" />
+
+## TL;DR
+
+Errors are inevitable. When they occur, your API response should help clients understand what went wrong and how to recover. Use RFC 7807 Problem Details format—a standardized structure with `type`, `title`, `detail`, `status`, and optionally `instance` fields. Include field-level validation errors. Provide actionable guidance. Never leak sensitive information. A well-designed error response is more valuable than a 200 OK with silent failures.
+
+## Learning Objectives
+
+- Understand standardized error response formats
+- Design field-level error information
+- Apply RFC 7807 Problem Details specification
+- Provide guidance for error recovery
+- Avoid security pitfalls in error responses
+
+## Motivating Scenario
+
+Your API returns `{ "error": "Invalid request" }` with HTTP 400. Your client's developer:
+- Can't determine which field caused the error
+- Doesn't know if it's a validation error or API state violation
+- Has no guidance on how to fix it
+- Spends hours debugging instead of using your API
+
+Compare with a structured response: `{ "type": "https://example.com/errors/validation-failed", "title": "Validation Failed", "status": 422, "detail": "Request body validation failed", "validation_errors": [{ "field": "email", "code": "invalid-format", "message": "Email must be valid format" }] }`. The client immediately knows what's wrong and fixes it.
+
+## Core Concepts
+
+### Problem Details (RFC 7807)
+
+A standardized error response format with these fields:
+
+- **type** (URI): Machine-readable error identifier. References documentation about this error class.
+- **title** (string): Short, human-readable summary
+- **status** (number): HTTP status code (duplicates the HTTP header for convenience)
+- **detail** (string): Detailed explanation specific to this occurrence
+- **instance** (URI): Identifies the specific problem occurrence
+- Additional fields: Custom fields for your API domain
+
+### Validation Errors
+
+Clients need to understand which fields failed validation and why:
+
+```json
+{
+  "status": 422,
+  "type": "https://api.example.com/errors/validation-failed",
+  "title": "Validation Failed",
+  "validation_errors": [
+    {
+      "field": "email",
+      "code": "invalid-format",
+      "message": "Must be a valid email address"
+    },
+    {
+      "field": "age",
+      "code": "out-of-range",
+      "message": "Must be between 18 and 120"
+    }
+}
+```
+
+### Error Categories
+
+Different error types require different HTTP status codes and recovery strategies. Classify errors clearly so clients can handle them appropriately.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="poor" label="❌ Unhelpful Error">
+
+```json
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "error": "Invalid request"
+}
+```
+
+Problems:
+- No detail about what's invalid
+- No guidance on recovery
+- Can't distinguish field validation from request format errors
+- Hard to localize for different languages
+
+</TabItem>
+<TabItem value="good" label="✅ RFC 7807 Problem Details">
+
+```json
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/errors/validation-failed",
+  "title": "Validation Failed",
+  "status": 422,
+  "detail": "The request body contains validation errors",
+  "instance": "/users",
+  "validation_errors": [
+    {
+      "field": "email",
+      "code": "invalid-format",
+      "message": "Must be a valid email address (example: user@example.com)"
+    },
+    {
+      "field": "password",
+      "code": "too-short",
+      "message": "Must be at least 12 characters"
+    },
+    {
+      "field": "terms_accepted",
+      "code": "required",
+      "message": "You must accept the terms of service"
+    }
+}
+```
+
+Benefits:
+- Clear structure guides client parsing
+- Field-level errors enable form validation
+- Codes allow i18n (client translates locally)
+- Type URL documents the error
+- Actionable detail helps developers fix issues
+
+</TabItem>
+<TabItem value="conflict" label="Conflict/State Error">
+
+```json
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/errors/resource-state-conflict",
+  "title": "Resource State Conflict",
+  "status": 409,
+  "detail": "Cannot delete user because 5 active orders exist. Deactivate orders first.",
+  "instance": "/users/123",
+  "conflicting_resources": [
+    {
+      "type": "order",
+      "id": "order-456",
+      "link": "/orders/order-456"
+    }
+}
+```
+
+Tells clients: The operation failed because of resource relationships, here's what to do.
+
+</TabItem>
+<TabItem value="retry" label="Transient Error">
+
+```json
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/problem+json
+Retry-After: 60
+
+{
+  "type": "https://api.example.com/errors/service-unavailable",
+  "title": "Service Temporarily Unavailable",
+  "status": 503,
+  "detail": "Database is temporarily offline. Please retry in 60 seconds.",
+  "instance": "/users"
+}
+```
+
+Includes Retry-After header so clients know when to retry.
+
+</TabItem>
+</Tabs>
+
+## Common Error Categories
+
+| Category | HTTP Status | When to Use |
+|----------|------------|-----------|
+| Validation | 422 | Request body semantically invalid (invalid email, out of range, etc.) |
+| Malformed | 400 | Request syntax invalid (missing JSON bracket, invalid header) |
+| Authentication | 401 | Credentials missing or invalid |
+| Permission | 403 | Authenticated but lacks permission |
+| Not Found | 404 | Resource doesn't exist |
+| Conflict | 409 | Request conflicts with resource state (already exists, optimistic lock) |
+| Rate Limited | 429 | Too many requests |
+| Server Error | 500 | Unexpected server condition |
+| Unavailable | 503 | Temporarily unable to handle request (maintenance, overload) |
+
+## Security Considerations
+
+**Don't leak internals**: Error message `"SQLException: Foreign key constraint violated"` exposes your database. Say `"Cannot delete this user because orders depend on it"`.
+
+**Don't expose stack traces**: Never include stack traces in production error responses. Log them server-side.
+
+**Don't enumerate valid values**: Error message `"age must be one of: 18, 21, 25, 30"` might enable age discrimination attacks. Say `"age must be 18 or older"`.
+
+**Don't reveal timing information**: Avoid `"Email already exists"` on signup if email enumeration is a concern. Say `"This email cannot be used"`.
+
+**Do provide unique request IDs**: Include `instance` or `request_id` so clients can report errors. You can debug efficiently.
+
+## Patterns and Pitfalls
+
+**Pitfall**: Using generic error codes across unrelated failures. Distinguish between "validation failed," "permission denied," and "resource deleted."
+
+**Pitfall**: Including stack traces or SQL errors in responses. Users shouldn't need to parse Java exceptions.
+
+**Pitfall**: No field-level detail. Clients can't build good error UIs without knowing which field failed.
+
+**Pattern**: Use error codes (machine-readable) and messages (human-readable). Codes enable i18n; messages provide context.
+
+**Pattern**: Provide troubleshooting links. `"type": "https://docs.example.com/errors/rate-limited"` directs developers to solutions.
+
+## Design Review Checklist
+
+- [ ] All error responses use RFC 7807 structure (type, title, status, detail)
+- [ ] Validation errors include field-level information
+- [ ] Error codes documented and stable (don't change)
+- [ ] Sensitive information never leaked (stack traces, enumeration, timing)
+- [ ] Appropriate HTTP status codes used for all error scenarios
+- [ ] Transient errors include Retry-After header
+- [ ] Error type URLs link to documentation
+- [ ] Unique request IDs provided for debugging
+- [ ] Errors consistent across all endpoints
+- [ ] Client developers can build error handling without reading code
+
+## HTTP Status Codes Detailed
+
+| Code | Name | When to Use | Example |
+|------|------|-----------|---------|
+| 400 | Bad Request | Request syntax invalid (unparseable) | Invalid JSON: missing closing brace |
+| 401 | Unauthorized | Missing/invalid credentials | Missing Authorization header |
+| 402 | Payment Required | Payment required before proceeding | Subscription expired |
+| 403 | Forbidden | Authenticated but lacks permission | User can't access admin panel |
+| 404 | Not Found | Resource doesn't exist | Requested user ID doesn't exist |
+| 409 | Conflict | Request conflicts with resource state | Updating with wrong ETag; resource deleted |
+| 410 | Gone | Resource deliberately deleted, won't return | User account permanently deleted |
+| 422 | Unprocessable Entity | Semantically invalid request | Email format invalid, required field missing |
+| 429 | Too Many Requests | Rate limit exceeded | 1000 requests in 1 second |
+| 500 | Internal Server Error | Unexpected error in server | Null pointer exception, database crash |
+| 502 | Bad Gateway | Upstream service returned error | Database down, can't process |
+| 503 | Service Unavailable | Temporarily unable to handle request | Maintenance, overload |
+
+### 400 vs 422 Distinction
+
+```
+400 Bad Request: Client can't even parse the request
+  Examples:
+  - Invalid JSON: { "name": "Alice" MISSING_BRACE
+  - Invalid Content-Type header
+  - Missing required header
+
+422 Unprocessable Entity: Request parses, but data is invalid
+  Examples:
+  - Email format invalid (parsed, but not a valid email)
+  - Age out of range (parsed, but semantically wrong)
+  - Required field missing from valid JSON
+  - Unique constraint violated (database validation)
+
+Best practice:
+  - 400: Problems with request format/protocol
+  - 422: Problems with request business logic/semantics
+```
+
+## Localization and Error Codes
+
+Error codes enable client-side localization without server translations:
+
+```json
+// Server returns machine-readable codes
+{
+  "status": 422,
+  "type": "https://api.example.com/errors/validation-failed",
+  "validation_errors": [
+    {
+      "field": "age",
+      "code": "out-of-range",
+      "message": "Age must be between 18 and 120"
+    },
+    {
+      "field": "terms",
+      "code": "required",
+      "message": "Must accept terms of service"
+    }
+  ]
+}
+
+// Client translates code to user's language
+const ERROR_MESSAGES = {
+  en: {
+    'out-of-range': 'Value is outside acceptable range',
+    'required': 'This field is required',
+    'invalid-format': 'Please use correct format',
+  },
+  es: {
+    'out-of-range': 'El valor está fuera del rango aceptable',
+    'required': 'Este campo es obligatorio',
+    'invalid-format': 'Por favor, utiliza el formato correcto',
+  },
+  fr: {
+    'out-of-range': 'La valeur est en dehors de la plage acceptable',
+    'required': 'Ce champ est obligatoire',
+    'invalid-format': 'Veuillez utiliser le format correct',
+  }
+}
+
+// Client application
+const userLanguage = getUserLanguage();  // 'es'
+const errorMessage = ERROR_MESSAGES[userLanguage][fieldError.code];
+// Shows Spanish error to Spanish-speaking user
+```
+
+## Authentication Error Handling
+
+```javascript
+// Common authentication errors with proper guidance
+
+// 1. Missing credentials
+{
+  "status": 401,
+  "type": "https://api.example.com/errors/missing-credentials",
+  "title": "Unauthorized",
+  "detail": "Request is missing Authorization header"
+}
+
+// 2. Invalid token
+{
+  "status": 401,
+  "type": "https://api.example.com/errors/invalid-token",
+  "title": "Unauthorized",
+  "detail": "Token has expired or is invalid",
+  "hint": "Refresh token using /auth/refresh endpoint"
+}
+
+// 3. Token format invalid
+{
+  "status": 401,
+  "type": "https://api.example.com/errors/invalid-token-format",
+  "title": "Unauthorized",
+  "detail": "Authorization header must be: Bearer <token>",
+  "example": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+// 4. MFA required
+{
+  "status": 401,
+  "type": "https://api.example.com/errors/mfa-required",
+  "title": "Multi-Factor Authentication Required",
+  "detail": "Please complete MFA verification",
+  "mfa_endpoint": "POST /auth/mfa/verify",
+  "challenge_id": "challenge_abc123"
+}
+
+// 5. Insufficient permissions
+{
+  "status": 403,
+  "type": "https://api.example.com/errors/insufficient-permissions",
+  "title": "Forbidden",
+  "detail": "User lacks required permissions",
+  "required_permissions": ["documents:write"],
+  "user_permissions": ["documents:read"]
+}
+```
+
+## Pagination Error Handling
+
+```json
+{
+  "status": 400,
+  "type": "https://api.example.com/errors/invalid-pagination",
+  "title": "Invalid Pagination Parameters",
+  "detail": "Pagination parameters out of range",
+  "errors": [
+    {
+      "field": "page",
+      "code": "out-of-range",
+      "message": "page must be >= 1, got 0"
+    },
+    {
+      "field": "limit",
+      "code": "out-of-range",
+      "message": "limit must be <= 100, got 1000"
+    }
+  ],
+  "valid_ranges": {
+    "page": { "minimum": 1, "maximum": null },
+    "limit": { "minimum": 1, "maximum": 100 }
+  }
+}
+```
+
+## Retry Strategy Based on Error Type
+
+```python
+def should_retry(status_code):
+    """Determine if request should be retried."""
+    # 4xx errors (client fault): don't retry
+    if 400 <= status_code < 500:
+        if status_code in [408, 429]:  # Timeout, rate limit: retry
+            return True
+        return False  # Other 4xx: client's problem
+
+    # 5xx errors (server fault): retry with backoff
+    if status_code >= 500:
+        return True
+
+    # 2xx success: no retry
+    return False
+
+def calculate_backoff(attempt, base_delay=1, max_delay=32):
+    """Exponential backoff with jitter."""
+    delay = min(base_delay * (2 ** attempt), max_delay)
+    jitter = random.uniform(0, 0.1 * delay)  # 0-10% jitter
+    return delay + jitter
+
+# Client retry loop
+for attempt in range(MAX_RETRIES):
+    try:
+        response = make_request(...)
+        if response.ok:
+            return response
+
+        if not should_retry(response.status_code):
+            raise ApiError(response)  # Don't retry
+
+        delay = calculate_backoff(attempt)
+        time.sleep(delay)
+
+    except TimeoutError:
+        if attempt < MAX_RETRIES - 1:
+            delay = calculate_backoff(attempt)
+            time.sleep(delay)
+        else:
+            raise
+
+raise ApiError("Max retries exceeded")
+```
+
+## Error Metrics and Monitoring
+
+```python
+# Track error types to identify patterns
+error_metrics = {
+    "401_unauthorized": 1523,           # Auth failures
+    "403_forbidden": 45,                # Permission denied
+    "422_validation": 3421,             # Bad input
+    "429_rate_limited": 234,            # Rate limit hits
+    "500_internal": 12,                 # Server errors
+    "503_unavailable": 8,               # Service down
+}
+
+# Analysis
+most_common = max(error_metrics, key=error_metrics.get)
+# "422_validation": Most common = users making mistakes
+# Action: Improve documentation on field requirements
+
+rate_limit_ratio = error_metrics["429_rate_limited"] / sum(error_metrics.values())
+# If > 5%, API clients hitting limits frequently
+# Action: Increase rate limit or help clients optimize requests
+
+server_error_ratio = error_metrics["500_internal"] / sum(error_metrics.values())
+# If > 0.1%, server reliability issue
+# Action: Investigate and fix server-side bugs
+```
+
+## Self-Check
+
+- What HTTP status code should validation errors use? Why not 400?
+  - Answer: 422 Unprocessable Entity. 400 is for unparseable requests; 422 is for semantically invalid requests.
+- What information should validation_errors include to help developers?
+  - Answer: field name, error code (machine-readable), message (human-readable), and optionally valid ranges or examples.
+- When would you include a conflicting_resources field in an error response?
+  - Answer: In 409 Conflict responses when the conflict is due to related resources (e.g., can't delete user with active orders).
+- How should you handle sensitive information in error messages?
+  - Answer: Never leak internals (SQL errors, stack traces). Use user-friendly messages instead.
+- What's the relationship between error codes and client-side i18n?
+  - Answer: Codes enable clients to translate locally; servers don't need to handle all languages.
+
+:::info One Takeaway
+An error response should guide clients toward recovery, not require them to guess what went wrong. Use RFC 7807 Problem Details, include field-level errors, provide actionable guidance, and never leak sensitive information. Good error design reduces support load and improves user experience.
+
+:::
+
+## Next Steps
+
+- Read **Versioning Strategies** for handling error format evolution
+- Study **API Security** for handling sensitive error scenarios
+- Explore **Concurrency Control (ETags)** for conflict error patterns
+
+## References
+
+- RFC 7807 Problem Details for HTTP APIs
+- JSON:API Error Objects
+- OpenAPI 3.0 Error Response Schema
+- Error Handling Best Practices (various API providers)

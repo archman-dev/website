@@ -1,0 +1,399 @@
+---
+sidebar_position: 2
+title: "Error Handling and Exceptions"
+description: "Design robust error handling strategies that fail gracefully and guide users to recovery."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [error-handling, exceptions, fault-tolerance, fail-fast, recovery, error-messages, debugging, reliability]
+image: /img/archman-social-card.webp
+tags: [reliability, error-handling, best-practices, fault-tolerance, debugging, resilience, fail-fast, user-experience, error-messages, robustness]
+hide_title: true
+---
+
+<Hero title="Error Handling and Exceptions" subtitle="Design robust error handling strategies that fail gracefully and guide users to recovery." imageAlt="Error handling illustration" size="large" />
+
+## TL;DR
+
+Errors happen in production. The difference between a professional system and an amateur one is how it handles failure. Use specific exception types to convey error context. Provide actionable error messages that tell users what went wrong and what they can do. Fail fast and loud during development but handle failures gracefully in production. Log enough context to debug without exposing sensitive data. Never swallow exceptions silently—acknowledge them and provide recovery options.
+
+## Learning Objectives
+
+- Design exceptions that communicate error conditions clearly
+- Distinguish between recoverable and unrecoverable errors
+- Craft error messages that guide users toward resolution
+- Implement logging and monitoring for production errors
+- Balance defensive programming with informative error reporting
+- Understand fail-fast versus graceful degradation tradeoffs
+
+## Motivating Scenario
+
+A payment processing service silently catches all exceptions and returns `null`. When a network timeout occurs, the code proceeds as if the payment succeeded. Weeks later, users notice they were charged multiple times, but the logs show no errors. The lack of meaningful error handling created a nightmare: undetectable bugs and impossible debugging. Contrast this with a system that fails fast in development but in production logs detailed context, alerts operators, and offers users a retry option.
+
+## Core Concepts
+
+### Specific Exception Types
+
+Generic exceptions like "Error" or "Exception" hide the root cause. Create specific exception types that categorize failures: `NetworkError`, `ValidationError`, `AuthenticationError`, `ResourceNotFoundError`. This specificity enables appropriate handling strategies.
+
+### Error Context
+
+An error message "Invalid input" is useless. Tell users what input was invalid and why: "Email 'bob@invalid' is missing domain extension (e.g., bob@example.com)". Include context in stack traces to aid debugging.
+
+### Fail Fast, Recover Gracefully
+
+In development, let errors propagate immediately and visibly. In production, catch errors at appropriate layers, log them, and degrade gracefully when possible. Some failures permit retry logic; others require human intervention.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Silent failures, generic exceptions
+def process_payment(user_id, amount):
+    try:
+        response = requests.post(f"{PAYMENT_API}/charge",
+                                json={"amount": amount})
+        return response.json()
+    except:
+        return None  # Silently fails!
+
+# ✅ EXCELLENT - Specific exceptions, contextual errors
+class PaymentError(Exception):
+    """Base exception for payment processing failures."""
+    pass
+
+class InsufficientFundsError(PaymentError):
+    """User has insufficient balance."""
+    pass
+
+class PaymentGatewayError(PaymentError):
+    """Payment gateway is unavailable or errored."""
+    pass
+
+def process_payment(user_id, amount):
+    """Process a payment with proper error handling.
+
+    Args:
+        user_id: Unique user identifier
+        amount: Payment amount in cents
+
+    Returns:
+        Transaction ID on success
+
+    Raises:
+        InsufficientFundsError: If user balance is insufficient
+        PaymentGatewayError: If payment API is unavailable
+        ValidationError: If input validation fails
+    """
+    if amount <= 0:
+        raise ValueError(f"Amount must be positive, got {amount}")
+
+    try:
+        response = requests.post(
+            f"{PAYMENT_API}/charge",
+            json={"user_id": user_id, "amount": amount},
+            timeout=5
+        )
+        response.raise_for_status()
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Payment gateway timeout for user {user_id}", exc_info=True)
+        raise PaymentGatewayError(
+            "Payment service is temporarily unavailable. Please try again."
+        ) from e
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 402:
+            logger.warning(f"Insufficient funds for user {user_id}")
+            raise InsufficientFundsError(
+                "Your account balance is insufficient for this transaction."
+            ) from e
+        else:
+            logger.error(f"Payment API error for user {user_id}: {response.text}", exc_info=True)
+            raise PaymentGatewayError(
+                "Payment processing failed. Please contact support."
+            ) from e
+
+    data = response.json()
+    return data.get("transaction_id")
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Errors ignored, no context
+func ProcessPayment(userID string, amount int) (string, error) {
+    resp, _ := http.Post(PaymentAPI+"/charge",
+                         "application/json",
+                         body)
+    return "", nil  // Always succeeds!
+}
+
+// ✅ EXCELLENT - Specific errors with context
+type PaymentError struct {
+    Msg       string
+    Err       error
+    UserID    string
+    Amount    int
+    Timestamp time.Time
+}
+
+func (e PaymentError) Error() string {
+    return e.Msg
+}
+
+type InsufficientFundsError struct {
+    PaymentError
+    AvailableBalance int
+}
+
+func ProcessPayment(ctx context.Context, userID string, amount int) (transactionID string, err error) {
+    if amount <= 0 {
+        return "", fmt.Errorf("amount must be positive, got %d", amount)
+    }
+
+    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    body := struct {
+        UserID string `json:"user_id"`
+        Amount int    `json:"amount"`
+    }{UserID: userID, Amount: amount}
+
+    reqBody, _ := json.Marshal(body)
+    resp, err := http.Post(PaymentAPI+"/charge", "application/json",
+                          bytes.NewReader(reqBody))
+    if err != nil {
+        log.Printf("Payment gateway timeout for user %s", userID)
+        return "", PaymentError{
+            Msg:       "Payment service temporarily unavailable",
+            Err:       err,
+            UserID:    userID,
+            Amount:    amount,
+            Timestamp: time.Now(),
+        }
+    }
+
+    if resp.StatusCode == 402 {
+        log.Printf("Insufficient funds for user %s", userID)
+        return "", InsufficientFundsError{
+            PaymentError: PaymentError{
+                Msg:    "Account balance insufficient",
+                UserID: userID,
+                Amount: amount,
+            },
+        }
+    }
+
+    if resp.StatusCode >= 400 {
+        log.Printf("Payment API error for user %s: status %d", userID, resp.StatusCode)
+        return "", PaymentError{
+            Msg:       "Payment processing failed",
+            Err:       fmt.Errorf("HTTP %d", resp.StatusCode),
+            UserID:    userID,
+            Amount:    amount,
+            Timestamp: time.Now(),
+        }
+    }
+
+    var result struct {
+        TransactionID string `json:"transaction_id"`
+    }
+    json.NewDecoder(resp.Body).Decode(&result)
+    return result.TransactionID, nil
+}
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Silent failures, generic handling
+async function processPayment(userId, amount) {
+    try {
+        const response = await fetch(`${PAYMENT_API}/charge`, {
+            method: 'POST',
+            body: JSON.stringify({ amount })
+        });
+        return response.json();
+    } catch {
+        return null;  // Fails silently!
+    }
+}
+
+// ✅ EXCELLENT - Specific errors, actionable messages
+class PaymentError extends Error {
+    constructor(message, context = {}) {
+        super(message);
+        this.name = 'PaymentError';
+        this.context = context;
+        this.timestamp = new Date();
+    }
+}
+
+class InsufficientFundsError extends PaymentError {
+    constructor(availableBalance, requiredAmount) {
+        super(`Insufficient funds: $${availableBalance} available, $${requiredAmount} required`);
+        this.name = 'InsufficientFundsError';
+        this.availableBalance = availableBalance;
+        this.requiredAmount = requiredAmount;
+    }
+}
+
+class PaymentGatewayError extends PaymentError {
+    constructor(message, statusCode) {
+        super(message);
+        this.name = 'PaymentGatewayError';
+        this.statusCode = statusCode;
+        this.isRetryable = statusCode >= 500;
+    }
+}
+
+async function processPayment(userId, amount) {
+    if (amount <= 0) {
+        throw new Error(`Amount must be positive, got ${amount}`);
+    }
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const response = await fetch(`${PAYMENT_API}/charge`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, amount }),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.status === 402) {
+            const data = await response.json();
+            logger.warn('Insufficient funds', { userId, amount });
+            throw new InsufficientFundsError(data.balance, amount);
+        }
+
+        if (!response.ok) {
+            logger.error('Payment API error', { userId, amount, status: response.status });
+            throw new PaymentGatewayError(
+                'Payment processing failed. Please try again later.',
+                response.status
+            );
+        }
+
+        const { transactionId } = await response.json();
+        return transactionId;
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            logger.error('Payment gateway timeout', { userId, amount });
+            throw new PaymentGatewayError(
+                'Payment service is temporarily unavailable',
+                504
+            );
+        }
+        throw error;
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## Error Handling Patterns
+
+### Custom Exception Hierarchy
+
+```javascript
+class ApplicationError extends Error {
+    constructor(message, code) {
+        super(message);
+        this.code = code;
+        this.timestamp = new Date();
+    }
+}
+
+class ValidationError extends ApplicationError {
+    constructor(message, field) {
+        super(message, 'VALIDATION_ERROR');
+        this.field = field;
+    }
+}
+
+class NotFoundError extends ApplicationError {
+    constructor(resource) {
+        super(`${resource} not found`, 'NOT_FOUND');
+        this.resource = resource;
+    }
+}
+
+class AuthenticationError extends ApplicationError {
+    constructor(message = 'Authentication required') {
+        super(message, 'AUTH_REQUIRED');
+    }
+}
+```
+
+### Actionable Error Messages
+
+```javascript
+// ❌ Unhelpful
+throw new Error('Invalid');
+
+// ✅ Actionable
+throw new ValidationError(
+    'Email must be in format user@domain.com, got "john.invalid"',
+    'email'
+);
+```
+
+### Logging with Context
+
+```javascript
+try {
+    await processPayment(userId, amount);
+} catch (error) {
+    logger.error('Payment processing failed', {
+        userId,
+        amount,
+        errorCode: error.code,
+        errorMessage: error.message,
+        stack: error.stack,
+        // Don't log sensitive data!
+    });
+    // Re-throw or handle gracefully
+    throw new PaymentGatewayError('Payment failed. Please try again.');
+}
+```
+
+## Design Review Checklist
+
+- Are exceptions specific to error conditions, not generic?
+- Do error messages tell users what went wrong and how to fix it?
+- Are sensitive details (passwords, API keys) never logged?
+- Is there a clear distinction between development and production error handling?
+- Are errors monitored and alerted on in production?
+- Does the code attempt retry logic for transient failures?
+- Are stack traces captured for debugging without exposing internals to users?
+
+## Self-Check
+
+1. Find a broad `try...catch` in your codebase that catches all exceptions. How would you refactor it to handle specific error types differently?
+
+2. Review an error message in your application. Does it tell a user what went wrong and how to recover?
+
+3. What errors in your system should fail fast (and be visible) versus handled gracefully?
+
+<Admonition type="info" title="One Takeaway">
+Error handling is not an afterthought—it defines how your system behaves under stress. Specific exception types, contextual messages, and appropriate logging transform errors from mysterious failures into actionable signals. Fail loudly in development so you catch problems early, but fail gracefully in production so your users can recover.
+</Admonition>
+
+## Next Steps
+
+- Learn about <a href="../input-validation-and-defensive-programming">input validation ↗</a> to prevent error conditions before they occur
+- Explore <a href="../../general-principles/fail-fast">fail-fast principle ↗</a> for related strategies
+- Study <a href="../configuration-vs-code">configuration management ↗</a> for handling environment-specific error behavior
+- Review <a href="../../solid/dependency-inversion">Dependency Inversion Principle ↗</a> for designing resilient error handling
+
+## References
+
+1. Martin, R. C. (2008). Clean Code: A Handbook of Agile Software Craftsmanship. Prentice Hall.
+2. Bloch, J. (2018). Effective Java (3rd ed.). Addison-Wesley.
+3. Nygard, M. T. (2007). Release It!: Design and Deploy Production-Ready Software. Pragmatic Bookshelf.
+4. Brown, K. (2018). Kubernetes in Action. Manning Publications.

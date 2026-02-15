@@ -1,0 +1,504 @@
+---
+sidebar_position: 5
+title: "Evolving Models"
+description: "Strategies for refactoring and improving domain models as understanding deepens"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [model-evolution, refactoring, continuous-improvement, domain-change, model-maturity]
+image: /img/archman-social-card.webp
+tags: [ddd, model-evolution, refactoring, improvement, learning]
+hide_title: true
+---
+
+<Hero title="Evolving Models" subtitle="Strategies for refactoring and improving domain models as understanding deepens" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Domain models should continuously evolve as understanding improves and business needs change. Refactoring improves internal structure without changing external behavior. When understanding fundamentally changes, split contexts into separate models or merge tightly coupled ones. Version APIs and domain events to support long-term evolution without breaking clients. Continuous small refactorings are vastly superior to periodic large rewrites. Treat model evolution as an ongoing conversation with domain experts, not a one-time activity.
+
+## Learning Objectives
+
+- Recognize when domain models need refinement or restructuring
+- Perform safe refactorings without breaking client code
+- Split contexts when they grow too large or fundamentally diverge
+- Merge contexts when they're tightly coupled and share language
+- Version domain contracts (APIs and events) for long-term evolution
+- Plan model evolution as a continuous improvement process
+- Balance evolution speed with stability and backward compatibility
+
+## Motivating Scenario
+
+You built an Orders context that handles regular orders, subscriptions, renewals, and billing cycles. Initially, it seemed like one cohesive domain. But as the business grew, you realized subscriptions operate under different rules: recurring charges instead of one-time payments, renewal workflows instead of fulfillment, churn management, upgrade/downgrade flows. Your Order aggregate is becoming bloated trying to handle both scenarios. Adding new subscription features requires understanding order logic, and order changes risk breaking subscriptions. You need to evolve your model: split Orders and Subscriptions into separate contexts with independent models, while maintaining their necessary communication through events and APIs.
+
+## Core Concepts
+
+<Figure
+  caption="Model Evolution Patterns"
+  diagram={`graph TB
+    subgraph Before["Initial Model (Becoming Too Large)"]
+        O["Orders Context"]
+        O --> OC["Order aggregate<br/>(orders + subscriptions<br/>+ renewals)"]
+    end
+
+    subgraph After["After Evolution (Clean Separation)"]
+        O2["Orders Context"]
+        S["Subscriptions Context"]
+        O2 --> OA["Order aggregate<br/>(one-time purchases)"]
+        S --> SA["Subscription aggregate<br/>(recurring billing)"]
+        O2 -->|emits OrderConfirmed| S
+        S -->|emits SubscriptionRenewed| O2
+    end
+
+    style O fill:#ffccbc
+    style OC fill:#ffccbc
+    style O2 fill:#c8e6c9
+    style OA fill:#c8e6c9
+    style S fill:#bbdefb
+    style SA fill:#bbdefb`}
+/>
+
+**Types of Model Evolution:**
+
+1. **Incremental Refactoring**: Improve structure without changing behavior
+2. **Context Splitting**: One context becomes two due to diverging understanding
+3. **Context Merging**: Separate contexts were wrong—merge them back
+4. **API Versioning**: Support old clients while introducing new features
+5. **Event Versioning**: Handle domain event evolution over time
+6. **Language Evolution**: Ubiquitous language changes as understanding deepens
+
+## Practical Example: Refactoring and Splitting
+
+<Tabs>
+<TabItem value="before" label="Before: Too Large">
+
+```python
+# Initial model—worked for MVP but growing pains
+
+class Order(AggregateRoot):
+    """Handles everything: regular orders AND subscriptions."""
+
+    def __init__(self, order_id, customer_id, order_type):
+        self.order_id = order_id
+        self.customer_id = customer_id
+        self.order_type = order_type  # 'one_time' or 'subscription'
+        self.items = []
+        self.status = OrderStatus.DRAFT
+        self.total = 0
+        self.renewal_interval = None  # Only for subscriptions
+        self.last_charged = None  # Only for subscriptions
+        self.next_renewal = None  # Only for subscriptions
+        self.cancellation_reason = None  # Only for subscriptions
+
+    def confirm_purchase(self):
+        """Confirm one-time order."""
+        if self.order_type == 'subscription':
+            raise CannotConfirmSubscriptionAsOrder()
+        self.status = OrderStatus.CONFIRMED
+
+    def start_subscription(self, interval_days: int):
+        """Start a subscription."""
+        if self.order_type == 'one_time':
+            raise CannotStartSubscriptionOnOneTimeOrder()
+        self.renewal_interval = interval_days
+        self.next_renewal = datetime.now() + timedelta(days=interval_days)
+        self.status = OrderStatus.ACTIVE
+
+    def renew_subscription(self):
+        """Auto-renew subscription."""
+        if self.order_type != 'subscription':
+            raise NotASubscription()
+        self.last_charged = datetime.now()
+        self.next_renewal = datetime.now() + timedelta(days=self.renewal_interval)
+        # Charge happens elsewhere...
+
+    def cancel_subscription(self, reason: str):
+        """Cancel subscription."""
+        if self.order_type != 'subscription':
+            raise NotASubscription()
+        self.status = OrderStatus.CANCELLED
+        self.cancellation_reason = reason
+
+    # This aggregate is becoming a god object—too many responsibilities
+
+class OrderRepository:
+    """Single repo handling both one-time and subscription orders."""
+
+    def save(self, order: Order):
+        """Unclear: is this for fulfillment or billing?"""
+        pass
+
+# Client code must know about both scenarios
+class OrderService:
+    def process_order(self, order_id):
+        order = order_repo.get(order_id)
+
+        if order.order_type == 'one_time':
+            self._process_one_time_order(order)
+        elif order.order_type == 'subscription':
+            self._process_subscription(order)
+
+    def _process_one_time_order(self, order):
+        payment_service.charge_once(order)
+        fulfillment_service.ship(order)
+        notification_service.send_confirmation(order)
+
+    def _process_subscription(self, order):
+        billing_service.setup_recurring(order)
+        # Different logic entirely, but in same method
+        notification_service.send_subscription_welcome(order)
+```
+
+</TabItem>
+<TabItem value="after" label="After: Proper Separation">
+
+```python
+# After evolution: Split into Orders and Subscriptions contexts
+
+# --- ORDERS CONTEXT ---
+
+class Order(AggregateRoot):
+    """Handles one-time purchases only."""
+
+    def __init__(self, order_id, customer_id):
+        self.order_id = order_id
+        self.customer_id = customer_id
+        self.items = []
+        self.status = OrderStatus.DRAFT
+        self.total = 0
+        self.domain_events = []
+
+    def add_item(self, product_id, quantity, price):
+        self.items.append(OrderItem(product_id, quantity, price))
+
+    def confirm(self):
+        """Clear semantic: confirm a one-time order."""
+        if not self.items:
+            raise OrderMustHaveItems()
+        self.status = OrderStatus.CONFIRMED
+        self.domain_events.append(OrderConfirmed(self.order_id, self.customer_id))
+
+    def ship(self, tracking_number):
+        """Ship the order."""
+        self.status = OrderStatus.SHIPPED
+        self.domain_events.append(OrderShipped(self.order_id, tracking_number))
+
+class OrderRepository:
+    """Only handles one-time orders."""
+    def save(self, order: Order): pass
+    def get_by_id(self, order_id): pass
+
+# --- SUBSCRIPTIONS CONTEXT ---
+
+class Subscription(AggregateRoot):
+    """Handles recurring purchases independently."""
+
+    def __init__(self, subscription_id, customer_id, product_id, price, interval_days):
+        self.subscription_id = subscription_id
+        self.customer_id = customer_id
+        self.product_id = product_id
+        self.price = price
+        self.interval_days = interval_days
+        self.status = SubscriptionStatus.PENDING
+        self.last_charged = None
+        self.next_renewal = None
+        self.cancellation_reason = None
+        self.domain_events = []
+
+    def activate(self):
+        """Activate a subscription after initial payment."""
+        self.status = SubscriptionStatus.ACTIVE
+        self.last_charged = datetime.now()
+        self.next_renewal = datetime.now() + timedelta(days=self.interval_days)
+        self.domain_events.append(SubscriptionActivated(
+            self.subscription_id, self.customer_id
+        ))
+
+    def renew(self):
+        """Handle automatic renewal."""
+        self.last_charged = datetime.now()
+        self.next_renewal = datetime.now() + timedelta(days=self.interval_days)
+        self.domain_events.append(SubscriptionRenewed(
+            self.subscription_id, self.customer_id, self.price
+        ))
+
+    def cancel(self, reason: str):
+        """Cancel subscription."""
+        self.status = SubscriptionStatus.CANCELLED
+        self.cancellation_reason = reason
+        self.domain_events.append(SubscriptionCancelled(
+            self.subscription_id, self.customer_id, reason
+        ))
+
+class SubscriptionRepository:
+    """Only handles subscriptions."""
+    def save(self, subscription: Subscription): pass
+    def get_by_id(self, subscription_id): pass
+    def get_due_for_renewal(self, before_date): pass
+
+# --- COMMUNICATION BETWEEN CONTEXTS ---
+
+class OrderService:
+    """Handles one-time orders, decoupled from subscriptions."""
+
+    def __init__(self, order_repo, event_bus):
+        self.order_repo = order_repo
+        self.event_bus = event_bus
+
+    def confirm_order(self, order_id):
+        """Process one-time order."""
+        order = self.order_repo.get(order_id)
+        order.confirm()
+        self.order_repo.save(order)
+
+        # Publish events—subscriptions context listens if needed
+        for event in order.get_uncommitted_events():
+            self.event_bus.publish(event)
+
+class SubscriptionService:
+    """Handles subscriptions independently."""
+
+    def __init__(self, subscription_repo, event_bus, payment_service):
+        self.subscription_repo = subscription_repo
+        self.event_bus = event_bus
+        self.payment_service = payment_service
+
+    def activate_subscription(self, subscription_id):
+        """Activate subscription (called after payment of Order)."""
+        subscription = self.subscription_repo.get(subscription_id)
+        subscription.activate()
+        self.subscription_repo.save(subscription)
+
+        for event in subscription.get_uncommitted_events():
+            self.event_bus.publish(event)
+
+    def process_renewals(self):
+        """Background job: renew subscriptions due today."""
+        due_subscriptions = self.subscription_repo.get_due_for_renewal(datetime.now())
+
+        for subscription in due_subscriptions:
+            try:
+                # Charge customer
+                self.payment_service.charge_recurring(
+                    subscription.customer_id, subscription.price
+                )
+
+                # Renew the subscription
+                subscription.renew()
+                self.subscription_repo.save(subscription)
+
+                # Publish events
+                for event in subscription.get_uncommitted_events():
+                    self.event_bus.publish(event)
+
+            except PaymentFailed:
+                # Handle failed renewal...
+                self.event_bus.publish(SubscriptionRenewalFailed(
+                    subscription.subscription_id, subscription.customer_id
+                ))
+```
+
+</TabItem>
+<TabItem value="migration" label="Migration Path">
+
+```python
+# Gradual migration from old model to new contexts
+
+class OrdersMigrationService:
+    """Helps transition from old Order model to Orders + Subscriptions."""
+
+    def migrate_order_to_subscription(self, legacy_order_id: str):
+        """Convert legacy 'subscription' order to new Subscription aggregate."""
+        legacy_order = legacy_order_repo.get(legacy_order_id)
+
+        # Only works for subscriptions
+        if legacy_order.order_type != 'subscription':
+            raise NotASubscriptionOrder()
+
+        # Create new Subscription aggregate
+        subscription = Subscription(
+            subscription_id=uuid4(),
+            customer_id=legacy_order.customer_id,
+            product_id=legacy_order.items[0].product_id,
+            price=legacy_order.total,
+            interval_days=legacy_order.renewal_interval
+        )
+
+        # Preserve state
+        if legacy_order.status == OrderStatus.ACTIVE:
+            subscription.activate()
+            subscription.last_charged = legacy_order.last_charged
+            subscription.next_renewal = legacy_order.next_renewal
+
+        # Save in new system
+        subscription_repo.save(subscription)
+
+        # Mark legacy as migrated
+        legacy_order.is_migrated = True
+        legacy_order_repo.save(legacy_order)
+
+        return subscription
+
+    def migrate_all_subscriptions(self):
+        """Run migration job to move all subscriptions."""
+        legacy_subscriptions = legacy_order_repo.get_all_subscriptions()
+
+        for legacy_order in legacy_subscriptions:
+            try:
+                self.migrate_order_to_subscription(legacy_order.order_id)
+            except Exception as e:
+                logger.error(f"Failed to migrate {legacy_order.order_id}: {e}")
+
+# During transition, both systems work together
+class TransitionOrderService:
+    """Temporary service handling both old and new models."""
+
+    def __init__(self, legacy_repo, orders_service, subscriptions_service):
+        self.legacy_repo = legacy_repo
+        self.orders_service = orders_service
+        self.subscriptions_service = subscriptions_service
+
+    def confirm_order(self, order_id):
+        """Route to appropriate service."""
+        legacy_order = self.legacy_repo.get(order_id)
+
+        if legacy_order.order_type == 'one_time':
+            # Use new Orders context
+            self.orders_service.confirm_order(order_id)
+        elif legacy_order.order_type == 'subscription':
+            # Use new Subscriptions context
+            self.subscriptions_service.activate_subscription(order_id)
+```
+
+</TabItem>
+</Tabs>
+
+## When to Refactor / Split / Merge
+
+<Vs items={[
+{
+    label: "Refactor (Safe, Small Changes)",
+    points: [
+      "Extract a service or value object for clarity",
+      "Rename classes to better match ubiquitous language",
+      "Reorganize package structure",
+      "Extract invariant validation into dedicated class",
+      "No change to external APIs or contracts",
+      "Safe because it's internal restructuring"
+    ]
+  },
+{
+    label: "Split Context (Larger Change)",
+    points: [
+      "Aggregate handles two fundamentally different domains",
+      "Language diverges—different teams use different terminology",
+      "Business rules are contradictory between scenarios",
+      "Deployment cycles need independence",
+      "Scaling requirements differ",
+      "Requires versioning APIs and events between split contexts"
+    ]
+  },
+{
+    label: "Merge Contexts (Rare)",
+    points: [
+      "Two contexts always change together—always coupled",
+      "Same team owns both—no organizational independence",
+      "Sharing one aggregate root would be natural",
+      "Language is unified—no terminology confusion",
+      "Minimal inter-context communication"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  title="Patterns and Pitfalls"
+  sections={[
+    {
+      label: "Pitfall: Big Bang Rewrite",
+      body: "Throw away entire domain model and rewrite from scratch. Creates risk, long delay before value delivery, team knowledge loss, uncertain outcome.\n\n**Fix**: Refactor incrementally. Make small improvements continuously. Refactoring is safer than rewriting."
+    },
+    {
+      label: "Pitfall: Breaking Changes Without Notice",
+      body: "Change API contracts suddenly, breaking client code. Clients scramble to update, deployment coordination required.\n\n**Fix**: Version APIs and events. Support old and new versions temporarily. Provide migration period. Communicate breaking changes well in advance."
+    },
+    {
+      label: "Pitfall: Ignoring Design Warnings",
+      body: "Code smells appear: aggregate too large, service has too many responsibilities, tests are hard to write. Ignored for months.\n\n**Fix**: Address design issues early when they're cheap to fix. Small refactorings frequently are better than waiting."
+    },
+    {
+      label: "Pitfall: Evolution Without Domain Input",
+      body: "Technical team decides to split a context without talking to domain experts. New structure doesn't match business reality.\n\n**Fix**: Domain experts should drive evolution decisions. Refactoring should improve alignment with business understanding."
+    },
+    {
+      label: "Pattern: Continuous Refactoring",
+      body: "Budget 10-20% of capacity each sprint for refactoring. Make small improvements constantly. Keep codebase healthy.\n\n**How to Use**: Every sprint, identify one small refactoring. Extract a class, rename for clarity, reorganize a package. Prevents decay."
+    },
+    {
+      label: "Pattern: Feature Branch Refactoring",
+      body: "When implementing new feature, refactor first to make it easier. New feature becomes smaller because structure is cleaner.\n\n**How to Use**: Before implementing feature, refactor to make the feature code simple. Feature drives structure improvement."
+    },
+    {
+      label: "Pattern: API Versioning Strategy",
+      body: "Support multiple API versions simultaneously. v1 and v2 clients coexist. v1 eventually deprecated and removed.\n\n**How to Use**: New version available for 6 months before old version deprecated. Clients have time to upgrade."
+    },
+    {
+      label: "Pattern: Event Versioning",
+      body: "Include version in events. Handlers support multiple versions. Old events upconverted to new format.\n\n**How to Use**: OrderConfirmed.version = 2. Add upconversion logic for old events."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Has domain understanding improved since last review?",
+  "Does the model still match the ubiquitous language?",
+  "Are responsibilities clearly divided (low coupling)?",
+  "Can you add new features without major refactoring?",
+  "Are aggregates the right size (not too large)?",
+  "Do bounded contexts have clear, non-overlapping purposes?",
+  "Are API and event contracts versioned?",
+  "Do tests cover the domain logic completely?",
+  "Have domain experts reviewed recent changes?",
+  "Is there a plan for next evolution step?",
+  "Can one team deploy without coordinating with others?",
+  "Are design issues being addressed early?"
+]} />
+
+## Self-Check
+
+1. **How often should you refactor?**
+   Continuously, in small increments. Not episodically in large projects. Budget 10-20% of capacity. Small refactorings prevent decay better than periodic overhauls.
+
+2. **When is it safe to refactor?**
+   When you have good test coverage. Tests provide safety net. Refactoring without tests is risky.
+
+3. **How do you know a model needs evolving?**
+   When adding features feels hard. When code doesn't express ubiquitous language. When tests are complicated. When experts ask for clarification. When the aggregate tries to handle too many scenarios.
+
+4. **What's the difference between refactoring and redesign?**
+   Refactoring: internal structure changes, external behavior and contracts stay the same. Redesign: fundamental rethinking, may break contracts, risks higher.
+
+5. **How do you handle breaking changes?**
+   Version your contracts (APIs, events). Support old and new versions for transition period. Communicate in advance. Give clients time to upgrade.
+
+<Callout type="info">
+**One Takeaway**: Domain models should continuously improve as understanding deepens. Refactor frequently in small increments. When understanding fundamentally changes, split or merge contexts. Version contracts to support evolution without breaking clients. Model evolution is not a one-time activity—it's an ongoing conversation with the domain.
+</Callout>
+
+## Next Steps
+
+1. **Bounded Contexts**: Understand context boundaries that guide evolution
+2. **Event Versioning**: Learn strategies for evolving domain events
+3. **API Versioning**: Master backward compatibility in APIs
+4. **Continuous Refactoring**: Make refactoring a regular practice
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Fowler, M. (2018). *Refactoring* (2nd ed.). Addison-Wesley.
+- Vernon, V. (2013). *Implementing Domain-Driven Design*. Addison-Wesley.

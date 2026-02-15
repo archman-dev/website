@@ -1,0 +1,376 @@
+---
+sidebar_position: 3
+title: "Injection, XSS, SSRF, and RCE: Core Vulnerability Classes"
+description: "Understanding injection attacks, cross-site scripting, server-side request forgery, and remote code execution through real-world examples and mitigation strategies."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, security-lead]
+keywords: [injection, xss, cross-site scripting, ssrf, rce, code injection, sql injection, command injection, template injection, vulnerability, attack vectors]
+image: /img/archman-social-card.webp
+tags: [security, injection, xss, ssrf, rce, web-security, vulnerability-classes, attack-vectors, code-injection, command-injection, template-injection]
+hide_title: true
+---
+
+<Hero title="Injection, XSS, SSRF, and RCE" subtitle="Core Vulnerability Classes in Modern Applications" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Injection attacks (SQL, command, template, expression), Cross-Site Scripting (XSS), Server-Side Request Forgery (SSRF), and Remote Code Execution (RCE) represent the most dangerous vulnerability classes. They all stem from insufficient input validation and untrusted data reaching execution contexts. Mitigation requires input validation, output encoding, parameterized queries, sandboxing, and defense-in-depth strategies across all application layers.
+
+## Learning Objectives
+
+- Distinguish between injection, XSS, SSRF, and RCE attacks and their attack vectors
+- Understand how untrusted data flows through applications and reaches critical contexts
+- Implement practical defenses including validation, encoding, and parameterization
+- Design resilient architectures that limit blast radius and prevent exploitation
+- Recognize vulnerable patterns and apply secure coding practices
+
+## Motivating Scenario
+
+Your e-commerce platform accepts user search queries. A developer builds search like this:
+
+```javascript
+// VULNERABLE: String concatenation with user input
+app.get('/search', (req, res) => {
+  const query = req.query.q;
+  const sql = "SELECT * FROM products WHERE name LIKE '%" + query + "%'";
+  db.query(sql, (err, results) => {
+    res.json(results);
+  });
+});
+```
+
+An attacker submits: `q='; DROP TABLE products; --`
+
+The executed SQL becomes: `SELECT * FROM products WHERE name LIKE '%'; DROP TABLE products; --%'`
+
+Result: Your entire products table is deleted. This is SQL injection—a class of injection attacks where data reaches the database engine's execution context.
+
+Similarly, if a web form reflects unsanitized user input back to the client:
+
+```html
+<!-- VULNERABLE: Reflection without encoding -->
+<h1>You searched for: <%= req.query.q %></h1>
+```
+
+An attacker crafts: `http://site.com/?q=<script>alert('XSS')&lt;/script>`
+
+The page renders JavaScript in users' browsers. This is XSS—when untrusted data reaches the HTML/JavaScript context.
+
+## Core Concepts
+
+### Injection Attacks
+
+**Definition**: Injection occurs when untrusted user input is concatenated with code and sent to an interpreter, where the data is treated as executable code rather than passive data.
+
+**Vulnerability Pyramid**:
+
+```
+┌─────────────────────────────────┐
+│   Injection (Top Level)         │
+├─────────────────────────────────┤
+│ SQL | Command | Template | LDAP │
+├─────────────────────────────────┤
+│  Insufficient Input Validation  │
+├─────────────────────────────────┤
+│  Untrusted Data + Code Context  │
+└─────────────────────────────────┘
+```
+
+**Common Injection Types**:
+- **SQL Injection**: Attacker modifies SQL query logic
+- **Command Injection**: Attacker executes system shell commands
+- **Template Injection**: Attacker breaks out of template syntax into expression context
+- **Expression Language (EL) Injection**: Malicious EL expressions execute server-side
+- **LDAP Injection**: Attacker modifies LDAP queries
+- **NoSQL Injection**: Similar to SQL but targeting document databases
+
+### Cross-Site Scripting (XSS)
+
+**Definition**: XSS occurs when untrusted data reaches a web browser's JavaScript execution context without proper encoding.
+
+**XSS Types**:
+
+| Type | Attack Vector | Example |
+|------|---|---|
+| **Stored XSS** | Data persisted, fetched, and rendered | Comment stored in DB, displayed on page |
+| **Reflected XSS** | Data in request reflected in response | URL parameter echoed in error message |
+| **DOM-based XSS** | Client-side JavaScript mishandles untrusted data | `document.location = userInput` |
+
+### Server-Side Request Forgery (SSRF)
+
+**Definition**: SSRF allows an attacker to manipulate server-side code into making HTTP requests to unintended destinations, typically internal resources or restricted networks.
+
+**Exploitation Scenarios**:
+- Accessing internal metadata services (AWS, GCP, Azure)
+- Querying internal databases or APIs
+- Port scanning internal networks
+- Bypassing firewall restrictions
+
+**Example**:
+```javascript
+// VULNERABLE: No validation on URL
+app.get('/fetch', (req, res) => {
+  const url = req.query.url;
+  fetch(url).then(r => r.text()).then(data => res.send(data));
+});
+```
+
+Attacker requests: `/fetch?url=http://localhost:8080/admin`
+
+The server fetches internal admin endpoints and returns data to attacker.
+
+### Remote Code Execution (RCE)
+
+**Definition**: RCE occurs when an application allows arbitrary code execution, typically through dynamic code evaluation or unsafe deserialization.
+
+**Common RCE Vectors**:
+- Dynamic `eval()` or `exec()` with user input
+- Unsafe deserialization of untrusted data
+- Template injection leading to code evaluation
+- Unsafe reflection APIs
+- Expression language injection
+
+## Practical Example
+
+### Secure Search Implementation
+
+<Tabs>
+<TabItem value="vulnerable" label="Vulnerable Code">
+
+```javascript
+// SQL Injection vulnerable
+app.get('/products', (req, res) => {
+  const category = req.query.category;
+  const query = "SELECT * FROM products WHERE category = '" + category + "'";
+  db.query(query, (err, results) => {
+    if (err) return res.status(500).send('Error');
+    res.json(results);
+  });
+});
+
+// XSS vulnerable
+app.get('/profile', (req, res) => {
+  const user = req.query.username;
+  res.send(`<h1>Welcome ${user}</h1>`); // Unencoded output
+});
+
+// SSRF vulnerable
+app.get('/proxy', (req, res) => {
+  fetch(req.query.url)
+    .then(r => r.text())
+    .then(data => res.send(data));
+});
+```
+
+</TabItem>
+<TabItem value="secure" label="Secure Implementation">
+
+```javascript
+// Parameterized queries prevent SQL injection
+app.get('/products', (req, res) => {
+  const category = req.query.category;
+  db.query('SELECT * FROM products WHERE category = ?', [category],
+    (err, results) => {
+      if (err) return res.status(500).send('Error');
+      res.json(results);
+    });
+});
+
+// HTML encoding prevents XSS
+const escapeHtml = (str) => {
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return str.replace(/[&<>"']/g, m => map[m]);
+};
+
+app.get('/profile', (req, res) => {
+  const user = req.query.username;
+  res.send(`<h1>Welcome ${escapeHtml(user)}</h1>`);
+});
+
+// URL validation prevents SSRF
+const isAllowedUrl = (url) => {
+  const allowedDomains = ['api.example.com', 'cdn.example.com'];
+  try {
+    const parsed = new URL(url);
+    return allowedDomains.includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
+app.get('/proxy', (req, res) => {
+  if (!isAllowedUrl(req.query.url)) {
+    return res.status(403).send('URL not allowed');
+  }
+  fetch(req.query.url)
+    .then(r => r.text())
+    .then(data => res.send(data));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Defenses and Mitigation
+
+### Input Validation
+- Whitelist acceptable input patterns
+- Reject invalid data rather than sanitize
+- Validate length, type, format, and range
+- Validate on both client and server
+
+### Output Encoding
+- HTML-encode data for HTML context
+- JavaScript-encode for JavaScript strings
+- URL-encode for URL parameters
+- CSS-encode for style attributes
+
+### Parameterized Queries
+- Use prepared statements with placeholders
+- Separate data from code at database layer
+- Works for SQL, LDAP, and other interpreters
+
+### Sandboxing and Isolation
+- Run untrusted code in isolated environments
+- Use containers, VMs, or language sandboxes
+- Restrict network access from sandbox
+- Limit system call privileges
+
+### Content Security Policy (CSP)
+- Restrict script sources to trusted domains
+- Disable inline script execution
+- Monitor violations for attack detection
+
+### Serialization Safety
+- Avoid deserializing untrusted data
+- Use safe serialization formats (JSON vs Pickle)
+- Implement type constraints during deserialization
+
+## When to Use / When Not to Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Secure Patterns",
+    points: [
+      "Parameterized queries for all database access",
+      "Context-appropriate output encoding (HTML, JS, URL)",
+      "Allowlist-based validation and URL restrictions",
+      "Sandboxed environments for dynamic code",
+      "Content Security Policy headers",
+      "Treating all external input as untrusted"
+    ]
+  },
+{
+    label: "Anti-Patterns to Avoid",
+    points: [
+      "String concatenation building SQL or commands",
+      "Blacklist-based input filtering (easily bypassed)",
+      "Reflecting user input without encoding",
+      "Dynamic eval() or exec() with user data",
+      "Unsafe deserialization of untrusted data",
+      "Assuming internal networks or frontend validation as security"
+    ]}
+]} />
+
+## Patterns and Pitfalls
+
+### Secure Patterns and Pitfalls
+
+**Secure Pattern: Prepared Statements**
+Separate query structure from data at database engine level. Impossible to escape.
+```
+db.query('SELECT * FROM users WHERE id = ?', [userId])
+```
+
+**Pitfall: String Concatenation**
+Mixing code and data allows attackers to modify intent by escaping delimiters.
+```
+"SELECT * FROM users WHERE id = '" + userId + "'"
+```
+
+**Secure Pattern: Output Encoding**
+Transform data to safe representation for target context (HTML, JS, URL).
+```
+<div><%= htmlEscape(userInput) %></div>
+```
+
+**Pitfall: Input Sanitization**
+Attempting to "clean" data is error-prone and context-dependent.
+```
+userInput.replace(/[<>]/g, '') // Incomplete, context-unaware
+```
+
+**Secure Pattern: Allow-listing**
+Define what's acceptable; reject everything else explicitly.
+```
+if (!/^[a-zA-Z0-9_-]+$/.test(username)) throw new Error('Invalid')
+```
+
+**Pitfall: Deny-listing**
+Attempts to block known attack patterns; misses variations.
+```
+if (input.includes('DROP')) throw new Error(...) // Incomplete
+```
+
+## Design Review Checklist
+
+### Input Validation
+- All external input validated against strict allowlists?
+- Validation applied server-side (not just client)?
+- Length, type, format, and range all checked?
+- Error messages don't reveal system details?
+
+### Query Construction
+- All database queries use parameterized statements?
+- All system commands constructed safely (no shell invocation)?
+- Template engines configured to auto-escape by default?
+- Dynamic code evaluation eliminated where possible?
+
+### Output Encoding
+- All user-controlled data encoded for output context?
+- HTML, JavaScript, URL, CSS encoding applied appropriately?
+- No "sanitization" used as primary defense?
+- Rich content (HTML) requires Content Security Policy?
+
+### SSRF Prevention
+- All outbound URLs validated against allowlist?
+- Private IP ranges (127.0.0.1, 10.0.0.0/8) blocked?
+- Metadata services (169.254.169.254) blocked?
+- Network egress restricted at infrastructure level?
+
+### Code Execution
+- Dynamic eval(), exec(), System.load() eliminated?
+- Unsafe deserialization of untrusted data avoided?
+- Reflection APIs validated and logged?
+- Plugin systems sandboxed with capability restrictions?
+
+## Self-Check
+
+- Can you identify where untrusted data enters your application?
+- What execution contexts exist in your stack (database, command shell, template engine, JavaScript)?
+- For each context, do you use the appropriate defense (parameterized, encoding, allowlist)?
+- Have you tested your application against common injection payloads (SQLmap, etc.)?
+
+:::info
+All injection vulnerabilities stem from a single root cause: untrusted data reaching an execution context without proper separation. The solution is equally simple: keep data and code separate through parameterization, encoding, and strict input validation at every layer.
+:::
+
+## Next Steps
+
+1. **Audit Your Code**: Identify all instances of string concatenation with external input
+2. **Implement Input Validation**: Create allowlist validators for common input types
+3. **Enable CSP**: Deploy Content Security Policy headers to restrict script execution
+4. **Test Exploitation**: Run OWASP ZAP or Burp Suite against your application
+5. **Review Deserialization**: Audit all deserialization points for unsafe operations
+
+## References
+
+- [OWASP Top 10 2021](https://owasp.org/Top10/) - A03:2021 Injection
+- [OWASP Injection Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Injection_Prevention_Cheat_Sheet.html)
+- [CWE-89: SQL Injection](https://cwe.mitre.org/data/definitions/89.html)
+- [CWE-79: Cross-site Scripting](https://cwe.mitre.org/data/definitions/79.html)
+- [CWE-918: Server-Side Request Forgery](https://cwe.mitre.org/data/definitions/918.html)
+- [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)

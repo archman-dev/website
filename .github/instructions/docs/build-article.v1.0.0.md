@@ -98,7 +98,7 @@ graph TD;
     - Do NOT set `slug` on category index files (`index.mdx`/`index.md`). Rely on the folder path.
     - For leaf docs (non-index), prefer omitting `slug` unless intentionally overriding canonical path.
     - Never create a duplicate trailing segment (e.g., `.../what-is-software-architecture/what-is-software-architecture`). If a slug equals the parent folder name, remove the slug.
-  - `tags`: array of 10–20 tags (see §26.1) for indexing and visible Tags section.
+  - `tags`: array of 10–20 tags (see §26) for indexing and visible Tags section.
   - Keep values aligned with article depth and tone; do not fabricate authors or dates.
 
 ## 8. Depth Expectations and Minimum Deliverables
@@ -610,7 +610,7 @@ import TabItem from '@theme/TabItem'
   2. <a href="https://example.com/another" target="_blank" rel="nofollow noopener noreferrer">Another Source ↗️</a>
   ```
 
-## 26.1 SEO & Discoverability (Required)
+## 26. SEO & Discoverability (Required)
 
 - Meta & frontmatter
   - Provide `title`, `description` (≤160 chars), `keywords` (8–20), `image` (1200×630), `slug`, `tags` (10–20) in frontmatter.
@@ -682,49 +682,111 @@ import Head from '@docusaurus/Head'
   - Mermaid image or static asset links: confirm files exist under `/static/img/**`.
   - References section must include at least 2 reputable sources when external material informed the article; prefer standards bodies, official docs, or well-regarded texts.
 
-## 26. Automation Hint (Optional)
+## 27. Automation Hint (Optional)
 
-## 27. Tone and Style
+## 28. Tone and Style
 
 - Professional, clear, concise, and engaging—avoid robotic prose.
 - Use concrete examples, short anecdotes, and where helpful, brief quotes that are clearly connected to the topic.
 - Avoid redundancy across siblings; defer content to the appropriate sibling and link to it.
 
-## 28. Output Expectations
+## 29. Output Expectations
 
 - Do not change canonical. Conform content to canonical scope and naming.
 - Preserve existing frontmatter if present; add missing, minimal frontmatter only when necessary.
 - Validate MD/MDX syntax so Docusaurus can build without errors.
 - Keep overview `index.mdx` or `index.md` files short; keep other topic files substantial but focused.
 
-## 29. Workflow (Per Matched File)
+## 30. Deterministic Workflow (Phased Algorithm)
 
-1) Map the file path to canonical to confirm scope and level of depth.
-2) Choose article mode based on filename:
-   - `index.mdx` or `index.md` → overview-mode (short, framing, optional quote, one diagram if applicable).
-   - Other files → full-topic mode (deep dive, examples, decision model if appropriate).
-3) Plan sections per the Structure template above; avoid overlap with siblings per canonical.
-4) Author content:
+Execute these phases exactly, one after another. Do not skip or reorder.
 
-- Include diagrams (Mermaid top-to-bottom for flows), tables where clearer, and code tabs if relevant.
-- For comparisons or showcases, import and use `Showcase`, `Vs`, and category widgets (as appropriate) as documented in Editing Widgets (/editing/category/widgets).
-- Ensure pseudocode/config examples include a filename, highlighting, and line numbers.
-- Ensure all external links follow the strict rule and include ↗️.
+### Phase 1 — Analysis, Comparison, and Scaffolding
 
-1) If new images were produced, save under `./static/img/...` and reference with `/img/...`.
+Objective: prepare the foundation and define scope.
 
-2) End with a References section when any external sources are used.
+1. Target Identification: determine `targetPath` from the resolved `targetGlob`.
+1. Canonical Load: read the canonical structure. If missing/malformed, STOP and report.
+1. Sibling Analysis: identify parent, siblings, and adjacent topics to avoid overlap.
+1. File Type Enforcement:
 
-## 30. Quality Gates
+- Non-index articles MUST be `.mdx`.
+- Index pages SHOULD be `.mdx`. Do not create new `.md`; legacy `.md` may exist but shouldn’t be added.
 
-- Lint: headings are hierarchical; no orphan H1/H2 jumps; links resolve; MDX compiles.
-- Build sanity: content should not break a Docusaurus build given site config (Mermaid is enabled; Prism is present).
-- Depth: .md article ≥800 words; at least one diagram and one example code/config included; decision topics also include a decision flow and a matrix/table.
-- Cross-linking: at least three valid internal related links present; strict linkification followed in body text.
-- References: at least two external sources when external material is cited.
-- Requirements coverage: confirm the checklist below is satisfied for each article.
+1. Existence Check:
 
-## 31. Author Checklist (Must-Verify)
+- If file does NOT exist:
+  - Determine article type: overview (`index.mdx`) vs deep-dive (any other name).
+  - Create a skeleton file with only H2 headings for all mandatory sections in the correct order, using the Structure Template (§11) and Engagement Layer (§8.2).
+  - Phase Outcome: a file with headings and empty sections.
+- If file EXISTS:
+  - Read content and compare its H2 heading order with the canonical structure (§11).
+  - Produce a diff report with:
+    - `missing_sections`: in canon but missing in file.
+    - `misordered_sections`: present but out of canonical order.
+    - `quality_review_needed`: present but requiring completeness/quality review.
+  - Phase Outcome: a diff report.
+
+### Phase 2 — Task Plan Generation
+
+Objective: convert Phase 1 results into a concrete action plan.
+
+1. Create an empty TODO list.
+
+2. Populate tasks:
+
+- For a new skeleton: for each heading, add `[WRITE] Section: "<Section Name>"`.
+- For an existing file (from diff):
+  - For each misordered section: `[FIX ORDER] Move section "<Section Name>" to the correct position`.
+  - For each missing section: `[ADD] Section: "<Section Name>"`.
+  - For each review-needed section: `[REVIEW & IMPROVE] Section: "<Section Name>"`.
+
+1. Prioritize tasks strictly in this order:
+
+1. Fix section order
+1. Add missing sections
+1. Write/improve content in canonical order
+
+1. Discipline: exactly one task may be `in-progress` at a time; status transitions are `not-started → in-progress → completed`.
+
+### Phase 3 — Sequential Execution
+
+Objective: execute tasks one-by-one, applying all rules.
+
+1. Set the first TODO item to `in-progress`.
+1. Execute according to type:
+
+- `[WRITE]`/`[ADD]`: draft content for the section strictly following §§8–23 and §26 (components, diagrams, code, images, links, tone), plus §8.1 Hero and §8.2 Engagement Layer for deep-dives.
+- `[FIX ORDER]`: cut the section block and paste it in the correct canonical position (§11).
+- `[REVIEW & IMPROVE]`: evaluate against checklists and guardrails (Mermaid §13, links §23, cross-linking §24); rewrite or supplement until compliant.
+
+1. Save the file and set the item to `completed`.
+1. Repeat until no `not-started` items remain.
+
+### Phase 4 — Final Validation
+
+Objective: run a full compliance check.
+
+1. Read the final file.
+1. Verify the Quality Gates (§31) and the Author Checklist (§32).
+1. If any check fails, create a new TODO list with targeted fixes and return to Phase 3.
+
+## 31. Quality Gates
+
+- Structure & Order: all mandatory sections from §11 present and in canonical order; Engagement Layer (§8.2) present for deep-dives.
+- Frontmatter: includes `hide_title: true` for deep-dives; required keys present; descriptions ≤160 chars.
+- Hero & Headings: Hero is the very first element after imports; no body H1; content starts at H2.
+- Code Tabs: use `<Tabs>/<TabItem>` only (no `<CodeBlock>` inside tabs); language order Python → Go → Node.js; every fence has `title` and `showLineNumbers`; 4-space indentation only.
+- Diagrams: at least one vertical Mermaid diagram (`flowchart TB`) wrapped in `<Figure>`; flow-like or multi-step examples include a pre-code flow diagram; labels quoted; complexity kept readable (≈5–9 nodes per figure).
+- Images: stored under `/static/img/...`, referenced via `/img/...`; no images under `/docs`.
+- Links: external links open in new tab, include `rel="nofollow noopener noreferrer"`, and display ↗️; internal links are relative, extensionless, and resolve.
+- File Type: non-index pages are `.mdx`; no new `.md` files created.
+- Depth & Word Count: deep-dives 900–1600 words (min 900); index pages 300–600 words; section minimums met where specified.
+- Cross-linking: at least three valid internal related links present (§24); strict linkification in body.
+- References: ordered list with ≥2 reputable sources when external material informed the article (§23).
+- Build & Lint: MDX compiles; Mermaid parses (no tabs in fences); headings hierarchical; links resolve.
+
+## 32. Author Checklist (Must-Verify)
 
 - [ ] targetGlob respected (resolved files only under `./docs/**`).
 - [ ] Canonical read and applied to scope, depth, and sibling boundaries.
@@ -735,10 +797,12 @@ import Head from '@docusaurus/Head'
 - [ ] **NO H1 heading in article content** - Hero component provides the H1 title.
 - [ ] **Content starts with H2 headings** (e.g., "## What Is...", "## Core Concepts").
 - [ ] Non-index files are comprehensive (≥800 words), with structure, examples, and (if applicable) when-to-use/not-use.
+- [ ] Engagement Layer present near the top (TL;DR, objectives, scenario, hands-on Steps, self‑check, signals/anti‑signals, next steps, takeaway).
 - [ ] A vertical mental model (Mermaid `TB`) is included when the topic teaches decisions; otherwise, the most suitable diagram is used.
 - [ ] Visualization type chosen per purpose (see matrix); used Mermaid by default and Kroki/Draw.io/Structurizr/Mindmap when clearly beneficial.
 - [ ] Mermaid safety: no hard tabs; node labels with punctuation/slashes/parentheses are quoted using `id["Label"]`; edge labels are simple words; participant names with spaces use alias + quoted display.
 - [ ] Pseudocode/config/code samples have filenames and `showLineNumbers`; programming examples include Python, Go, and Node.js tabs when appropriate.
+- [ ] Code tabs use `<Tabs>`/`<TabItem>` only (no `<CodeBlock>`); language order is Python → Go → Node.js; every code fence includes `title` and `showLineNumbers` with 4‑space indentation.
 - [ ] Tables used where they improve clarity.
 - [ ] For comparisons/showcases, used `Showcase`/`Vs` and category widgets (as appropriate) per Editing Widgets (/editing/category/widgets) (tables only when a grid communicates better).
 - [ ] External links open in new tab, include `rel="nofollow noopener noreferrer"`, and show ↗️.
@@ -750,11 +814,13 @@ import Head from '@docusaurus/Head'
 - [ ] Strict linkification applied everywhere (scope bullets, body, lists, related topics, see-also): canonical topics are always linked.
 - [ ] Post-generation link validation completed: internal targets exist (extensionless), anchors resolve, external links return 2xx; any TODOs are surfaced.
 - [ ] Any generated images placed under `./static/img/**` mirroring the doc path.
+- [ ] Image references use `/img/...` paths; no images under `/docs`.
 - [ ] At least one diagram is present; decision topics include a vertical flow. Include a table (matrix) if comparing options.
 - [ ] Operational considerations section provided (SLO/SLI, rollout/rollback, limits) or explicitly N/A with reason.
 - [ ] Security/privacy/compliance and observability sections provided or explicitly N/A with reason.
 - [ ] Edge cases addressed (empty/null, large inputs, timeouts/retries, idempotency/concurrency, multi-tenant data isolation) where applicable.
+- [ ] Word count targets met (deep‑dives 900–1600 words; index 300–600 words; section minimums where specified).
 
-## 32. References Section Placement
+## 33. References Section Placement
 
 1. The 'References' section must always be the last section in the document, regardless of whether external sources are cited. This ensures consistency and clarity across all documentation articles.

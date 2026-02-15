@@ -1,0 +1,578 @@
+---
+sidebar_position: 3
+title: "Profiling and Bottleneck Analysis"
+description: "Identify performance bottlenecks using profilers, distributed tracing, and flamegraphs"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, architect, sre]
+keywords: [profiling, flamegraph, bottleneck analysis, APM, tracing, cpu profiling, memory profiling]
+image: /img/archman-social-card.webp
+tags: [quality-attributes, performance, profiling, optimization, tooling]
+hide_title: true
+---
+
+<Hero title="Profiling and Bottleneck Analysis" subtitle="Use profilers and tracing to find where time is spent and what to optimize." size="large" />
+
+## TL;DR
+
+**Don't guess—profile.** CPU profilers show which functions consume cycles. Memory profilers reveal leaks and allocations. Distributed tracers track requests across services. Flamegraphs visualize call stacks with time spent. Start with production sampling (low overhead 1-5%); drill deeper with synthetic workloads. Optimize the hottest path first; measure improvement. Typical finding: 80% of time spent in 20% of code. Target that 20%.
+
+## Learning Objectives
+
+- Distinguish CPU, memory, I/O, lock, and context-switch profilers
+- Generate and interpret flamegraphs
+- Use distributed tracing to find slow services in a call chain
+- Profile in production with sampling (low overhead)
+- Identify bottlenecks systematically (not guessing)
+- Measure improvements before/after optimization
+
+## Motivation: Data-Driven Optimization
+
+API P99 is 1200ms instead of 300ms target. Team guesses:
+- "Database is slow, add cache"
+- "GC pauses, increase heap"
+- "Network latency, add retries"
+
+Without profiling: wildly expensive optimizations that don't help.
+
+With CPU profiling: 60% of time in JSON serialization. Optimize that single function → P99 drops to 400ms. Cost: 4 hours dev time. ROI: 3x improvement.
+
+With distributed tracing: Only 5 out of 1000 requests hit slow DB query. Caching everything wastes memory; fix the 5 queries instead.
+
+**Lesson**: Profile before optimizing. Measure after each change. Avoid premature optimization.
+
+## Profiler Types
+
+<Tabs>
+  <TabItem value="cpu" label="CPU Profiler" default>
+```
+Purpose: Which functions consume CPU time?
+
+How it works:
+  ✓ Samples call stack every ~1-10ms
+  ✓ Accumulates CPU time per function
+  ✓ Low overhead (1-5%)
+  ✓ Suitable for production
+
+Output: Flamegraph, call tree, function list
+
+Example Output:
+  main() ────────────── 1000ms
+  ├─ serialize_json() ─ 600ms (60%) ← HOTTEST
+  ├─ database_query() ─ 300ms (30%)
+  └─ network_call() ── 100ms (10%)
+
+Tools:
+  - Linux: perf, flamegraph
+  - Java: Java Flight Recorder, JProfiler
+  - Python: cProfile, py-spy
+  - Go: pprof
+  - .NET: dotTrace
+  - APM: Datadog, New Relic, Honeycomb
+
+When to use:
+  ✓ API is slow, find hotspot
+  ✓ Batch job takes too long
+  ✓ Understand algorithm efficiency
+  ✗ Don't use for I/O-bound work (mostly waiting, not CPU)
+```
+  </TabItem>
+
+  <TabItem value="memory" label="Memory Profiler">
+```
+Purpose: Where are memory allocations and leaks?
+
+How it works:
+  ✓ Tracks malloc/free, new/delete
+  ✓ Shows allocation size and frequency
+  ✓ Detects leaks (objects not freed)
+  ✓ Medium overhead (10-20%)
+
+Output: Heap snapshots, allocation list, growth over time
+
+Example Output:
+  Function              Allocations   Size
+  ────────────────────────────────────────
+  json_parse()          10,000 × 2MB = 20GB (LEAK!)
+  create_connection()   100 × 100KB = 10MB (OK)
+  cache_entry()         1,000 × 1KB = 1MB (OK)
+
+Tools:
+  - Java: JProfiler, YourKit, Eclipse MAT
+  - Python: memory_profiler, tracemalloc
+  - Go: pprof, goleak
+  - C++: Valgrind, sanitizers
+  - APM: Datadog, New Relic
+
+When to use:
+  ✓ Memory usage grows over time
+  ✓ OOM crashes in production
+  ✓ High GC pause times
+  ✗ Not for latency profiling (use CPU profiler)
+```
+  </TabItem>
+
+  <TabItem value="io" label="I/O & Lock Profilers">
+```
+Purpose: Where is time spent waiting (I/O, locks)?
+
+How it works (I/O):
+  ✓ Tracks system calls (read, write, socket ops)
+  ✓ Measures wait time for I/O completion
+  ✓ Shows network and disk latency
+
+Example Output:
+  System Call       Count   Total Time   Avg
+  ──────────────────────────────────────────
+  read()            1,000   500ms        0.5ms  ← BOTTLENECK
+  write()           500     50ms         0.1ms
+  epoll_wait()      10,000  5ms          <0.1ms
+
+Tools:
+  - Linux: strace, tcpdump, perf
+  - Java: Async Profiler (Java 11+)
+  - APM: Datadog, Lightstep
+
+Purpose (Locks):
+  ✓ Where are threads blocked on locks?
+  ✓ Contention analysis
+
+Tools:
+  - Java: JProfiler, YourKit
+  - Go: pprof
+  - Python: py-spy
+
+When to use:
+  ✓ CPU profiler shows CPU idle but latency high
+  ✓ Database queries slow
+  ✓ Network calls slow
+  ✓ Multi-threaded lock contention
+```
+  </TabItem>
+</Tabs>
+
+## Flamegraphs: Visualizing Call Stacks
+
+Flamegraphs show the call stack with time spent:
+
+```
+Width = CPU time spent
+Height = call depth
+Color = function name (often random for clarity)
+
+Example: Web request handling
+
+┌─────────────────────────────────────────────────────────┐
+│  main()                         [1000ms total]          │
+├─────────────────┬────────────────┬──────────────────────┤
+│  receive_req()  │  process_req() │  send_response()     │
+│   [100ms]       │   [800ms]      │   [100ms]            │
+├────────┬────────┼────────┬───────┴──────────────────────┤
+│decode()│validate│parse() │ serialize_json()  [600ms] ← HOTTEST
+│[30ms]  │[20ms]  │[50ms]  │(FOCUS HERE)
+└────────┴────────┴────────┴─────────────────────────────┘
+
+Optimization: Replace json library → P99 -400ms
+```
+
+Real flamegraph (text-based):
+```
+main
+  └─ handle_request [1000ms]
+      ├─ json.loads [100ms]
+      ├─ process [200ms]
+      │  ├─ database_query [150ms] ← Significant
+      │  └─ compute [50ms]
+      └─ json.dumps [600ms] ← HOTTEST, optimize here!
+```
+
+<Tabs>
+  <TabItem value="generate-flamegraph" label="Generating Flamegraphs" default>
+```bash
+# Linux: CPU profiling with perf + flamegraph
+
+# 1. Record CPU profile for 30 seconds
+perf record -F 99 -p 12345 -g -- sleep 30
+
+# 2. Generate flamegraph
+perf script | stackcollapse-perf.pl | flamegraph.pl > out.svg
+
+# View in browser, click to zoom
+
+# Python: Generate flamegraph
+pip install py-spy flamegraph
+
+py-spy record -o profile.svg -- python app.py
+# Opens in browser
+
+# Go: Built-in pprof
+# Add import _ "net/pprof" to your code
+
+curl http://localhost:6060/debug/pprof/profile?seconds=30 > profile.prof
+go tool pprof profile.prof
+(pprof) top  # Shows hottest functions
+(pprof) web  # Generates graph
+(pprof) list serialize_json  # Show source code
+```
+  </TabItem>
+
+  <TabItem value="read-flamegraph" label="Reading Flamegraphs">
+```
+How to interpret:
+
+1. Width = CPU time (wider = hotter)
+2. Height = call depth (deeper = more nested)
+3. Color = just for readability (typically random)
+
+Red flags:
+  ✗ Very wide single function → that's your bottleneck
+  ✗ Very deep call stack → consider inlining
+  ✗ Many tiny functions with little work → overhead
+
+Green flags:
+  ✓ Balanced distribution (no single dominator)
+  ✓ Expected functions hot (database, I/O)
+  ✓ Short call stack
+
+Example Analysis:
+  Flamegraph shows:
+    - main [========== 1000ms]
+      - request_handler [=========== 1100ms] (wait, more than main?)
+      - response_builder [========== 1000ms]
+
+  RED FLAG: request_handler wider than main!
+  Means: request_handler calls multiple functions
+  Each taking time. Drill down which one.
+```
+  </TabItem>
+</Tabs>
+
+## Distributed Tracing for Microservices
+
+Find slow services in a call chain:
+
+<Tabs>
+  <TabItem value="tracing-example" label="Distributed Tracing" default>
+```
+Problem: API request spans multiple services.
+  Client → API Gateway → Auth Service → Order Service → Payment Service → Response
+  Total: 1200ms (P99)
+  Which service is slow?
+
+Solution: Distributed tracing (Jaeger, Datadog, Honeycomb)
+
+Example trace:
+  Request: GET /orders/123
+  
+  ├─ Auth Service      [10ms]  ✓ Fast
+  ├─ Order Service     [950ms] ← SLOWEST
+  │  ├─ Database query [900ms]  ← Root cause!
+  │  └─ Cache lookup   [50ms]
+  └─ Payment Service   [200ms] ✓ OK
+  
+  Total: 1160ms
+  
+Action:
+  - Add index to database (order_id)
+  - Result: Database query [50ms]
+  - New total: 260ms ← 5x faster!
+
+Trace visualization (like flamegraph but for services):
+  ┌─────────────────────────────────────────┐
+  │ Request Trace (1200ms P99)              │
+  ├─ API Gateway ──────────── [10ms]        │
+  ├─ Auth Service ─────────── [10ms]        │
+  ├─ Order Service ──────────────────── [950ms] ← Drill into this
+  │  ├─ DB Query ──────────────────── [900ms] ← Root cause!
+  │  └─ Cache ───────────────── [50ms]       │
+  └─ Payment Service ──── [200ms]            │
+```
+  </TabItem>
+
+  <TabItem value="instrumentation" label="Instrumentation">
+```python
+from opentelemetry import trace, metrics
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+
+# Setup Jaeger exporter
+jaeger_exporter = JaegerExporter(
+    agent_host_name="localhost",
+    agent_port=6831,
+)
+
+# Instrument Flask app
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
+FlaskInstrumentor().instrument()
+RequestsInstrumentor().instrument()
+
+@app.route('/orders/<order_id>')
+def get_order(order_id):
+    tracer = trace.get_tracer(__name__)
+    
+    # Create span for database query
+    with tracer.start_as_current_span("db_query") as span:
+        span.set_attribute("order_id", order_id)
+        order = db.query(f"SELECT * FROM orders WHERE id = {order_id}")
+        span.set_attribute("found", order is not None)
+    
+    # Create span for cache lookup
+    with tracer.start_as_current_span("cache_lookup") as span:
+        cached = cache.get(f"order:{order_id}")
+        span.set_attribute("hit", cached is not None)
+    
+    return jsonify(order)
+```
+  </TabItem>
+</Tabs>
+
+## Systematic Bottleneck Analysis
+
+Process:
+
+1. **Set target** (e.g., P99 < 300ms)
+2. **Measure current** (e.g., P99 = 1200ms)
+3. **Profile** (identify hottest functions)
+4. **Optimize** hottest 20%
+5. **Measure again** (verify improvement)
+6. **Repeat** until target met
+
+Real example (e-commerce API):
+```
+Target: P99 latency < 300ms
+Current: P99 = 1200ms
+
+Step 1: CPU Profile
+  serialize_json()    600ms (50%)  ← Hottest
+  database_query()    300ms (25%)
+  cache_lookup()      150ms (12%)
+  request_validation() 100ms (8%)
+  error_handling()    50ms (5%)
+
+Step 2: Optimize #1 (JSON serialization)
+  ✓ Replace json library with faster one
+  ✓ Cache serialized responses
+  ✓ Use protobuf instead of JSON
+  Result: 600ms → 100ms
+
+New profile:
+  database_query()    300ms (35%)  ← Now hottest
+  cache_lookup()      150ms (18%)
+  serialize_json()    100ms (12%)
+  ...
+  P99 = 550ms (target 300ms, still not there)
+
+Step 3: Optimize #2 (Database query)
+  ✓ Add index to order_id column
+  ✓ Cache query results
+  ✓ Use connection pooling
+  Result: 300ms → 50ms
+
+New profile:
+  cache_lookup()      150ms (60%)  ← Now hottest
+  database_query()    50ms (20%)
+  ...
+  P99 = 200ms ✓ TARGET MET!
+```
+
+## Common Pitfalls and Fixes
+
+<Showcase sections={[
+  {
+    title: "Pitfall: Profiling Without Load",
+    description: "Profile single request in staging. Production has 1000 concurrent users with contention.",
+    fix: "Profile under realistic load (load testing). Or use production sampling."
+  },
+  {
+    title: "Pitfall: Optimizing Wrong Code",
+    description: "Spend week optimizing function that's called 1x per request. Another function called 1000x ignored.",
+    fix: "Profile first! Multiply (time per call) × (number of calls). Hottest = optimization target."
+  },
+  {
+    title: "Pitfall: Flamegraph shows 'other'",
+    description: "Huge 'other' slice in flamegraph. Can't see where time is spent.",
+    fix: "Increase sample rate, profile longer, or use instrumentation profiler."
+  },
+  {
+    title: "Pitfall: Memory profile noise",
+    description: "Small allocations mask actual leaks. Noise = 100s of temporary objects.",
+    fix: "Focus on persistent allocations (not freed). Look for growing memory over time."
+  },
+  {
+    title: "Pattern: Production Sampling",
+    description: "Lightweight profiling (1-5% overhead) continuously in production.",
+    fix: "Enables finding real-world bottlenecks not visible in staging."
+  }
+]} />
+
+## Tools Comparison
+
+| Tool | Language | Type | Overhead | Cost |
+|------|----------|------|----------|------|
+| **perf** | C/C++/Python | CPU | 1-2% | Free |
+| **Java Flight Recorder** | Java | CPU, Memory, Locks | 5% | Built-in |
+| **pprof** | Go | CPU, Memory, Goroutines | 2-5% | Built-in |
+| **Datadog** | Any | APM, distributed tracing | 5-15% | $$ |
+| **Honeycomb** | Any | Tracing, observability | 10-20% | $$ |
+| **Jaeger** | Any | Distributed tracing | 5-10% | Free |
+| **py-spy** | Python | CPU | 1-5% | Free |
+
+## Profiling Checklist
+
+<Checklist items={[
+  "Have you profiled before optimizing (not guessing)?",
+  "Is your profiling under realistic load (not staging)?",
+  "Do you have CPU, memory, and I/O profiles?",
+  "Are you using distributed tracing across services?",
+  "Did you identify the hottest 20% of code?",
+  "Are you measuring before and after optimization?",
+  "Is production sampling in place (continuous profiling)?",
+  "Can you generate flamegraphs on demand?",
+  "Are performance regression caught (benchmarks/alerts)?",
+  "Is profiling overhead acceptable (<5%)?",
+]} />
+
+## Self-Check
+
+1. **Why profile before optimizing?** Guessing wrong wastes time. Profiling shows reality.
+2. **What's the 80/20 rule in profiling?** 80% of time spent in 20% of code. Optimize that 20%.
+3. **How does sampling work?** Interrupt thread every ~1-10ms, record call stack. Aggregate over many samples.
+4. **What's a flamegraph?** Visualization of call stack with time spent (width). Easier than lists to spot bottlenecks.
+5. **Why use distributed tracing?** Find slow service in a chain of 10+ services.
+
+:::info
+**One Takeaway**: Profile before optimizing. Use CPU profiler to find hottest functions, memory profiler for leaks, distributed tracing for microservices. Measure improvement after each change.
+:::
+
+## Next Steps
+
+- Set up **continuous profiling** in production (Datadog, Honeycomb)
+- Create **performance regression tests** (catch slowdowns before production)
+- Learn **flamegraph generation** for your language
+- Study **distributed tracing setup** (Jaeger, Datadog)
+- Benchmark **algorithm changes** before/after (measure, don't guess)
+
+## References
+
+- Brendan Gregg Flamegraphs: http://www.brendangregg.com/flamegraphs.html
+- Systems Performance by Brendan Gregg
+- Java Flight Recorder: https://docs.oracle.com/en/java/javase/
+- Datadog APM: https://www.datadoghq.com/
+- Honeycomb Observability: https://www.honeycomb.io/
+
+## Production Profiling Best Practices
+
+### Continuous Profiling
+
+Enable lightweight profiling (1-5% overhead) continuously in production:
+
+**Benefits:**
+- Discover real-world bottlenecks (not visible in staging)
+- Detect performance regressions immediately
+- Historical data for trend analysis
+- Actionable insights without crashes
+
+**Tools:**
+- Datadog Continuous Profiler: 5% overhead, production-safe
+- pyflame (Python): Lightweight, user-space profiling
+- Async Profiler (Java): Sub-percent overhead
+
+**Example setup:**
+```bash
+# Datadog agent continuously profiles
+# Every hour: sample call stacks, aggregate, send to Datadog
+# Zero crashes, minimal overhead
+```
+
+### Profiling in Microservices
+
+**Challenge**: Single slow request spans 5+ services. Which one is bottleneck?
+
+**Solution**: Distributed tracing + per-service profiling.
+
+```
+Request timeline:
+  t=0ms    Client → API Gateway
+  t=10ms   API Gateway → Auth Service
+  t=50ms   Auth Service → Order Service  ← SLOW (800ms here!)
+  t=850ms  Order Service → Payment Service
+  t=900ms  Response to Client
+  Total: 900ms
+
+Drill down into Order Service:
+  ├─ Validation (50ms)
+  ├─ Database query (750ms) ← ROOT CAUSE
+  ├─ Cache lookup (20ms)
+  └─ Response (10ms)
+
+Action: Add database index → 750ms → 50ms
+Result: 900ms → 150ms total (6x faster)
+```
+
+### CPU Profiler Deep Dive
+
+**Sampling-based profilers**:
+- Interrupt every ~1-10ms, record call stack
+- Accumulate statistics
+- Low overhead (1-5%)
+- Deterministic (shows real code paths)
+
+**Instrumentation-based profilers**:
+- Hook every function entry/exit
+- Exact measurements
+- High overhead (10-50%)
+- Better for synthetic workloads
+
+**Hybrid approach**:
+- Production: Sampling (low overhead)
+- Staging: Instrumentation (accurate details)
+- Synthetic: Both (complete picture)
+
+### Interpreting Flamegraphs
+
+**Color coding** (different tools use different schemes):
+- Red = kernel space (system calls, I/O)
+- Yellow = user space (your code)
+- Sometimes random colors (just for readability)
+
+**Width interpretation**:
+- Wide function = lots of CPU time (optimize!)
+- Narrow function = little CPU time (not worth optimizing)
+- Uniform width = well-balanced
+
+**Height interpretation**:
+- Tall stack = deep call hierarchy
+- Optimization: Consider inlining frequently-called chains
+- Trade-off: Code size vs execution speed
+
+### Memory Profiler Usage
+
+**Java memory example:**
+```
+Heap dump analysis: Which objects consume memory?
+
+Result:
+  java.lang.String[]: 500MB (cached JSON responses)
+  byte[]: 300MB (buffers)
+  ArrayList: 150MB (parsed data)
+  
+Action: Reduce cache TTL, clear old buffers
+Result: 950MB → 200MB
+```
+
+### Lock Contention Profiling
+
+**Java threads competing for lock:**
+
+```
+Thread 1: Waiting for lock on user_table (50% of time)
+Thread 2: Holding lock on user_table (too long)
+Thread 3: Waiting for lock on user_table
+
+Solution: Reduce lock scope, use read-write locks, partition data
+Result: 50% lock wait → 5% lock wait
+```
+

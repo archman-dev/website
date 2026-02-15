@@ -1,0 +1,337 @@
+---
+sidebar_position: 3
+title: "Outbox, Inbox, and Change Data Capture"
+description: "Ensure reliable event publishing and delivery with outbox, inbox, and CDC patterns."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [outbox-pattern, inbox-pattern, change-data-capture, cdc, event-sourcing, event-publishing, reliability, at-least-once-delivery, duplication]
+image: /img/archman-social-card.webp
+tags: [microservices, events, reliability, data-consistency, patterns, event-driven, durability, distributed-systems, operational-excellence, best-practices]
+hide_title: true
+---
+
+<Hero title="Outbox, Inbox, and Change Data Capture" subtitle="Ensure reliable event publishing and delivery with outbox, inbox, and CDC patterns." imageAlt="Outbox and inbox pattern illustration" size="large" />
+
+## TL;DR
+
+Events and database changes must be published reliably. The outbox pattern solves this: when you write data to your database, also write an event record to an outbox table in the same transaction. A separate process periodically reads the outbox and publishes events to the message broker. This guarantees that if your data changed, the event will eventually be published. The inbox pattern is the mirror: when you receive an event, write it to an inbox table before processing. This ensures idempotent message handling—if a message arrives twice, you only process it once. Change data capture (CDC) reads database transaction logs directly, detecting changes without application code involvement. Use outbox for publishing; use inbox for consuming; consider CDC when you need to detect all changes including those from legacy systems.
+
+## Learning Objectives
+
+- Design the outbox pattern for reliable event publishing
+- Implement the inbox pattern for idempotent consumption
+- Understand change data capture and its benefits
+- Handle duplicate messages without side effects
+- Monitor event delivery reliability
+- Choose between outbox and CDC based on requirements
+
+## Motivating Scenario
+
+An order service updates the order status to "shipped" and publishes a "ShippedOrder" event. The event publish succeeds but the database write fails. Now the database says it's not shipped but external systems think it is. Or vice versa: the database updates but the publish fails. No one knows the order was shipped. How do you ensure consistency between database state and external event notifications?
+
+## Core Concepts
+
+### The Outbox Pattern
+
+Write both the entity update and the event to your database in a single transaction. Later, a separate process (the outbox poller) reads unpublished events from the outbox table and publishes them to the message broker. Once published, mark the event as published. This guarantees: if the database changed, the event will eventually be published. The database transaction ensures atomicity.
+
+### The Inbox Pattern
+
+When consuming events, write them to an inbox table first, then process them. Store the message ID with the message. If the same message arrives again, you see it's already in the inbox and skip reprocessing. This makes message handling idempotent: processing the same message twice has the same effect as processing it once.
+
+### Change Data Capture
+
+Monitor the database transaction log (WAL in PostgreSQL, binlog in MySQL) for all changes. Tools like Debezium capture inserts, updates, and deletes in real-time. CDC is powerful because it doesn't require application code changes—it detects all data changes. However, it's more operationally complex and less flexible than application-driven events.
+
+### At-Least-Once Delivery
+
+Both patterns guarantee at-least-once delivery: an event will be delivered at least once, but possibly multiple times. Handle duplicates by designing idempotent operations or by deduplicating at the application level using message IDs.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Event published separately from database write
+def create_order(order_data):
+    order = Order(**order_data)
+    db.insert(order)
+    # If this fails, order is created but not published
+    event_bus.publish('OrderCreated', {'order_id': order.id})
+    return order
+
+# ✅ EXCELLENT - Outbox pattern for reliable publishing
+def create_order(order_data):
+    order = Order(**order_data)
+    with db.transaction():
+        db.insert('orders', order)
+        # Write event to outbox in same transaction
+        db.insert('outbox', {
+            'event_type': 'OrderCreated',
+            'payload': json.dumps({'order_id': order.id}),
+            'published': False
+        })
+    return order
+
+# Outbox poller (runs periodically)
+def publish_outbox_events():
+    unpublished = db.query('SELECT * FROM outbox WHERE published = FALSE')
+    for event in unpublished:
+        try:
+            event_bus.publish(event['event_type'], event['payload'])
+            db.update('outbox', event['id'], {'published': True})
+        except PublishError:
+            # Retry later
+            pass
+
+# ✅ EXCELLENT - Inbox pattern for idempotent consumption
+class OrderEventHandler:
+    def on_order_shipped(self, event):
+        # Check if already processed
+        existing = db.query(
+            'SELECT * FROM inbox WHERE message_id = %s',
+            event['message_id']
+        )
+        if existing:
+            return  # Already processed
+
+        with db.transaction():
+            # Record that we're processing this message
+            db.insert('inbox', {
+                'message_id': event['message_id'],
+                'event_type': event['type'],
+                'processed': False
+            })
+            # Process the event
+            self.update_shipment_status(event['order_id'])
+            # Mark as processed
+            db.update('inbox', event['message_id'], {'processed': True})
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - No guarantee both happen
+func (s *OrderService) CreateOrder(ctx context.Context, order *Order) error {
+    if err := s.db.Insert(ctx, order); err != nil {
+        return err
+    }
+    // Publish might fail, leaving data inconsistent
+    s.eventBus.Publish(ctx, "OrderCreated", order)
+    return nil
+}
+
+// ✅ EXCELLENT - Outbox pattern
+func (s *OrderService) CreateOrder(ctx context.Context, order *Order) error {
+    tx, err := s.db.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    if err := tx.Insert(ctx, order); err != nil {
+        return err
+    }
+
+    // Write to outbox in same transaction
+    event := OutboxEvent{
+        EventType: "OrderCreated",
+        Payload:   order,
+        Published: false,
+    }
+    if err := tx.Insert(ctx, event); err != nil {
+        return err
+    }
+
+    return tx.Commit()
+}
+
+// ✅ EXCELLENT - Inbox pattern for idempotent handling
+func (h *OrderEventHandler) OnOrderShipped(ctx context.Context, event *OrderShippedEvent) error {
+    // Check if already processed
+    exists, err := h.db.QueryRow(ctx,
+        "SELECT id FROM inbox WHERE message_id = $1",
+        event.MessageID).Scan(nil)
+    if err == nil {
+        return nil  // Already processed
+    }
+
+    tx, err := h.db.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    // Record processing
+    if err := tx.Insert(ctx, InboxEvent{
+        MessageID: event.MessageID,
+        EventType: event.Type,
+        Processed: false,
+    }); err != nil {
+        return err
+    }
+
+    // Process the event
+    if err := h.updateShipment(ctx, event.OrderID); err != nil {
+        return err
+    }
+
+    // Mark as processed
+    if err := tx.Update(ctx, InboxEvent{MessageID: event.MessageID, Processed: true}); err != nil {
+        return err
+    }
+
+    return tx.Commit()
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Race condition between database and event bus
+async function createOrder(orderData) {
+    const order = new Order(orderData);
+    await db.insert('orders', order);
+    // Event publish can fail independently
+    await eventBus.publish('OrderCreated', { orderId: order.id });
+    return order;
+}
+
+// ✅ EXCELLENT - Outbox pattern
+async function createOrder(orderData) {
+    const order = new Order(orderData);
+
+    return await db.transaction(async (tx) => {
+        await tx.insert('orders', order);
+
+        // Write event to outbox in same transaction
+        await tx.insert('outbox', {
+            eventType: 'OrderCreated',
+            payload: { orderId: order.id },
+            published: false
+        });
+
+        return order;
+    });
+}
+
+// Outbox poller
+async function publishOutboxEvents() {
+    const unpublished = await db.query('SELECT * FROM outbox WHERE published = FALSE');
+
+    for (const event of unpublished) {
+        try {
+            await eventBus.publish(event.eventType, event.payload);
+            await db.update('outbox', event.id, { published: true });
+        } catch (error) {
+            console.error('Failed to publish event:', error);
+            // Retry on next poll
+        }
+    }
+}
+
+// ✅ EXCELLENT - Inbox pattern for idempotent handling
+class OrderEventHandler {
+    async onOrderShipped(event) {
+        const existing = await db.query(
+            'SELECT id FROM inbox WHERE message_id = ?',
+            event.messageId
+        );
+
+        if (existing.length > 0) {
+            return;  // Already processed
+        }
+
+        return await db.transaction(async (tx) => {
+            await tx.insert('inbox', {
+                messageId: event.messageId,
+                eventType: event.type,
+                processed: false
+            });
+
+            await this.updateShipment(event.orderId);
+
+            await tx.update('inbox', event.messageId, { processed: true });
+        });
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "When to Use Outbox/Inbox",
+    points: ["Application logic that publishes domain events alongside data changes", "Systems where consistency between data and events is critical", "When you want explicit control over what events are published", "Systems with mature transactional databases"],
+    highlightTone: "positive"
+  },
+{
+    label: "When to Use CDC",
+    points: ["Legacy systems where you can", ",", ",", ","],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Outbox Polling Lag",
+      description: "Outbox events are published with some lag. Accept eventual consistency and monitor the age of unpublished events.",
+      icon: "⚠️"
+    }, {
+      title: "CDC Operational Complexity",
+      description: "CDC tools require careful setup and monitoring. They're powerful but add operational overhead.",
+      icon: "⚠️"
+    }, {
+      title: "Duplicate Handling",
+      description: "Design all operations as idempotent. Message IDs enable deduplication at the application level.",
+      icon: "✓"
+    }, {
+      title: "Monitoring Event Delivery",
+      description: "Monitor outbox staleness and inbox processing lag. Alert when events aren't being published.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Outbox events are written in same transaction as data changes",
+    "Message IDs are unique and included in all events",
+    "Inbox pattern prevents duplicate processing",
+    "Outbox poller runs reliably and completes publishing",
+    "Events are eventually published (monitor age of unpublished events)",
+    "Idempotency is enforced for all event handlers",
+    "Dead-letter queues exist for events that can't be processed"
+  ]}
+/>
+
+## Self-Check
+
+- Why is writing to the outbox in the same transaction important?
+- How does the inbox pattern ensure idempotent message handling?
+- What are the tradeoffs between outbox and CDC?
+
+:::info One Takeaway
+The outbox pattern is the practical way to ensure consistency: your database transaction succeeds, so your event will eventually be published. It trades off latency for reliability.
+
+:::
+
+## Next Steps
+
+- Implement outbox poller with exponential backoff for failed publishes
+- Set up monitoring for outbox age and inbox processing lag
+- Consider CDC when integrating with legacy systems
+- Design comprehensive tests for event publishing and consumption
+
+## References
+
+- Chris Richardson, Microservices Patterns: Pattern Language for Microservices
+- Gwen Shapira et al., *Kafka: The Definitive Guide* (O'Reilly)
+- Debezium Documentation: Change Data Capture for Multiple Databases

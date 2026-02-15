@@ -1,0 +1,456 @@
+---
+sidebar_position: 4
+title: Battery, Network, Storage Constraints
+description: Optimize for limited resources on mobile devices
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","mobile-lead"]
+keywords: ["battery","network","connectivity","storage","low-end-devices","optimization"]
+image: /img/archman-social-card.webp
+tags: ["mobile","performance","constraints"]
+hide_title: true
+---
+
+<Hero
+  title="Battery, Network, Storage Constraints"
+  description="Design mobile apps that thrive on slow networks, limited storage, and constrained batteries"
+  size="large"
+/>
+
+## TL;DR
+
+**Battery**: Minimize CPU, radio, display usage. Batch network requests. Use efficient algorithms. Monitor battery drain with profiling.
+
+**Network**: Assume 2G/3G worst case (500ms latency, 50KB/s). Compress data, cache aggressively, prefetch. Handle intermittent connectivity.
+
+**Storage**: Limit cache (100MB typical), garbage collect old data. Some devices &lt;1GB free. Understand quota limits per OS.
+
+## Learning Objectives
+
+You will be able to:
+- Monitor battery, network, and storage constraints in code.
+- Design adaptive UIs that degrade gracefully on poor networks.
+- Optimize for low-end devices (2GB RAM, old CPUs).
+- Implement efficient caching and prefetching strategies.
+- Test on poor network conditions (simulator + throttling).
+
+## Motivating Scenario
+
+Your app works great on flagship iPhone 13, but users on Samsung Galaxy J6 (2GB RAM, old CPU) complain: app is slow, battery drains in 4 hours, storage fills up. Users in India/Africa on 2G networks can't load images at all.
+
+Constraint reality:
+- 2G: 500ms latency, 50-100KB/s (edge case)
+- 3G: 150ms latency, 500KB/s (developing countries)
+- 4G: 50ms latency, 2-5MB/s (modern, but varies)
+- 5G: 10-20ms latency, 50-100MB/s (premium only)
+
+## Battery Optimization
+
+### Monitor Battery Usage
+
+```kotlin title="BatteryMonitor.kt" showLineNumbers
+import android.os.BatteryManager
+
+class BatteryManager {
+  fun getBatteryStatus(context: Context): BatteryStatus {
+    val batteryManager = context.getSystemService(BATTERY_SERVICE) as BatteryManager
+    val health = batteryManager.getIntProperty(BATTERY_PROPERTY_HEALTH)
+    val temperature = batteryManager.getIntProperty(BATTERY_PROPERTY_TEMPERATURE) / 10 // Celsius
+    val level = batteryManager.getIntProperty(BATTERY_PROPERTY_CAPACITY) // 0-100
+
+    return BatteryStatus(
+      level = level,
+      temperature = temperature,
+      isCharging = batteryManager.isCharging,
+      isBatteryLow = level < 15,
+    )
+  }
+
+  fun adaptFeatures(battery: BatteryStatus) {
+    when {
+      battery.isBatteryLow ->
+        // Disable: background sync, auto-refresh, location tracking
+        disableExpensiveFeatures()
+      battery.level < 30 ->
+        // Reduce frequency: sync every 30m instead of 5m
+        reduceFeatureFrequency()
+      else ->
+        // Normal operation
+        enableAllFeatures()
+    }
+  }
+}
+```
+
+### Reduce CPU Usage
+
+Batch requests, use efficient algorithms:
+
+```kotlin title="CPUOptimization.kt" showLineNumbers
+// Bad: process each item immediately
+items.forEach { item ->
+  updateUI(item) // 1000 DOM updates = UI thread blocked
+}
+
+// Good: batch updates
+val batches = items.chunked(50)
+batches.forEach { batch ->
+  batch.forEach { updateUI(it) }
+  Thread.sleep(16) // Yield to UI thread (60fps)
+}
+
+// Better: use native batching
+Handler().post {
+  items.forEach { updateUI(it) }
+}
+```
+
+### Efficient Algorithms
+
+Choose algorithms with better big-O:
+
+```kotlin title="AlgorithmChoice.kt" showLineNumbers
+// Bad: O(n^2) search
+fun searchBad(items: List<Item>, query: String): List<Item> {
+  return items.filter { item ->
+    items.any { it.id == item.parentId } && item.name.contains(query)
+  }
+}
+
+// Good: O(n log n) with index
+fun searchGood(items: List<Item>, query: String): List<Item> {
+  val parentSet = items.map { it.id }.toSet() // O(n)
+  return items.filter { item ->
+    parentSet.contains(item.parentId) && item.name.contains(query)
+  }
+}
+```
+
+## Network Optimization
+
+### Network Adaptation
+
+Adapt behavior to network type:
+
+```kotlin title="NetworkAwareness.kt" showLineNumbers
+val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+val capabilities = connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork)
+
+val downstreamKbps = capabilities?.linkDownstreamBandwidthKbps ?: 0
+
+when {
+  downstreamKbps < 50 -> { // 2G-like
+    // Disable images, reduce quality
+    disableImages()
+    reduceQuality()
+  }
+  downstreamKbps < 500 -> { // 3G
+    // Low quality, small images
+    useCompressedAssets()
+  }
+  else -> { // 4G/5G
+    // Full quality
+    useFullQuality()
+  }
+}
+```
+
+### Aggressive Caching
+
+Cache aggressively, validate on background:
+
+```kotlin title="CacheStrategy.kt" showLineNumbers
+// Stale-while-revalidate: serve cached immediately, update in background
+fun getProduct(productId: String): Product {
+  val cached = cache.get(productId)
+  if (cached != null && cached.age < 24.hours) {
+    // Serve cached, revalidate in background
+    validateInBackground(productId)
+    return cached
+  }
+
+  // Fetch from network
+  return fetch(productId).also { cache.put(productId, it) }
+}
+
+fun validateInBackground(productId: String) {
+  Thread {
+    try {
+      val fresh = fetch(productId)
+      cache.put(productId, fresh)
+    } catch (e: Exception) {
+      // Ignore, cached version is good enough
+    }
+  }.start()
+}
+```
+
+### Data Compression
+
+Compress data on wire:
+
+```kotlin title="Compression.kt" showLineNumbers
+// Request gzip compression
+val request = Request.Builder()
+  .url("https://api.example.com/products")
+  .header("Accept-Encoding", "gzip, deflate")
+  .build()
+
+// Response body automatically decompressed by OkHttp
+val response = client.newCall(request).execute()
+```
+
+## Storage Optimization
+
+### Monitor Storage Usage
+
+```kotlin title="StorageMonitor.kt" showLineNumbers
+val stats = StatFs("/data")
+val availableBytes = stats.availableBlocksLong * stats.blockSizeLong
+val totalBytes = stats.blockCountLong * stats.blockSizeLong
+val usedPercent = ((totalBytes - availableBytes) * 100) / totalBytes
+
+if (usedPercent > 90) {
+  // Device running low on storage
+  clearCache()
+  showNotification("Storage full, please free space")
+}
+```
+
+### Limit Cache Size
+
+```kotlin title="CacheCleanup.kt" showLineNumbers
+val maxCacheSize = 100 * 1024 * 1024 // 100MB
+var currentSize = calculateCacheSize()
+
+if (currentSize > maxCacheSize) {
+  // Remove oldest files
+  getCacheFiles()
+    .sortedBy { it.lastModified() }
+    .take(10)
+    .forEach { it.delete() }
+    .also { currentSize -= it.sumOf { file -> file.length() } }
+}
+```
+
+## Adaptive UI
+
+Show different content based on constraints:
+
+```kotlin title="AdaptiveUI.kt" showLineNumbers
+class ProductList {
+  fun render(battery: BatteryStatus, network: NetworkStatus) {
+    val imageQuality = when {
+      battery.isBatteryLow || network.isSlow -> ImageQuality.THUMBNAIL
+      network.isWifi -> ImageQuality.FULL
+      else -> ImageQuality.MEDIUM
+    }
+
+    val showVideo = !battery.isBatteryLow && network.isHighSpeed
+    val prefetchNextPage = !battery.isBatteryLow
+
+    renderList(imageQuality, showVideo, prefetchNextPage)
+  }
+}
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is battery usage monitored (onBatteryLow detected)?",
+  "Are expensive features disabled on low battery?",
+  "Is network type detected (WiFi vs cellular)?",
+  "Are requests batched (not one-by-one)?",
+  "Is data compressed (gzip enabled)?",
+  "Are images optimized (size, format)?",
+  "Is caching aggressive (stale-while-revalidate)?",
+  "Is storage monitored (cleanup on quota)",
+  "Are low-end devices tested (profiling)?",
+  "Does app work on 2G (offline-first tested)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Optimize for Constraints When:**
+- Mobile target market (especially developing regions)
+- Battery-draining features (location, video)
+- App used on older devices
+- Network-dependent features
+
+**Less Critical If:**
+- Tablet/desktop app
+- Always plugged in (vehicle, retail)
+- Unlimited data user base
+
+## Self-Check
+
+1. **Why batch network requests instead of one-by-one?**
+2. **What's stale-while-revalidate? How does it help on slow networks?**
+3. **How would you test app performance on 2G networks?**
+
+## Next Steps
+
+- <a href="https://developer.android.com/studio/profile/battery-historian" target="_blank" rel="nofollow noopener noreferrer">Android Battery Historian ↗️</a>
+- Learn about <a href="https://developer.apple.com/documentation/os/powermetrics" target="_blank" rel="nofollow noopener noreferrer">iOS Power Metrics ↗️</a>
+- Study <a href="/docs/frontend-and-mobile-architecture/mobile-architecture/background-tasks-and-notifications" target="_blank" rel="nofollow noopener noreferrer">Background Tasks ↗️</a>
+- Test with <a href="https://developer.chrome.com/docs/devtools/network/throttling/" target="_blank" rel="nofollow noopener noreferrer">Network Throttling Tools ↗️</a>
+
+## Advanced Constraint Handling
+
+### Progressive Enhancement
+
+Build for low-end, enhance for high-end.
+
+```kotlin
+// Start with text only, add images if network allows
+fun loadProductList(products: List<Product>) {
+    val showImages = when {
+        batteryStatus.isBatteryLow -> false
+        networkSpeed < 100 -> false  // Slower than 2G
+        else -> true
+    }
+
+    products.forEach { product ->
+        if (showImages && networkSpeed > 500) {
+            loadImage(product.imageUrl)  // Full resolution
+        } else if (showImages) {
+            loadImage(product.thumbnailUrl)  // Low resolution
+        } else {
+            showPlaceholder()  // Just text
+        }
+    }
+}
+```
+
+### Prefetching Strategy
+
+Prefetch when conditions are optimal.
+
+```kotlin
+fun smartPrefetch() {
+    // Prefetch only if:
+    // 1. Device is charging (no battery impact)
+    // 2. WiFi connected (no data plan impact)
+    // 3. Not in use (low CPU impact)
+    if (batteryStatus.isCharging && networkType == WIFI && !isAppVisible) {
+        prefetchNextPage()
+        prefetchImages()
+        prefetchVideos()
+    }
+}
+```
+
+### Memory-Efficient Data Structures
+
+Trade CPU for memory on low-end devices.
+
+```kotlin
+// Bad: Load entire 100MB dataset into memory
+val allProducts = database.getAllProducts()  // OOM on 2GB device
+
+// Good: Paginate, load in chunks
+fun getProductsPaginated(page: Int, pageSize: Int = 50) {
+    val offset = (page - 1) * pageSize
+    return database.getProducts(offset, pageSize)
+}
+
+// Streaming for large datasets
+fun processLargeDataset(callback: (Product) -> Unit) {
+    database.streamProducts { product ->
+        callback(product)  // Process one at a time, don't buffer all
+    }
+}
+```
+
+## Real-World Optimization Case Study
+
+### E-Commerce App: Before and After
+
+**Before Optimization**:
+- Galaxy J6 (2GB RAM, old processor, 3G): 15 seconds to load product list
+- Battery drain: 2% per minute of use (empties 6-hour battery in 5 minutes heavy use)
+- Storage: 500MB cache with no cleanup
+- User rating: 2.1 stars ("App is slow and drains battery")
+
+**Optimization Steps**:
+
+1. **Battery**: Implemented battery-aware features
+   - Low battery mode: disable auto-refresh, reduce image quality
+   - Result: Battery drain reduced from 2%/min to 0.8%/min
+
+2. **Network**: Adaptive images + aggressive caching
+   - 2G detected: thumbnails only (100KB vs 2MB per product)
+   - 4G detected: full images (2MB)
+   - Cache images for 7 days (rarely change)
+   - Result: Load time 15s → 2s (on 3G)
+
+3. **Storage**: Limit cache to 100MB, cleanup old images
+   - Auto-delete images older than 7 days
+   - Monitor free space, alert user when low
+   - Result: 500MB → 100MB cache
+
+4. **Memory**: Paginate product list instead of loading all
+   - Load 50 products, lazy-load more on scroll
+   - Result: Peak memory 80% → 40%
+
+**After Optimization**:
+- Galaxy J6: 2 seconds to load (7.5x faster)
+- Battery drain: 0.8%/min (2.5x improvement)
+- Storage: 100MB (5x reduction)
+- User rating: 4.3 stars ("App is fast and doesn't kill battery")
+- DAU increase: 15% (users with low-end devices now use app more)
+
+### Network Throttling Simulation
+
+```bash
+# Test your app on 2G network (Chrome DevTools)
+1. Open DevTools → Network tab
+2. Click throttling dropdown (normally "No throttling")
+3. Select "Slow 3G" or "Offline"
+4. Load your app
+5. Measure:
+   - Load time (should complete in reasonable time)
+   - Data transferred (should be minimal)
+   - Visual feedback (should feel responsive despite slowness)
+
+# Manual calculation for real 2G:
+# 2G bandwidth: 50 KB/sec
+# Page load: 5 MB total
+# Time: 5000 KB / 50 KB/sec = 100 seconds
+
+# OUCH! This is why aggressive compression is critical.
+```
+
+### Battery Profiling on Real Devices
+
+```
+Android Battery Historian:
+1. Connect device via USB
+2. adb shell dumpsys batterystats --reset
+3. Use app for 10 minutes
+4. adb bugreport report.zip
+5. Open report.zip with Battery Historian
+
+Interpret results:
+- CPU frequency graph: Should spike only during user interaction
+- Wake locks: Should be minimal (excessive = battery drain)
+- Network (Wifi/mobile): Should be batched, not constant
+- GPS: Should turn off when not needed
+- Display: Largest battery consumer, should dim on idle
+```
+
+## One Takeaway
+
+<Admonition type="info">
+Design for worst-case constraints: 2G networks, 2GB RAM devices, under 1% battery. Provide adaptive experiences: disable features on low battery, compress images on slow networks, cache aggressively. Test on real low-end devices and poor networks, not just simulators. Progressive enhancement ensures usability even on the worst devices. Measure actual user impact: app that works on flagship phones but fails on average devices loses 50%+ of potential users in developing markets.
+</Admonition>
+
+## References
+
+1. <a href="https://developer.android.com/topic/performance" target="_blank" rel="nofollow noopener noreferrer">Android Performance Documentation</a>
+2. <a href="https://developer.apple.com/documentation/os/powermetrics" target="_blank" rel="nofollow noopener noreferrer">iOS Power Metrics</a>
+3. <a href="https://developer.android.com/studio/profile/battery-historian" target="_blank" rel="nofollow noopener noreferrer">Android Battery Historian</a>
+4. <a href="https://web.dev/adaptive-loading/" target="_blank" rel="nofollow noopener noreferrer">Adaptive Loading Strategies</a>
+5. <a href="https://developer.chrome.com/docs/devtools/network/throttling/" target="_blank" rel="nofollow noopener noreferrer">Network Throttling Tools</a>

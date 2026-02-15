@@ -1,0 +1,307 @@
+---
+sidebar_position: 3
+title: "Messaging Patterns"
+description: "Master message queues, publish-subscribe, and event streams. Choose the right pattern for your asynchronous communication."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [messaging, queues, topics, publish-subscribe, event streams, message brokers, asynchronous communication]
+image: /img/archman-social-card.webp
+tags: [messaging, queues, topics, publish-subscribe, streams, event-driven, asynchronous, message-brokers, ordering]
+hide_title: true
+---
+
+<Hero title="Messaging Patterns" subtitle="Master queues, topics, and streams for reliable asynchronous communication" imageAlt="Messaging patterns illustration" size="large" />
+
+## TL;DR
+
+Three messaging patterns: Queues (point-to-point, one consumer per message, load balanced), Topics (broadcast, all subscribers get message independently), and Streams (immutable ordered log, consumers can replay from any point). Choose queues for distributing work across multiple workers, topics for fan-out (one event to many consumers), and streams for event sourcing or when new subscribers need historical data. Most systems use combination: queues for task distribution, topics/streams for event broadcasting.
+
+## Learning Objectives
+
+- Understand message queue semantics and use cases
+- Distinguish between queues, topics, and streams
+- Design ordering guarantees and message durability
+- Implement idempotent consumers for exactly-once semantics
+- Handle scaling and partitioning strategies
+- Monitor message latency and queue depth
+
+## Motivating Scenario
+
+Your e-commerce platform creates 1000 orders/second. Order Service publishes "order.created" event. Payment Service needs to charge customer (critical). Shipping Service needs to reserve inventory (critical). Analytics Service needs to track metrics (non-critical). Email Service needs to send confirmation (non-critical).
+
+Using a queue: only one service processes each event—wrong, we need all of them.
+Using a topic: all services receive the event—better, all can process.
+Using a stream: new service added 6 months later? Can replay all 500M historical events to build initial state.
+
+Real-world systems use all three: queue for work distribution, topics/streams for broadcasting.
+
+## Message Queues (Point-to-Point)
+
+**Definition:** Messages delivered to exactly one consumer. Once consumed, typically removed.
+
+**Characteristics:**
+- One producer, one consumer per message
+- Load balancing (distributed among consumers)
+- No replay (consumed messages gone)
+- Examples: RabbitMQ, AWS SQS
+
+**Use Cases:** Task distribution, load balancing, service decoupling, rate limiting
+
+## Topics/Publish-Subscribe
+
+**Definition:** Messages broadcast to all subscribers. Each subscriber gets a copy.
+
+**Characteristics:**
+- One producer, many consumers per message
+- Broadcast semantics
+- All subscribers get all messages
+- Examples: RabbitMQ topics, AWS SNS
+
+**Use Cases:** Broadcasting events, fan-out scenarios, notifications, event distribution
+
+## Event Streams (Log-Based)
+
+**Definition:** Immutable, ordered sequence of events. Consumers replay from any position.
+
+**Characteristics:**
+- Append-only immutable log
+- Ordered delivery (per partition)
+- Full replay capability
+- Multiple consumers, independent positions
+- Examples: Apache Kafka, AWS Kinesis
+
+**Use Cases:** Event sourcing, audit trails, change data capture, analytics, state rebuilding
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="queue" label="Queue: Task Distribution">
+    ```python
+    # Use case: 1000 orders/second, 10 workers process them
+    # Problem: Can't have each worker process all orders (duplicate work)
+    # Solution: Queue distributes to one worker each
+
+    from queue import Queue
+
+    # Producer: Order Service
+    order_queue = Queue()
+    order_queue.put({"id": 1, "customer": "alice", "items": [...]})
+    order_queue.put({"id": 2, "customer": "bob", "items": [...]})
+    # ... 1000 orders
+
+    # Consumers: 10 payment processing workers
+    # Each worker pulls from queue
+    # Order 1 → Worker 1
+    # Order 2 → Worker 2
+    # Order 3 → Worker 1 (now free)
+    # Auto load balancing
+
+    def payment_worker():
+        while True:
+            order = order_queue.get()
+            process_payment(order)
+            order_queue.task_done()
+
+    # Benefits:
+    # - 1000 orders distributed across 10 workers
+    # - No duplicate processing
+    # - Auto load balancing
+    # - Exactly one worker processes each order
+    ```
+  </TabItem>
+
+  <TabItem value="topic" label="Topic: Fan-Out Broadcasting">
+    ```python
+    # Use case: Order created. Multiple services need notification
+    # Problem: Queue only delivers to one service
+    # Solution: Topic delivers to all subscribers
+
+    from pubsub import PubSub
+
+    pubsub = PubSub()
+
+    # Producer: Order Service
+    pubsub.publish('order.created', {
+        "id": 1,
+        "customer": "alice",
+        "total": 100
+    })
+
+    # Subscriber 1: Payment Service
+    def handle_payment(event):
+        charge(event['customer'], event['total'])
+
+    pubsub.subscribe('order.created', handle_payment)
+
+    # Subscriber 2: Shipping Service
+    def handle_shipping(event):
+        reserve_inventory(event['id'])
+
+    pubsub.subscribe('order.created', handle_shipping)
+
+    # Subscriber 3: Analytics Service
+    def handle_analytics(event):
+        log_purchase(event['customer'], event['total'])
+
+    pubsub.subscribe('order.created', handle_analytics)
+
+    # Benefits:
+    # - All subscribers get the event independently
+    # - New subscriber added? Receives future events
+    # - Loose coupling: Order Service doesn't know about consumers
+    # - Horizontal scaling: add more subscribers without changing publisher
+    ```
+  </TabItem>
+
+  <TabItem value="stream" label="Stream: Replay and History">
+    ```python
+    # Use case: New Analytics Service added 6 months later
+    # Problem: It missed all 500M historical events
+    # Solution: Stream keeps immutable log; new consumer can replay
+
+    from kafka import KafkaProducer, KafkaConsumer
+
+    # Producer: Order Service
+    producer = KafkaProducer(bootstrap_servers=['localhost:9092'])
+
+    # Publish events to Kafka topic (stream)
+    for order in orders:
+        producer.send('order_events', value=order)
+    # Kafka keeps immutable log of all events
+
+    # New Analytics Service added 6 months later
+    consumer = KafkaConsumer(
+        'order_events',
+        bootstrap_servers=['localhost:9092'],
+        auto_offset_reset='earliest'  # Replay from beginning
+    )
+
+    for message in consumer:
+        order = message.value
+        # Analytics service rebuilds its database from scratch
+        # Processes all 500M historical events
+        # Now it has complete historical data
+
+    # Benefits:
+    # - Complete audit trail (immutable log)
+    # - New services can rebuild state from history
+    # - No data loss (stream is persistent)
+    # - Multiple independent consumers at different offsets
+    ```
+  </TabItem>
+</Tabs>
+
+## Comparison
+
+| Feature | Queue | Topic | Stream |
+|---------|-------|-------|--------|
+| **Consumers** | One per message | All simultaneously | Independent (at own pace) |
+| **Load balancing** | Yes (built-in) | No (all get) | No (all can get) |
+| **Replay** | No | No | Yes (full history) |
+| **Ordering** | FIFO | No guarantee | Per-partition FIFO |
+| **Persistence** | Temporary | Temporary | Permanent (immutable log) |
+| **Use case** | Task distribution | Broadcast | Sourcing, audit trail |
+| **Example broker** | RabbitMQ, SQS | RabbitMQ topics, SNS | Kafka, Kinesis |
+| **Typical volume** | Millions/day | Thousands-millions/day | Millions-billions/day |
+
+## When to Choose
+
+**Queues:**
+- Multiple workers processing same type of task
+- Load balancing required (distribute across workers)
+- Order doesn't matter much
+- Fire-and-forget task execution
+- Example: Email sending, image processing, report generation
+
+**Topics:**
+- One event, multiple independent reactions
+- Multiple services need to know about state change
+- Broadcasting to subscribers
+- Loose coupling essential
+- Example: Order created → Payment + Shipping + Analytics + Email all react
+
+**Streams:**
+- Need complete event history
+- New services need to replay events
+- Event sourcing (rebuild state from events)
+- Audit trail required
+- Exactly-once processing semantics important
+- Example: Financial transactions, change data capture, user activity log
+
+## Core Concepts: Idempotency and Exactly-Once Semantics
+
+<Figure
+  mermaid={`graph LR
+    Producer["Service A\nPublishes Event"]
+    Broker["Message Broker\n(Queue/Topic/Stream)"]
+    Consumer["Service B\nConsumes Event"]
+
+    Producer -->|"Event: charge $100"| Broker
+    Broker -->|"Deliver message"| Consumer
+
+    Consumer -->|"Process (potentially twice)"| Consumer
+
+    style Producer fill:#90EE90
+    style Broker fill:#87CEEB
+    style Consumer fill:#FFB6C1
+`}
+/>
+
+Idempotency is critical: if a message is delivered twice, processing twice should equal processing once.
+
+```python
+# Bad: Not idempotent
+def charge_customer(event):
+    charge(event['customer'], event['amount'])  # If called twice, charges twice!
+
+# Good: Idempotent
+def charge_customer(event):
+    charge_id = event['transaction_id']
+    if charge_exists(charge_id):  # Check if already charged
+        return  # Skip
+    charge(event['customer'], event['amount'])
+    save_charge_id(charge_id)
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Identified messaging pattern for each workflow (queue/topic/stream)?",
+  "Queue used for task distribution with multiple workers?",
+  "Topic used for fan-out where all subscribers need event?",
+  "Stream used for history/audit/sourcing scenarios?",
+  "Idempotent message handlers (safe to process twice)?",
+  "Dead letter queue for failed messages?",
+  "Monitoring in place for queue depth and latency?",
+  "Message retention configured appropriately?",
+  "Ordering guarantees documented (if needed)?",
+  "Scaling plan for message volume growth?"
+]} />
+
+## Self-Check
+
+- **When do you use a queue vs. topic?** Queue when one consumer per message (task distribution). Topic when all subscribers get message (broadcasting).
+- **Can a stream replace a queue?** Technically yes, but streams are overkill if you don't need history. Use right tool for right job.
+- **What about exactly-once delivery?** Impossible to guarantee across failures. Use idempotent handlers + deduplication IDs instead.
+- **How do you handle message ordering?** Queues provide FIFO. Streams provide per-partition FIFO. Topics don't guarantee order (use streams if order matters).
+- **What's a dead letter queue?** Queue for messages that failed processing. Monitor and alert on DLQ depth.
+
+## Next Steps
+
+1. **Map your workflows** — For each service interaction, identify pattern (queue/topic/stream)
+2. **Design idempotent handlers** — Ensure all consumers can safely process duplicates
+3. **Implement dead letter queue** — Capture failed messages
+4. **Monitor queue depth** — Alert if messages backing up
+5. **Plan for growth** — Partition strategy for handling 10x volume
+6. **Document contracts** — Define message schemas and versioning
+
+## References
+
+- <a href="https://kafka.apache.org/documentation/" target="_blank" rel="nofollow noopener noreferrer">Apache Kafka Documentation ↗</a>
+- <a href="https://www.rabbitmq.com/documentation.html" target="_blank" rel="nofollow noopener noreferrer">RabbitMQ Documentation ↗</a>
+- <a href="https://martinfowler.com/articles/patterns-of-distributed-systems/" target="_blank" rel="nofollow noopener noreferrer">Patterns of Distributed Systems (Martin Fowler) ↗</a>
+- <a href="https://aws.amazon.com/sqs/" target="_blank" rel="nofollow noopener noreferrer">AWS SQS Documentation ↗</a>
+

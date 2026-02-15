@@ -1,0 +1,687 @@
+---
+title: "Container and Kubernetes Security (Admission, PSP, PSA)"
+sidebar_position: 4
+label: "Container and Kubernetes Security: Admission Control and Pod Policies"
+body: "Secure container deployments and Kubernetes clusters through admission policies, pod security standards, and runtime controls."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, security-lead, infrastructure, devops]
+keywords: [kubernetes, container-security, pod-security, admission-control, psp, psa, rbac, network-policy, secrets-management, image-scanning]
+image: /img/archman-social-card.webp
+tags: [security, kubernetes, container-security, pod-security, admission-control, rbac, network-policy, secrets-management, image-scanning]
+hide_title: true
+---
+
+<Hero title="Container and Kubernetes Security" subtitle="Admission Control and Pod Security Policies" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Container and Kubernetes security operates at multiple levels: image scanning prevents vulnerable code from running, admission controllers enforce security policies before deployment, Pod Security Standards prevent dangerous configurations (privileged containers, root user), RBAC controls who can do what, and network policies restrict communication. Defense in depth across all layers is essential.
+
+## Learning Objectives
+
+- Secure container images through scanning and signing
+- Implement admission control to enforce security policies
+- Configure Pod Security Standards and Pod Security Policies
+- Design RBAC and least privilege access
+- Implement network policies for pod communication
+- Manage secrets securely in Kubernetes
+
+## Core Concepts
+
+### Container Image Security
+
+**Risk**: Container images can contain vulnerabilities, malware, or backdoors
+
+**Defenses**:
+1. **Image Scanning**: Scan images before deployment for known CVEs
+2. **Image Signing**: Cryptographically sign images to verify authenticity
+3. **Registry Security**: Authenticate to registries, encrypt, audit access
+4. **Minimal Base Images**: Use distroless or minimal base images
+
+### Admission Controllers
+
+**Purpose**: Intercept and validate/mutate requests before they're persisted
+
+**Types**:
+- **Validating**: Reject requests that don't meet policy
+- **Mutating**: Modify requests to enforce defaults (e.g., add security context)
+
+**Common Controllers**:
+- Pod Security Standard (PSS) / Pod Security Policy (PSP - deprecated)
+- NetworkPolicy enforcement
+- RBAC enforcement
+- Custom webhook policies
+
+### Pod Security Standards (PSS)
+
+**Three Levels**:
+
+| Level | Privileges | Use Case |
+|-------|-----------|----------|
+| **Restricted** | No privileged containers, no root, no host access | Most pods |
+| **Baseline** | Allows some privileges needed for some workloads | Apps needing special capabilities |
+| **Unrestricted** | Allows all privileges (backward compatible) | Legacy apps, system components |
+
+**Key Controls**:
+- Run containers as non-root
+- No privileged containers or escalation
+- No host network/PID/IPC access
+- No raw capabilities
+- Read-only root filesystem where possible
+
+### RBAC and Secrets
+
+**RBAC**: Control who (users/service accounts) can do what (actions) on resources
+
+**Secrets Management**:
+- Encrypt secrets at rest (etcd encryption)
+- Use external secret management (HashiCorp Vault, AWS Secrets Manager)
+- Audit access to secrets
+- Rotate secrets regularly
+
+## Practical Example
+
+### Securing a Kubernetes Cluster
+
+<Tabs>
+<TabItem value="image-scan" label="Image Scanning">
+
+```bash
+# Scan image for vulnerabilities
+trivy image myapp:v1.0
+# or
+grype myapp:v1.0
+
+# Sign image with cosign
+cosign sign --key cosign.key myregistry.azurecr.io/myapp:v1.0
+
+# Verify signature before deployment
+cosign verify --key cosign.pub myregistry.azurecr.io/myapp:v1.0
+```
+
+</TabItem>
+<TabItem value="pss" label="Pod Security Standards">
+
+```yaml
+# Enable Pod Security Standards in namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Pod that complies with restricted PSS
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-app
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: app
+    image: myapp:v1.0
+    imagePullPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      capabilities:
+        drop:
+        - ALL
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+```
+
+</TabItem>
+<TabItem value="rbac" label="RBAC Configuration">
+
+```yaml
+# Service account for pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: production
+---
+# Role with minimal permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-reader
+  namespace: production
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+  resourceNames: ["app-config"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+  resourceNames: ["app-secret"]
+---
+# Bind role to service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-reader-binding
+  namespace: production
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-reader
+subjects:
+- kind: ServiceAccount
+  name: app-sa
+  namespace: production
+```
+
+</TabItem>
+<TabItem value="network-policy" label="Network Policy">
+
+```yaml
+# Default deny all ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: production
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Allow traffic from frontend to API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-from-frontend
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 8080
+```
+
+</TabItem>
+</Tabs>
+
+## Security Layers
+
+### Layer 1: Image Security
+- Scan for CVEs
+- Verify image signatures
+- Use minimal base images
+- No hardcoded secrets
+
+### Layer 2: Admission Control
+- Enforce Pod Security Standards
+- Validate resource requests/limits
+- Enforce image pull policies
+- Require security context
+
+### Layer 3: Runtime Security
+- RBAC for least privilege access
+- Network policies for pod communication
+- Secrets encryption at rest
+- Audit logging of API calls
+
+### Layer 4: Detection
+- Monitor for privilege escalation
+- Alert on policy violations
+- Detect lateral movement
+- Monitor for malware
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Kubernetes Security Best Practices",
+    points: [
+      "Scan all images before deployment",
+      "Sign and verify container images",
+      "Enforce Pod Security Standards",
+      "Default deny network policies",
+      "RBAC with least privilege",
+      "Encrypt secrets at rest and in transit",
+      "Regular audit of RBAC and network policies",
+      "Monitor for policy violations"
+    ]},
+{
+    label: "Common Mistakes",
+    points: [
+      "Running containers as root",
+      "Using latest tag without versioning",
+      "No network policies (allow all traffic)",
+      "Overly permissive RBAC",
+      "Storing secrets in ConfigMaps",
+      "No image scanning or signing",
+      "No resource limits (noisy neighbor)",
+      "No audit logging"
+    ]
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Images scanned for CVEs before deployment?",
+  "Images signed and verified?",
+  "Base images minimal (distroless preferred)?",
+  "No hardcoded secrets in images?",
+  "Pod Security Standards enforced?",
+  "Containers run as non-root?",
+  "No privileged containers?",
+  "Resource limits defined?",
+  "RBAC configured with least privilege?",
+  "Service accounts created per workload?",
+  "Network policies restrict traffic?",
+  "Secrets encrypted at rest?",
+  "Audit logging enabled?",
+  "Alerts for policy violations?",
+  "Regular compliance scanning?",
+  "Detection of privilege escalation?"
+]} />
+
+## Self-Check
+
+- Can you describe the security context of your critical pods?
+- What RBAC permissions does your app actually need?
+- Do you have network policies for pod communication?
+- How do you manage secrets securely?
+
+:::info One Takeaway
+
+Container security depends on multiple layers: secure images, admission policies, pod configuration, access control, and monitoring. No single control is sufficient; defense in depth is essential.
+
+:::
+
+## Compliance and Auditing
+
+### Audit Logging in Kubernetes
+
+```yaml
+# Enable API server audit logging
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+# Audit all requests
+- level: RequestResponse
+  omitStages:
+  - RequestReceived
+  resources:
+  - group: ""
+    resources: ["pods"]
+  namespaces: ["production"]
+  # Log pod creation/deletion in production
+
+# Audit secret access (sensitive!)
+- level: Metadata
+  resources:
+  - group: ""
+    resources: ["secrets"]
+  # Log all secret reads, don't log body (too sensitive)
+
+# Audit RBAC changes
+- level: RequestResponse
+  verbs: ["create", "update", "delete"]
+  resources:
+  - group: "rbac.authorization.k8s.io"
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+
+# Audit authentication failures
+- level: Metadata
+  userGroups: ["system:unauthenticated"]
+  # Log who tried to access without auth
+
+# Default: log everything
+- level: Metadata
+```
+
+Audit output format:
+```json
+{
+  "level": "RequestResponse",
+  "user": { "username": "alice", "groups": ["developers"] },
+  "verb": "create",
+  "objectRef": { "apiVersion": "v1", "kind": "Pod", "name": "my-pod", "namespace": "default" },
+  "requestObject": { ... },  // Full request
+  "responseObject": { ... }, // Full response
+  "stage": "ResponseComplete",
+  "timestamp": "2025-02-15T10:30:00Z"
+}
+```
+
+Use cases:
+- Detect unauthorized access attempts
+- Audit compliance (who made changes)
+- Incident response (trace attack steps)
+- Forensics (what happened before compromise)
+
+### Scanning Container Images for Vulnerabilities
+
+```bash
+# Using Trivy (open source)
+trivy image myapp:v1.0
+
+# Output:
+# myapp:v1.0
+# (base image: ubuntu:20.04)
+# Total: 5 vulnerabilities
+#
+# CVE-2021-44228 (CRITICAL)
+#   openssl 1.1.1
+#   Severity: CRITICAL
+#   Description: OpenSSL vulnerability
+#   Fix Version: 1.1.1k
+
+# Using Grype (alternative)
+grype myapp:v1.0 -o json | jq '.matches[] | select(.vulnerability.severity == "CRITICAL")'
+
+# Policy: Block deployment if CRITICAL vulnerability
+# Implement in CI/CD:
+if trivy image $IMAGE | grep CRITICAL; then
+  echo "Image has CRITICAL vulnerabilities, blocking deployment"
+  exit 1
+fi
+```
+
+## Advanced Security Techniques
+
+### Policy as Code (OPA/Gatekeeper)
+
+Beyond Pod Security Standards, use Open Policy Agent (OPA) for custom policies.
+
+```rego
+# opa_policy.rego: Enforce that all images are from trusted registries
+package kubernetes.admission
+
+deny[msg] {
+    input.request.kind.kind == "Pod"
+    image := input.request.object.spec.containers[_].image
+    not startswith(image, "gcr.io/my-org/")
+    not startswith(image, "ghcr.io/my-org/")
+    msg := sprintf("Image %v not from trusted registry", [image])
+}
+
+# Deny if resource limits are missing
+deny[msg] {
+    input.request.kind.kind == "Pod"
+    container := input.request.object.spec.containers[_]
+    not container.resources.limits.cpu
+    msg := sprintf("Container %v missing CPU limit", [container.name])
+}
+
+# Deny if label environment is missing
+deny[msg] {
+    input.request.kind.kind == "Pod"
+    not input.request.object.metadata.labels.environment
+    msg := "Pod missing required 'environment' label"
+}
+```
+
+Deploy with Gatekeeper:
+```bash
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/release-3.14/deploy/gatekeeper.yaml
+```
+
+Benefits: Custom policies tailored to your organization, easier to maintain and update than RBAC alone.
+
+### Falco Runtime Security
+
+Detect suspicious behavior at runtime.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules
+data:
+  rules.yaml: |
+    - rule: Suspicious Process Execution
+      desc: Detect unusual process execution
+      condition: spawned_process and container and not name in (allowed_processes)
+      output: >
+        Suspicious process
+        (user=%user.name command=%proc.name args=%proc.args container=%container.name)
+      priority: WARNING
+
+    - rule: Unauthorized Network Connection
+      desc: Detect unexpected outbound connections
+      condition: outbound_connection and container and not fd.snet in (allowed_networks)
+      output: >
+        Unauthorized connection
+        (user=%user.name src=%fd.snet dst=%fd.dip:%fd.dport container=%container.name)
+      priority: ERROR
+```
+
+### Secrets Rotation
+
+Never hardcode secrets. Use external secret management.
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: app-secrets
+spec:
+  secretStoreRef:
+    name: vault
+    kind: SecretStore
+  target:
+    name: app-secrets-k8s
+    creationPolicy: Owner
+  data:
+  - secretKey: database-password
+    remoteRef:
+      key: prod/database
+      property: password
+  refreshInterval: 1h  # Rotate every hour
+```
+
+## Advanced Patterns
+
+### Network Policy Segmentation
+
+Strict network isolation: default deny, explicitly allow.
+
+```yaml
+# Deny all ingress by default
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# Allow ingress only from specific namespaces
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-api-gateway
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      tier: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: api-gateway
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+# Allow egress only to database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-database
+  namespace: backend
+spec:
+  podSelector:
+    matchLabels:
+      tier: backend
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          tier: database
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow DNS for service discovery
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+```
+
+### Multi-Tenancy Isolation
+
+Strong isolation between tenants.
+
+```yaml
+# Separate namespaces per tenant
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-acme
+  labels:
+    tenant: acme
+    pod-security.kubernetes.io/enforce: restricted
+---
+# ResourceQuota: limit tenant resource usage
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-quota
+  namespace: tenant-acme
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: "20Gi"
+    limits.cpu: "20"
+    limits.memory: "40Gi"
+    pods: "100"
+    services.loadbalancers: "2"
+---
+# NetworkPolicy: tenant pods cannot talk to other tenants
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-cross-tenant
+  namespace: tenant-acme
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          tenant: acme
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          tenant: acme
+  # Allow external APIs only via egress gateway
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: egress-gateway
+    ports:
+    - protocol: TCP
+      port: 443
+```
+
+## Incident Response Playbook
+
+```yaml
+# When a pod is compromised:
+# 1. Isolate with network policy
+# 2. Preserve logs and state
+# 3. Analyze
+# 4. Patch and redeploy
+# 5. Update security policies to prevent recurrence
+
+Isolation:
+  - Apply network policy to deny all traffic from compromised pod
+  - kubectl patch networkpolicy <policy> --type merge -p '{"spec":{"podSelector":{"matchLabels":{"compromised":"true"}}}}'
+
+Forensics:
+  - Export pod logs: kubectl logs <pod> --all-containers --tail=1000 > pod.log
+  - Describe pod: kubectl describe pod <pod> > pod-description.txt
+  - Get events: kubectl get events --sort-by='.lastTimestamp'
+
+Remediation:
+  - Delete pod: kubectl delete pod <pod>
+  - Update image with security patch
+  - Restart deployment: kubectl rollout restart deployment/<deployment>
+
+Prevention:
+  - Add OPA rule to detect vulnerability pattern
+  - Implement image scanning for CVE
+  - Update RBAC if pod exceeded permissions
+```
+
+## Next Steps
+
+1. Implement image scanning in your CI/CD pipeline
+2. Enable Pod Security Standards in your namespaces
+3. Audit and restrict RBAC permissions
+4. Implement default-deny network policies
+5. Encrypt secrets at rest (etcd encryption)
+6. Enable audit logging and monitoring
+7. Deploy OPA/Gatekeeper for policy enforcement
+8. Set up Falco for runtime security
+9. Implement external secrets management
+10. Test incident response playbooks
+
+## References
+
+- [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/)
+- [RBAC Best Practices](https://kubernetes.io/docs/concepts/security/rbac-good-practices/)
+- [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+- [Open Policy Agent (OPA)](https://www.openpolicyagent.org/)
+- [Falco Runtime Security](https://falco.org/)
+- [Kubernetes Security Best Practices](https://kubernetes.io/docs/concepts/security/)

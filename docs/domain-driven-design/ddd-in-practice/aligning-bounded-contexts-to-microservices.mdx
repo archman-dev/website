@@ -1,0 +1,376 @@
+---
+sidebar_position: 4
+title: "Aligning Bounded Contexts to Microservices"
+description: "Map bounded contexts to service boundaries for optimal architecture"
+docType: deep-dive
+difficulty: advanced
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [microservices, bounded-contexts, service-boundaries, data-ownership, team-topology]
+image: /img/archman-social-card.webp
+tags: [ddd, microservices, bounded-contexts, service-design, architecture]
+hide_title: true
+---
+
+<Hero title="Aligning Bounded Contexts to Microservices" subtitle="Map bounded contexts to service boundaries for optimal architecture" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+One bounded context typically maps to one microservice. Each service owns its database, exposes clear APIs, publishes domain events, and can be deployed independently. This alignment eliminates cross-service transactions, enables team autonomy, reflects organizational structure, and allows independent scaling. The fundamental principle: one context, one service, one team. Services communicate asynchronously via events, occasionally via synchronous APIs for read-heavy queries. Data consistency is eventual between services, not transactional.
+
+## Learning Objectives
+
+- Align service boundaries with bounded contexts identified through DDD analysis
+- Manage data ownership and prevent shared databases
+- Design inter-service communication patterns (sync vs async)
+- Understand consistency models across services (eventual vs strong)
+- Plan service teams and organizational alignment
+- Avoid anti-patterns like distributed monoliths and nano-services
+- Handle cross-service workflows with sagas and events
+
+## Motivating Scenario
+
+You have three bounded contexts identified through DDD analysis: Orders (one-time purchases), Subscriptions (recurring billing), and Shipping (logistics). As separate services, Orders owns orders table, Subscriptions owns subscriptions table, and Shipping owns shipments table. Orders Service publishes OrderCreated events that Subscriptions and Shipping independently consume. New Subscriptions features are added without touching Orders code. Both teams deploy independently. But if you instead have all three contexts in one service accessing a shared database, or worse, if you split into nano-services where each class is its own service, you lose the benefits of boundaries.
+
+## Core Principles
+
+<Figure
+  caption="Bounded Context to Microservice Alignment"
+  diagram={`graph TB
+    BC["Bounded Context<br/>(DDD)"]
+    BC -->|maps to| SVC["Microservice"]
+    SVC --> OWN["Owns Database<br/>Schema"]
+    SVC --> API["Public API<br/>(REST/gRPC)"]
+    SVC --> EVT["Publishes<br/>Events"]
+    SVC --> TEAM["One Team<br/>Owns Service"]
+
+    style BC fill:#c8e6c9
+    style SVC fill:#bbdefb
+    style OWN fill:#e1f5fe
+    style API fill:#e1f5fe
+    style EVT fill:#e1f5fe
+    style TEAM fill:#e1f5fe`}
+/>
+
+**The Rule: One Bounded Context = One Microservice = One Team**
+
+This simplifies everything:
+- Clear ownership: one team per service
+- Clear boundaries: one context per service
+- Independent evolution: services evolve separately
+- Independent deployment: no coordination needed
+- Data isolation: each service owns its data
+
+## Practical Example: E-Commerce Architecture
+
+<Tabs>
+<TabItem value="structure" label="Service Structure">
+
+```
+Orders Service
+├── Domain Models
+│   ├── Order (aggregate root)
+│   ├── OrderItem (value object)
+│   ├── OrderStatus (enum)
+│   └── OrderRepository (interface)
+├── Application Services
+│   └── OrderService
+├── Domain Events
+│   ├── OrderCreated
+│   ├── OrderConfirmed
+│   └── OrderCancelled
+├── Database
+│   ├── orders table (owned by this service only)
+│   └── order_items table
+├── API
+│   ├── POST /orders (create order)
+│   ├── GET /orders/{id} (get order)
+│   └── PATCH /orders/{id} (update status)
+└── Infrastructure
+    ├── Event Publisher
+    ├── Event Handlers (listens to PaymentFailed)
+    └── Repository Implementation
+
+Subscriptions Service
+├── Domain Models
+│   ├── Subscription (aggregate root)
+│   ├── BillingCycle (value object)
+│   ├── SubscriptionStatus (enum)
+│   └── SubscriptionRepository (interface)
+├── Application Services
+│   └── SubscriptionService
+├── Domain Events
+│   ├── SubscriptionCreated
+│   ├── SubscriptionRenewed
+│   └── SubscriptionCancelled
+├── Database
+│   ├── subscriptions table (owned by this service only)
+│   └── billing_cycles table
+├── API
+│   ├── POST /subscriptions (create)
+│   ├── GET /subscriptions/{id}
+│   └── PATCH /subscriptions/{id}
+└── Infrastructure
+    ├── Event Publisher
+    ├── Event Handlers (listens to OrderCreated)
+    └── Repository Implementation
+
+Shipping Service
+├── Domain Models
+│   ├── Shipment (aggregate root)
+│   ├── ShippingAddress (value object)
+│   └── ShipmentRepository (interface)
+├── Application Services
+│   └── ShippingService
+├── Domain Events
+│   ├── ShipmentCreated
+│   ├── ShipmentDispatched
+│   └── ShipmentDelivered
+├── Database
+│   ├── shipments table (owned by this service only)
+│   └── shipping_addresses table
+├── API
+│   ├── POST /shipments
+│   └── GET /shipments/{id}
+└── Infrastructure
+    ├── Event Publisher
+    ├── Event Handlers (listens to OrderConfirmed)
+    └── Carrier Integration
+```
+
+</TabItem>
+<TabItem value="communication" label="Inter-Service Communication">
+
+```
+Communication Patterns:
+
+1. ASYNCHRONOUS (Preferred)
+   ┌──────────────┐
+   │ Orders       │
+   │ Service      │
+   └──────┬───────┘
+          │ publishes OrderConfirmed event
+          ▼
+   ┌─────────────────────┐
+   │ Event Bus           │
+   │ (Kafka/RabbitMQ)    │
+   └─────────────────────┘
+          │
+          ├─► Subscriptions Service (subscribes, reserves billing)
+          └─► Shipping Service (subscribes, creates shipment)
+
+   Benefits:
+   - Services decouple
+   - No blocking calls
+   - Can handle failures gracefully
+   - Easy to add new subscribers
+
+2. SYNCHRONOUS (Minimal Use)
+   Orders Service → Inventory Service (GET /inventory/{product_id})
+
+   Use only for:
+   - Read-heavy queries
+   - Real-time requirements
+   - Strong consistency needed
+
+   Risks:
+   - Creates coupling
+   - One slow service blocks others
+   - Cascading failures
+
+3. SAGA (Multi-Step Workflows)
+   OrderSaga orchestrates:
+   ┌─────────────────────────────────────┐
+   │ 1. Create Order                     │
+   │    ▼                                │
+   │ 2. Process Payment                  │
+   │    (calls Payments Service sync)    │
+   │    ▼                                │
+   │ 3. Publish OrderConfirmed event     │
+   │    ▼                                │
+   │ 4. Subscriptions Service reacts     │
+   │    (subscribes asynchronously)      │
+   │    ▼                                │
+   │ 5. Shipping Service reacts          │
+   │    (subscribes asynchronously)      │
+   └─────────────────────────────────────┘
+```
+
+</TabItem>
+<TabItem value="dataflow" label="Data Flow Example">
+
+```python
+# 1. Client creates order
+POST /orders
+{
+    "customer_id": "cust_123",
+    "items": [
+        {"product_id": "prod_456", "quantity": 2}
+    ]
+}
+
+# 2. Orders Service handles request
+class OrderService:
+    def create_order(self, customer_id, items):
+        # Create order
+        order = Order(uuid4(), customer_id)
+        for item in items:
+            order.add_item(item['product_id'], item['quantity'])
+
+        # Save to Orders DB (only this service can access)
+        order_repo.save(order)  # INSERT into orders table
+
+        # Publish event
+        event_bus.publish(OrderCreated(order.id, customer_id, items))
+
+        return order
+
+# 3. Events published to message broker
+OrderCreated event:
+{
+    "event_id": "evt_789",
+    "event_type": "OrderCreated",
+    "order_id": "ord_123",
+    "customer_id": "cust_123",
+    "items": [...]
+}
+
+# 4. Subscriptions Service subscribes
+class SubscriptionEventHandler:
+    def on_order_created(self, event: OrderCreated):
+        # Subscriptions doesn't have access to Orders DB
+        # Gets all data from the event
+
+        # If customer has a subscription, handle billing
+        subscription = subscription_repo.get_by_customer(event.customer_id)
+        if subscription:
+            subscription.apply_order(event.items)
+            subscription_repo.save(subscription)
+
+            # Publish its own event
+            event_bus.publish(SubscriptionUpdated(...))
+
+# 5. Shipping Service subscribes
+class ShippingEventHandler:
+    def on_order_created(self, event: OrderCreated):
+        # Create shipment based on order
+        shipment = Shipment(uuid4(), event.order_id, event.customer_id)
+
+        # Shipment owns shipments table
+        shipment_repo.save(shipment)
+
+        event_bus.publish(ShipmentCreated(...))
+```
+
+</TabItem>
+</Tabs>
+
+## When to Align / When NOT to Align
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "DO Align Contexts to Services",
+    points: [
+      "Clear bounded context identified through DDD analysis",
+      "Teams are organized around business capabilities",
+      "Different deployment/scaling requirements",
+      "Independent evolution expected",
+      "Data is genuinely separate (no shared tables)",
+      "Organizational structure supports autonomy"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "DON'T Force Microservices",
+    points: [
+      "Simple system—monolith serves it better",
+      "Team is small—can't support multiple services",
+      "Contexts are tightly coupled—constant cross-service calls",
+      "Data is highly relational—needs transactions",
+      "Organization not ready for distributed complexity",
+      "Performance-critical operations need local calls"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  title="Patterns and Pitfalls"
+  sections={[
+    {
+      label: "Pitfall: Wrong Service Boundaries",
+      body: "Services don't align with bounded contexts. Orders Service calls Payments Service calls Billing Service—long synchronous chains. Heavy inter-service coupling.\n\n**Fix**: Align services with DDD contexts. Redesign communication to be event-driven. Boundaries should come from domain analysis, not technology."
+    },
+    {
+      label: "Pitfall: Shared Database Between Services",
+      body: "Multiple services access the same database directly. Orders and Subscriptions share tables. Schema changes require coordination. Can't deploy independently.\n\n**Fix**: Each service owns its database schema. Services access each other's data through APIs, not direct queries. Accept data duplication."
+    },
+    {
+      label: "Pitfall: Distributed Transactions",
+      body: "Trying to maintain ACID consistency across services. Complex saga implementations that are hard to test and maintain.\n\n**Fix**: Accept eventual consistency. Use events and sagas for workflows that span services. Embrace eventual consistency as a trade-off."
+    },
+    {
+      label: "Pattern: API Gateway",
+      body: "Single entry point for all clients. Routes requests to appropriate services. Handles authentication, rate limiting, and request transformation.\n\n**How to Use**: Client → API Gateway → Services. Gateway abstracts service locations. Services can be deployed anywhere."
+    },
+    {
+      label: "Pattern: Event Bus / Message Broker",
+      body: "Central infrastructure for event publishing and subscription. Kafka, RabbitMQ, or cloud event service. Decouples services completely.\n\n**How to Use**: Service publishes events to bus. Other services subscribe. Decoupling is automatic—no direct service calls needed."
+    },
+    {
+      label: "Pattern: Service Registry",
+      body: "Services register themselves at startup. Client discovers service location from registry. Enables dynamic deployment and scaling.\n\n**How to Use**: Service → Registry (register with URL). Client queries registry to find services. Supports zero-downtime deployments."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Does each service correspond to exactly one bounded context?",
+  "Does each service own its database (no sharing with other services)?",
+  "Can each service be deployed independently without coordinating with others?",
+  "Are inter-service dependencies minimized (prefer async over sync)?",
+  "Are service APIs well-defined and versioned?",
+  "Do services use asynchronous communication (events) where possible?",
+  "Is the consistency strategy clear (eventual vs strong)?",
+  "Is each service team clear and independent?",
+  "Can you trace data flow from request entry to all affected services?",
+  "Is the service topology documented and understood by the team?",
+  "Are there metrics and monitoring for each service?",
+  "Are cross-service failures handled gracefully?"
+]} />
+
+## Self-Check
+
+1. **Can one service span multiple contexts?**
+   Possible but not recommended. Harder to evolve independently. If two contexts are always coupled, question if they should be separate services.
+
+2. **What if two contexts are tightly coupled?**
+   Consider merging them into one service. Or accept the coupling and manage it carefully with events. If coupling is temporary, use a strangler pattern during migration.
+
+3. **How do you handle cross-service transactions?**
+   Use sagas (orchestration or choreography). Accept eventual consistency. Understand the CAP theorem tradeoffs.
+
+4. **What about synchronous APIs between services?**
+   Minimize them. Use for read-only queries or real-time operations. Implement circuit breakers and timeouts. Prefer events when possible.
+
+<Callout type="info">
+**One Takeaway**: Align service boundaries with bounded contexts. Each service owns its data and team. This enables independent evolution, deployment, and scaling. Communication should be mostly asynchronous via events. Embrace eventual consistency as a fundamental property of distributed systems.
+</Callout>
+
+## Next Steps
+
+1. **Strategic Decomposition**: Learn how to decompose monoliths using aligned services
+2. **Event-Driven Architecture**: Master asynchronous communication patterns
+3. **Service Communication**: Explore API gateways, service discovery, and load balancing
+4. **Organizational Alignment**: Understand Conway's Law and team topology implications
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Newman, S. (2015). *Building Microservices*. O'Reilly.
+- Richardson, C. (2018). *Microservices Patterns*. Manning.

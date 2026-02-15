@@ -1,0 +1,393 @@
+---
+sidebar_position: 1
+title: Image & Artifact Management
+description: Registry strategies, versioning, scanning, and garbage collection
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["registry","image","artifact","versioning","scanning","garbage-collection","docker"]
+image: /img/archman-social-card.webp
+tags: ["artifacts","platform","security"]
+hide_title: true
+---
+
+<Hero
+  title="Image & Artifact Management"
+  description="Centralized registries, scanning, versioning, and lifecycle policies for container images"
+  size="large"
+/>
+
+### TL;DR
+
+Centralized container registries (Docker Hub, ECR, GCR, Artifactory) store versioned images. Scan images for vulnerabilities before deployment. Tag strategies (semantic versioning, latest, git-sha) enable reproducible rollbacks. Garbage collection reclaims disk space. Push attestations (signatures, SBOM) for supply-chain integrity.
+
+### Learning Objectives
+
+- Design registry architecture and access control policies.
+- Implement image scanning and vulnerability thresholds.
+- Choose tagging strategies for reproducibility and rollback.
+- Configure garbage collection to prevent disk exhaustion.
+- Integrate attestations and provenance into CI/CD.
+
+### Motivating Scenario
+
+A developer accidentally tags a production image "latest" while testing. Pods restart with untested code; production outage. With proper tagging (semantic versioning + git-sha), "latest" is immutable; accidents are prevented. Image scanning catches zero-day vulnerabilities before they reach production.
+
+## Core Concepts
+
+**Registry**: Central repository storing images with metadata (manifests, layers, configs, signatures). Examples: Docker Hub, ECR (AWS), GCR (Google), Harbor (self-hosted), Artifactory. Provides RBAC, webhook hooks, and vulnerability scanning integration.
+
+**Tagging Strategy**: Naming convention for images. Semantic versioning (v1.2.3) ensures predictable rollbacks. Git SHA (abc123d) enables reproducibility—same commit always produces same image. "latest" tag is dangerous in production: forces re-pull on every deployment; causes surprises on pod restart. Use immutable tags (semver or SHA) in production; "latest" only for development/staging.
+
+**Image Scanning**: Automated vulnerability detection against CVE databases (Trivy, Clair, Snyk). Scans before push (in CI) and periodically after push (drift detection). Blocks deployment if critical vulns found; requires remediation.
+
+**Garbage Collection**: Remove unused images and orphaned layers to reclaim disk space. Images not pulled in 30 days, or with zero running deployments, are candidates for deletion. Prevents disk exhaustion on registries managing millions of images.
+
+**Attestation & Provenance**: Cryptographic proof of image origin and integrity. Cosign signatures verify image was built by your CI/CD, not compromised. SBOM (Software Bill of Materials) lists all dependencies; enables supply-chain audit for compliance (SLSA framework, CISA requirements).
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="registry-policy" label="Registry Access Control" default>
+```yaml
+# Harbor Registry (self-hosted, secure)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-config
+data:
+  core-security.conf: |
+    # Enforce pull image from harbor only
+    registry_url: harbor.internal:443
+    
+    # RBAC: separate namespaces per team
+    project:
+      - name: platform-team
+        access: ["read", "write"]
+      - name: data-science
+        access: ["read", "write"]
+      - name: public
+        access: ["read"]  # Public images, read-only
+
+    # Webhook: notify on push
+    webhook_url: https://ci.example.com/harbor-webhook
+
+    # Image retention (auto-delete old tags)
+    retention_policy:
+      - pattern: "*.*.*.dev-*"
+        keep: 5  # Keep last 5 dev builds
+        type: "tag"
+      - pattern: "*.*.*.prod-*"
+        keep: 20  # Keep last 20 prod builds
+        type: "tag"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-pull-secret
+  namespace: production
+type: kubernetes.io/dockercfg
+data:
+  .dockercfg: |
+    {
+      "harbor.internal:443": {
+        "auth": "base64-encoded-username:password",
+        "email": "k8s@example.com"
+      }
+    }
+```
+  </TabItem>
+
+  <TabItem value="scanning" label="Image Scanning (Trivy)">
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-image-scan
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: scanner
+          containers:
+          - name: trivy
+            image: aquasec/trivy:latest
+            args:
+            - image
+            - --severity
+            - "HIGH,CRITICAL"
+            - --exit-code
+            - "1"  # Fail if vulns found
+            - myregistry/myapp:v1.2.3
+            
+            env:
+            - name: TRIVY_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: registry-creds
+                  key: username
+            - name: TRIVY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-creds
+                  key: password
+
+          restartPolicy: OnFailure
+---
+# Admission webhook: reject images with vulnerabilities
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: image-scan-validator
+webhooks:
+- name: scanner.example.com
+  clientConfig:
+    service:
+      name: image-scanner
+      namespace: kube-system
+      path: "/validate"
+    caBundle: ...
+  rules:
+  - operations: ["CREATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  failurePolicy: Fail
+```
+  </TabItem>
+
+  <TabItem value="tagging-strategy" label="Tagging Strategy (Semver + Git SHA)">
+```bash
+#!/bin/bash
+# CI/CD: build and tag images consistently
+
+VERSION=$(git describe --tags --always)  # e.g., v1.2.3-45-gabc123d
+GIT_SHA=$(git rev-parse --short HEAD)    # e.g., abc123d
+BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+REGISTRY=myregistry.azurecr.io
+REPO=myapp
+
+# Build with multiple tags
+docker build \
+  --build-arg VERSION=$VERSION \
+  --build-arg BUILD_DATE=$BUILD_DATE \
+  -t $REGISTRY/$REPO:$VERSION \
+  -t $REGISTRY/$REPO:$GIT_SHA \
+  -t $REGISTRY/$REPO:latest \
+  .
+
+# Push all tags
+docker push $REGISTRY/$REPO:$VERSION
+docker push $REGISTRY/$REPO:$GIT_SHA
+docker push $REGISTRY/$REPO:latest
+
+# Attestation (cosign)
+cosign sign --key cosign.key $REGISTRY/$REPO:$VERSION
+
+# In production: pin to specific version
+kubectl set image deployment/api api=$REGISTRY/$REPO:$VERSION
+```
+  </TabItem>
+</Tabs>
+
+## Decision Checklist
+
+<Checklist items={[
+  "Centralized registry with RBAC and audit logging?",
+  "Tagging strategy (semver + git-sha) enforced in CI/CD pipeline?",
+  "Images scanned before push (in CI) and periodically after (drift detection)?",
+  "Vulnerability threshold enforced: block deployment if HIGH or CRITICAL vulns?",
+  "Garbage collection configured: auto-delete images not pulled in 30 days?",
+  "Image pull policy set to Always (force fresh) or IfNotPresent (cache)?",
+  "Image attestations (cosign signatures) required for production deployments?",
+  "SBOM generated and stored with image for supply-chain compliance?",
+  "Registry mirrors or caches configured for resilience (DockerHub outages)?",
+  "Image size optimized: multi-stage builds, distroless base images, layer caching?",
+  "Admission webhook blocks unscanned or unsigned images from running?",
+  "Compliance: images stored in compliant regions (GDPR, HIPAA, data residency)?"
+]} />
+
+## Self-Check
+
+- Why should "latest" tag be avoided in production? (Answer: forces re-pull; unpredictable image on restart.)
+- How does image scanning prevent vulnerabilities? (Answer: detects CVEs before deployment; blocks HIGH+ via admission webhook.)
+- What is image garbage collection, and why is it needed? (Answer: registry disk exhaustion after months of builds; GC reclaims space from unused images.)
+- How do you implement reproducible deployments? (Answer: pin to specific semver or git-SHA, not "latest"; enables bit-for-bit identical deployments.)
+- What is an admission webhook, and why does it matter for images? (Answer: validates images before they run; blocks unsigned, unscanned, or vulnerable images automatically.)
+
+## One Takeaway
+
+Treat images as immutable, versioned artifacts. Use semantic versioning + git-SHA for reproducibility, scan before deployment to catch vulnerabilities, and sign with cosign for supply-chain integrity. Enforce via admission webhooks; prevent "latest" tag in production. Small tagging/scanning investments prevent major security incidents and deployment surprises.
+
+## Next Steps
+
+- Study [Supply-Chain Security](/docs/cloud-native-and-runtime-topology/platform-concerns/sbom-supply-chain-signing).
+- Explore [Cost Controls](/docs/cloud-native-and-runtime-topology/platform-concerns/cost-controls-and-quotas).
+
+## Advanced Patterns
+
+### Layer Caching Optimization
+
+```dockerfile
+# ❌ Inefficient: Copies everything, invalidates layer on any file change
+COPY . /app
+RUN npm install && npm run build
+
+# ✅ Efficient: Cache dependencies separately from code
+FROM node:18-alpine AS builder
+
+COPY package*.json ./
+RUN npm install
+
+COPY . ./
+RUN npm run build
+
+FROM node:18-alpine
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+CMD ["node", "dist/index.js"]
+
+# Benefits:
+# - npm install cached until package.json changes
+# - Code changes only rebuild code layer
+# - Rebuilds 5x faster after code-only change
+```
+
+### Image Vulnerability Scanning in CI/CD
+
+```yaml
+# GitHub Actions example
+name: Build and Scan Image
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build image
+        run: docker build -t myapp:${{ github.sha }} .
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: myapp:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # Fail pipeline if HIGH/CRITICAL found
+      - name: Check vulnerabilities
+        run: |
+          VULNS=$(docker run --rm aquasec/trivy:latest image \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            myapp:${{ github.sha }})
+          if [ $? -ne 0 ]; then
+            echo "Vulnerabilities found! Push blocked."
+            exit 1
+          fi
+
+      - name: Push to registry
+        if: success()
+        run: docker push myapp:${{ github.sha }}
+```
+
+### Signed Images with Cosign
+
+```bash
+#!/bin/bash
+# Sign images during build
+
+REGISTRY=myregistry.azurecr.io
+IMAGE=$REGISTRY/myapp:$VERSION
+
+# Build and push
+docker build -t $IMAGE .
+docker push $IMAGE
+
+# Sign image with private key
+cosign sign --key cosign.key $IMAGE
+
+# Client verifies signature before pulling
+# cosign verify --key cosign.pub $IMAGE
+
+# In Kubernetes, admission webhook enforces:
+# "Block images without valid signature"
+```
+
+## Real-World Multi-Tenant Scenario
+
+```yaml
+# Enterprise with multiple teams, environments, compliance needs
+
+Registries:
+  Public images: Docker Hub Mirror (cache, cost savings)
+  Internal images: Harbor (air-gapped, compliance)
+  Ephemeral builds: ECR (temporary staging, auto-delete)
+
+Tagging Strategy:
+  Development: dev-branch-abc123d (auto-delete after 7 days)
+  Staging: staging-v1.2.3-rc1 (auto-delete after 30 days)
+  Production: v1.2.3 + v1.2 + v1 (immutable, retained 2 years)
+
+Scanning:
+  On push (CI): Block if CRITICAL
+  On schedule (nightly): Detect drift (new CVEs)
+  Before deployment (admission webhook): Recheck before running
+
+Compliance:
+  Base images: Signed by security team (vetted, hardened)
+  Application images: Must be signed by CI/CD (attestation)
+  Supply chain: SBOM generated and stored (audit trail)
+
+Lifecycle:
+  Development: 7 days
+  Staging: 30 days
+  Production: 2 years
+  Archived: 5 years (compliance retention)
+```
+
+## Additional Patterns & Pitfalls
+
+**Pattern: Multi-Stage Dockerfile**: Build stage installs dependencies; runtime stage uses only compiled artifacts. Result: 500MB build image → 20MB runtime image. Layer caching speeds rebuilds 5-10x.
+
+**Pattern: Distroless Base Images**: No shell, package manager, or OS tools in runtime image. Reduces attack surface (no exploitable shells) and image size. Trade-off: harder to debug; use alpine for dev, distroless for production.
+
+**Pattern: Image Pull Secrets for Private Registries**: Create secret with registry credentials; reference in pod imagePullSecrets. Enables deploying proprietary images without leaking credentials in manifests.
+
+**Pattern: Registry Mirrors**: Docker Hub outages affect all CI/CD jobs. Use registry mirror (Docker Hub Mirror, Artifact Hub) or cache (Harbor, Artifactory) to reduce failures and improve speed by 10x.
+
+**Pattern: Content Addressing**: Reference images by digest (sha256:abc123...) instead of tag. Ensures reproducible deployments: same digest = same image, always.
+
+**Pitfall: "latest" Tag in Production**: Pod restarts pull new "latest" image; rolling back requires manual re-tag. Always pin production to specific version (v1.2.3 or abc123d). "latest" only for dev/staging.
+
+**Pitfall: Image Scan Finds Vulns, But Deployment Proceeds**: Admission webhook not enforcing scan results. Configure ValidatingWebhook to block images with HIGH/CRITICAL vulns automatically.
+
+**Pitfall: Base Image Updates Break Backward Compatibility**: Alpine 3.16 → 3.18 changes glibc version; compiled binaries fail. Pin base image version in Dockerfile (alpine:3.18.6, not alpine:3.18); plan major version upgrades with testing.
+
+**Pitfall: Orphaned Images Exhaust Registry Disk**: Daily builds accumulate; 1 year = 365 images per service. Retention policy: keep last 30 images (dev), last 100 (prod). Auto-delete via garbage collection.
+
+**Pitfall: No Rollback Plan**: Deployed v1.2.3; found critical bug; need v1.2.2. If images auto-deleted, can't rollback. Retain last 20 production images; tag with date for easy rollback.
+
+**Pitfall: Secrets in Images**: Docker images are files; attacker can extract layers. Never bake secrets into images. Use Kubernetes Secrets, external vaults (HashiCorp Vault), or environment variables at runtime.
+
+## References
+
+- Harbor Registry: <a href="https://goharbor.io/" target="_blank" rel="nofollow noopener noreferrer">Official Website ↗️</a>
+- Trivy Scanner: <a href="https://github.com/aquasecurity/trivy" target="_blank" rel="nofollow noopener noreferrer">GitHub Repository ↗️</a>
+- Cosign Supply-Chain Security: <a href="https://github.com/sigstore/cosign" target="_blank" rel="nofollow noopener noreferrer">GitHub Repository ↗️</a>
+- SLSA Framework: <a href="https://slsa.dev/" target="_blank" rel="nofollow noopener noreferrer">Supply-Chain Levels for Software Artifacts ↗️</a>
+- Kubernetes Admission Webhooks: <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/" target="_blank" rel="nofollow noopener noreferrer">Official Documentation ↗️</a>
+- "Container Security" (Liz Rice, O'Reilly) — comprehensive guide
+- Docker Best Practices and security hardening

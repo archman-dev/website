@@ -1,0 +1,657 @@
+---
+sidebar_position: 3
+title: Cost Controls & Quotas
+description: Resource requests, limits, namespace policies, and cost monitoring
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 25
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["cost","quotas","limits","requests","namespace","chargeback","monitoring"]
+image: /img/archman-social-card.webp
+tags: ["platform","cost-management"]
+hide_title: true
+---
+
+<Hero
+  title="Cost Controls & Quotas"
+  description="Enforce resource governance through requests, limits, and namespace quotas to prevent runaway costs and enable fair multi-tenant sharing"
+  size="large"
+/>
+
+## TL;DR
+
+CPU and memory requests reserve capacity for a pod; limits prevent a pod from consuming more than allowed. Namespace quotas prevent any single team from hoarding the entire cluster. ResourceQuota, LimitRange, and admission policies enforce governance automatically. Track costs per team and service via resource tags and usage monitoring. Implement chargeback models so teams see (and pay for) their consumption, creating accountability and driving efficiency.
+
+## Learning Objectives
+
+- Design effective resource request and limit strategies aligned with actual workload behavior
+- Implement and enforce namespace quotas for fair multi-tenant resource allocation
+- Monitor and attribute costs to teams, services, and workloads
+- Build chargeback and showback models to drive cost awareness and optimization
+- Enforce Quality of Service (QoS) guarantees through admission policies
+- Optimize resource utilization to reduce cloud spending
+
+## Motivating Scenario
+
+A company deploys services to Kubernetes without requests or limits. One team runs a data-processing job that consumes all available CPU and memory. Other teams' pods are evicted. Critical services go down. The bill is astronomical because the cluster never stops scaling up to meet demand. No visibility into what costs what.
+
+**With proper cost controls:** Each team gets a namespace with a ResourceQuota (10 CPU, 20GB memory). Pods must declare requests and limits. A runaway job hits the quota and gets rejected instead of starving others. Cost attribution per team drives optimization: "Your daily cost is $150; you can reduce it to $80 by tuning that memory allocation."
+
+## Core Concepts
+
+### Resource Requests vs Limits
+
+**Requests** tell Kubernetes the minimum resources a pod needs. The scheduler uses requests to decide which node can fit the pod.
+
+**Limits** prevent a pod from consuming more than specified. If a pod tries to exceed memory limit, it's OOMKilled. If it exceeds CPU limit, it's throttled.
+
+The relationship matters:
+- Requests &le; Limits (always)
+- Requests = Guaranteed capacity (scheduler reserves it)
+- Limits = Safety ceiling (prevents runaway)
+- Requests &lt; Limits = Burst capacity (use extra when available, but give up if needed)
+
+### Quality of Service (QoS) Classes
+
+Kubernetes assigns every pod a QoS class based on requests and limits. This determines eviction priority.
+
+| QoS Class | Requests & Limits | Guarantee | Eviction Priority |
+|-----------|-------------------|-----------|-------------------|
+| **Guaranteed** | requests = limits | Pod gets exact resources | Never evicted (unless exceeds) |
+| **Burstable** | requests < limits | Min guarantee + burst | Evicted if node under pressure |
+| **BestEffort** | No requests/limits | None | Evicted first |
+
+### Namespace Quotas
+
+A ResourceQuota object limits total resource consumption per namespace. Prevents one team from monopolizing the cluster.
+
+### LimitRanges
+
+A LimitRange enforces min/max resource constraints on individual pods. Prevents outliers (e.g., a 128GB memory pod when sane max is 8GB).
+
+### Cost Attribution
+
+Track actual CPU/memory usage over time. Correlate with pricing. Bill teams fairly. Cost visibility drives efficiency.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="requests-limits" label="Requests & Limits in Pod Spec">
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-app
+  namespace: team-a
+spec:
+  containers:
+  - name: app
+    image: myapp:1.0.0
+    ports:
+    - containerPort: 8080
+
+    # REQUESTS: Guarantee this much capacity
+    resources:
+      requests:
+        cpu: "500m"           # 0.5 CPU cores (can share)
+        memory: "512Mi"       # 512 MiB minimum
+
+    # LIMITS: Cap at this much (prevent runaway)
+      limits:
+        cpu: "1000m"          # 1.0 CPU core max (throttled beyond)
+        memory: "1Gi"         # 1 GiB max (OOMKill if exceeded)
+---
+# Deployment: More realistic (replicas)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: team-a
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: api
+        image: api:2.0.0
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+# StatefulSet with per-instance resources
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: data-platform
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        resources:
+          requests:
+            cpu: "2"          # 2 cores per replica
+            memory: "4Gi"     # 4 GiB per replica
+          limits:
+            cpu: "4"          # Burst to 4 cores
+            memory: "8Gi"     # Max 8 GiB
+```
+
+**Key Decision Points:**
+- Requests = what the pod needs *normally*
+- Limits = what pod *must not exceed* (safety valve)
+- Total requests should not exceed node capacity
+- Limits can exceed node capacity (oversubscription acceptable if bursting is temporary)
+
+</TabItem>
+
+<TabItem value="resource-quota" label="Namespace Quotas">
+
+```yaml
+# ResourceQuota: Limit total consumption per namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-quota
+  namespace: team-a
+spec:
+  hard:
+    requests.cpu: "20"        # Team A can request max 20 CPU cores total
+    requests.memory: "50Gi"   # Team A can request max 50 GiB total
+    limits.cpu: "40"          # Team A's pods can limit to 40 CPU total
+    limits.memory: "100Gi"    # Team A's pods can limit to 100 GiB total
+    pods: "100"               # Max 100 pods in this namespace
+    services: "10"            # Max 10 services
+    persistentvolumeclaims: "5"  # Max 5 persistent volumes
+
+  # Scopes: limit quota to specific pod types
+  scopeSelector:
+    matchExpressions:
+    - operator: In
+      scopeName: PriorityClass
+      values: ["production", "staging"]
+---
+# ScopedResourceQuota: Different limits for different pod priorities
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-low-priority
+  namespace: team-a
+spec:
+  hard:
+    requests.cpu: "5"
+    requests.memory: "10Gi"
+  scopes:
+  - BestEffort
+---
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-guaranteed
+  namespace: team-a
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: "50Gi"
+  scopes:
+  - NotBestEffort
+---
+# Example: Pod deployment in namespace with quota
+# This pod requests 2 CPU, 4 GiB
+# Cluster checks: "Does team-a namespace have room?"
+# If team-a already at 19 CPU requested, this succeeds (19 + 2 <= 20)
+# If team-a already at 20 CPU requested, this fails (quota exceeded)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: team-a
+spec:
+  replicas: 5
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: worker:latest
+        resources:
+          requests:
+            cpu: "2"          # 2 cores per replica
+            memory: "4Gi"     # 4 GiB per replica
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        # 5 replicas * 2 CPU = 10 CPU total
+        # 5 replicas * 4 GiB = 20 GiB total
+        # Fits in team-a-quota (20 CPU, 50 GiB)
+```
+
+**Effect of Quotas:**
+- Attempt to deploy a 6th replica: fails (would exceed quota)
+- Teams feel the constraint, optimize
+- Prevents "oops, we deployed 100 replicas by mistake"
+
+</TabItem>
+
+<TabItem value="limit-ranges" label="LimitRange: Enforce Boundaries">
+
+```yaml
+# LimitRange: Ensure pods don't request ridiculous amounts
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-limits
+  namespace: team-a
+spec:
+  limits:
+  # Per-container limits
+  - type: Container
+    max:
+      cpu: "2"              # Single container: max 2 CPU
+      memory: "4Gi"         # Single container: max 4 GiB
+    min:
+      cpu: "50m"            # Single container: min 50 mCPU
+      memory: "64Mi"        # Single container: min 64 MiB
+    default:                # If container has no limits, use these
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:         # If container has no requests, use these
+      cpu: "250m"
+      memory: "256Mi"
+
+  # Pod-level limits
+  - type: Pod
+    max:
+      cpu: "4"              # Pod (all containers): max 4 CPU
+      memory: "8Gi"         # Pod (all containers): max 8 GiB
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+
+  # Persistent volume limits
+  - type: PersistentVolumeClaim
+    max:
+      storage: "100Gi"      # Single PVC: max 100 GiB
+    min:
+      storage: "1Gi"        # Single PVC: min 1 GiB
+---
+# Pod that respects LimitRange
+apiVersion: v1
+kind: Pod
+metadata:
+  name: compliant-pod
+  namespace: team-a
+spec:
+  containers:
+  - name: app
+    image: app:latest
+    resources:
+      requests:
+        cpu: "200m"         # > min, < max
+        memory: "256Mi"
+      limits:
+        cpu: "500m"         # > min, < max
+        memory: "512Mi"
+    # This pod is accepted
+---
+# Pod that violates LimitRange
+apiVersion: v1
+kind: Pod
+metadata:
+  name: violator-pod
+  namespace: team-a
+spec:
+  containers:
+  - name: app
+    image: app:latest
+    resources:
+      requests:
+        cpu: "1"            # OK
+        memory: "1Gi"       # OK
+      limits:
+        cpu: "10"           # REJECTED: exceeds max of 2
+        memory: "10Gi"      # REJECTED: exceeds max of 4Gi
+    # Admission controller rejects this pod
+    # Error: "cpu: max per Container is 2, got 10"
+```
+
+**Prevents:**
+- Accidentally deploying a 100GB memory pod
+- Over-requesting to "be safe" (forces realistic values)
+- Resource fragmentation (tiny pods + huge pods can't pack efficiently)
+
+</TabItem>
+
+<TabItem value="cost-monitoring" label="Cost Attribution & Chargeback">
+
+```python
+# Example: Calculate team costs from actual resource usage
+
+from datetime import datetime, timedelta
+import json
+
+class CostCalculator:
+    """
+    Calculate team costs based on actual resource consumption.
+
+    Pricing (example AWS EKS):
+    - CPU: $0.05/hour per core
+    - Memory: $0.006/hour per GB
+    """
+
+    HOURLY_RATES = {
+        'cpu_per_core': 0.05,
+        'memory_per_gb': 0.006,
+    }
+
+    def get_namespace_usage(self, namespace, time_window_hours=24):
+        """Fetch actual CPU/memory usage from monitoring system."""
+        # In production: query Prometheus, Datadog, cost API, etc.
+        # Example: Prometheus query
+        #   avg(rate(container_cpu_usage_seconds_total[5m]))
+        #   by (namespace)
+        return {
+            'namespace': namespace,
+            'avg_cpu_cores': 2.5,        # Average CPU used
+            'avg_memory_gb': 8.0,        # Average memory used
+            'peak_cpu_cores': 4.0,
+            'peak_memory_gb': 12.0,
+            'duration_hours': time_window_hours,
+        }
+
+    def calculate_cost(self, namespace, time_window_hours=24):
+        """Calculate cost for a namespace over time_window."""
+        usage = self.get_namespace_usage(namespace, time_window_hours)
+
+        # Calculate based on average usage (conservative)
+        cpu_cost = (usage['avg_cpu_cores'] *
+                   usage['duration_hours'] *
+                   self.HOURLY_RATES['cpu_per_core'])
+
+        memory_cost = (usage['avg_memory_gb'] *
+                      usage['duration_hours'] *
+                      self.HOURLY_RATES['memory_per_gb'])
+
+        total_cost = cpu_cost + memory_cost
+
+        return {
+            'namespace': namespace,
+            'period': f"{time_window_hours}h",
+            'cpu_cost': f"${cpu_cost:.2f}",
+            'memory_cost': f"${memory_cost:.2f}",
+            'total_cost': f"${total_cost:.2f}",
+            'breakdown': {
+                'cpu_hours': usage['avg_cpu_cores'] * usage['duration_hours'],
+                'memory_gb_hours': usage['avg_memory_gb'] * usage['duration_hours'],
+            }
+        }
+
+    def monthly_projection(self, namespace):
+        """Project monthly costs from daily usage."""
+        daily = self.calculate_cost(namespace, 24)
+        daily_amount = float(daily['total_cost'].replace('$', ''))
+        monthly = daily_amount * 30
+        return {
+            'namespace': namespace,
+            'daily_cost': daily['total_cost'],
+            'monthly_projection': f"${monthly:.2f}",
+        }
+
+    def optimize_recommendation(self, namespace):
+        """Suggest optimizations based on usage vs requests."""
+        usage = self.get_namespace_usage(namespace, 24)
+        # If avg usage is < 30% of requests, recommend reduce requests
+        # If peak usage > 80% of limits, recommend increase limits
+        return {
+            'namespace': namespace,
+            'recommendation': "Right-size requests down to 3 CPU, 10 GiB. Save ~$35/day.",
+            'estimated_savings': "$1,050/month",
+        }
+
+# Usage example
+calc = CostCalculator()
+
+# Daily cost for team-a
+daily = calc.calculate_cost('team-a', 24)
+print(json.dumps(daily, indent=2))
+# Output:
+# {
+#   "namespace": "team-a",
+#   "period": "24h",
+#   "cpu_cost": "$6.00",
+#   "memory_cost": "$1.15",
+#   "total_cost": "$7.15",
+#   "breakdown": {
+#     "cpu_hours": 60,
+#     "memory_gb_hours": 192
+#   }
+# }
+
+# Monthly projection
+monthly = calc.monthly_projection('team-a')
+print(f"Team A estimated monthly cost: {monthly['monthly_projection']}")
+# Output: Team A estimated monthly cost: $214.50
+
+# Optimization
+opt = calc.optimize_recommendation('team-a')
+print(f"Recommendation: {opt['recommendation']}")
+# Output: Recommendation: Right-size requests down to 3 CPU, 10 GiB. Save ~$35/day.
+```
+
+**Impact of Cost Visibility:**
+- Teams see dashboards: "Your daily cost is $215"
+- Pressure to optimize becomes real
+- Unused pods are deleted quickly
+- Requests are right-sized based on actual needs
+- Multi-region deployments are justified only if availability truly requires it
+- Cost trends are tracked weekly
+
+</TabItem>
+
+<TabItem value="admission-control" label="Admission Webhooks: Enforce Policy">
+
+```yaml
+# ValidatingWebhookConfiguration: Reject pods that don't meet policy
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: cost-policy
+webhooks:
+- name: enforce-requests.cost.io
+  clientConfig:
+    service:
+      name: policy-webhook
+      namespace: kube-system
+      path: "/validate"
+    caBundle: LS0tLS1CRUdJTi... # base64 CA cert
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+    scope: "Namespaced"
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  timeoutSeconds: 5
+---
+# Example webhook logic (pseudo-code in Go)
+# if pod.namespace != "kube-system" && pod.namespace != "kube-public" {
+#   if pod.spec.containers[0].resources.requests == nil {
+#     return reject("Container must have requests defined")
+#   }
+#   if pod.spec.containers[0].resources.limits == nil {
+#     return reject("Container must have limits defined")
+#   }
+#   if pod.spec.containers[0].resources.requests.memory.toMi() > 8192 {
+#     return reject("Memory request > 8Gi not allowed")
+#   }
+# }
+---
+# Pod that passes validation
+apiVersion: v1
+kind: Pod
+metadata:
+  name: safe-pod
+  namespace: team-a
+spec:
+  containers:
+  - name: app
+    image: app:latest
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+  # ACCEPTED
+---
+# Pod that fails validation (no requests)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: risky-pod
+  namespace: team-a
+spec:
+  containers:
+  - name: app
+    image: app:latest
+  # REJECTED: "Container must have requests defined"
+```
+
+**Policy Examples:**
+- Every pod must declare requests AND limits
+- CPU request must be ≥ 50m and ≤ 4
+- Memory request must be ≥ 64Mi and ≤ 8Gi
+- Total per-namespace CPU ≤ 50, Memory ≤ 100Gi
+- BestEffort pods (no requests) allowed only in dev namespaces
+
+</TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Cost Controls: Best Practices vs Anti-Patterns"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**DO: Right-Size Based on Measured Workload**: Production API averages 500m CPU, peaks 1.2 CPU. Set request=600m, limit=1.5. Batch job uses 4 CPU consistently. Set request=limit=4.",
+      "**DO: Enforce Quotas Per Team**: Team A quota: 20 CPU, 40GB. Team B quota: 10 CPU, 20GB. Over time, enforce tight quotas (5% headroom). Prevents monopolization.",
+      "**DO: Set Pod Limits Well Below Node Capacity**: Node capacity: 16 CPU, 64 GiB. Max pod limit: 4 CPU, 8Gi. Multiple pods fit. Cluster consolidates well.",
+      "**DO: Monitor Actual Usage vs Requests**: Pod requests 2 CPU, actually uses 300m average. Adjust request down to 400m, limit down to 800m. Save 70% of reserved capacity.",
+      "**DO: Implement Cost Attribution**: Team sees weekly dashboard: 'Your average daily cost is $215, trend is +5% from last week.' This drives immediate optimization.",
+      "**DO: Use Admission Control to Enforce Policy**: Webhook rejects any pod without requests/limits defined. Rejects memory requests > 8Gi. Prevents outliers, keeps cluster healthy."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**DO: Right-Size Based on Measured Workload**: Guess blindly. 'Give everything 4 CPU and 8GB just in case.' This starves the cluster and prevents autoscaling from working properly.",
+      "**DO: Enforce Quotas Per Team**: No quotas. One team's data job consumes 80% of cluster. Other teams' services fail. Cluster auto-scales endlessly, costing millions.",
+      "**DO: Set Pod Limits Well Below Node Capacity**: Pod limit = node capacity (16 CPU). Only 1 pod fits per node. Cluster drastically underutilized. 70% idle capacity, money wasted.",
+      "**DO: Monitor Actual Usage vs Requests**: Never measure. Requests stay inflated forever. 70% of cluster sits idle but quota says 'full.' Waste is invisible.",
+      "**DO: Implement Cost Attribution**: Cost is opaque. Teams waste freely. Finance gets surprised by a $500k bill at month-end. No accountability.",
+      "**DO: Use Admission Control to Enforce Policy**: Voluntary guidelines. Some teams follow, others don't. Resource fragmentation, unpredictable performance, hard to schedule."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: The Unlimited Pod",
+    body: "Pod deployed with no requests or limits. It uses all memory on the node. OOMKill kills it. Other pods get evicted. Cascading failures. No visibility into what caused chaos. No way to prevent it happening again.",
+  },
+  {
+    label: "Anti-Pattern: Cargo Cult Requests",
+    body: "Team copies request/limit values from another team without understanding their workload. Some pods over-provisioned (waste). Some pods under-provisioned (throttled, slow). Resource fragmentation prevents efficient scheduling.",
+  },
+  {
+    label: "Anti-Pattern: Quota Without Visibility",
+    body: "Quota is set to 50 CPU. Team gets 'quota exceeded' error. No dashboard showing what's consuming quota. No tools to investigate. Team frustrated, requests larger quota. Cycle repeats.",
+  },
+  {
+    label: "Pattern: Progressive Right-Sizing",
+    body: "1. Deploy with conservative estimates (e.g., 1 CPU, 2 GiB). 2. Monitor actual usage for 1 week. 3. Adjust requests to actual + 20% headroom. 4. Adjust limits to peak + 30% headroom. 5. Repeat monthly. Converges on optimal values within 2-3 months.",
+  },
+  {
+    label: "Pattern: Quota-Driven Architecture",
+    body: "Assign tight quota to a namespace (e.g., 10 CPU, 20 GiB). Forces team to design efficiently: small, composable services instead of monoliths. Autoscaling with 5 replicas x 2 CPU = 10 CPU budget. Team optimizes or adds resources if business justifies it.",
+  },
+  {
+    label: "Pattern: Cost Dashboard & Alerts",
+    body: "Team dashboard shows daily cost, weekly trend, cost per service. Alert if daily cost increases >20% week-over-week. Catches runaway processes (memory leak, new job) within hours, not weeks. Enables rapid optimization.",
+  },
+  {
+    label: "Pattern: Tiered Quotas by Environment",
+    body: "Prod: tight quotas, strict admission control. Staging: moderate quotas. Dev: loose quotas, optional requests. Different policies match risk tolerance. Prevents teams from testing 'big ideas' in prod but allows experimentation in dev.",
+  },
+  {
+    label: "Anti-Pattern: Static Limits Forever",
+    body: "Requests/limits set at deployment, never revisited. Over 6 months, usage patterns change. Requests become outdated. Under-provisioned for peak, over-provisioned for normal. Waste accumulates invisibly.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Are resource requests based on measured workload data (not guesses or 'just in case')?",
+  "Do requests account for sustained average load, or peak load? Is the distinction clear?",
+  "Are limits set to allow normal burst (requests < limits) but prevent runaway (limits < requests * 2)?",
+  "Does every namespace have a ResourceQuota defined and documented?",
+  "Is LimitRange configured to enforce sensible min/max per container and pod?",
+  "Are teams aware of their current resource quota and usage (within 90% threshold)?",
+  "Is cost monitoring integrated (actual usage tracking, not just requests)?",
+  "Can teams see their cost per service/feature on a dashboard?",
+  "Is there a chargeback or showback model in place (teams see their spend)?",
+  "Are quotas tight enough to force optimization, yet loose enough to avoid team frustration?",
+  "Are admission webhooks preventing over-request (e.g., max 8Gi memory per container)?",
+  "Are old, unused pods regularly removed (monthly cost hygiene reviews)?",
+  "Is cluster autoscaler configured to remove underutilized nodes (cost optimization)?",
+  "Are cost anomalies detected and investigated within 24 hours (trending alerts)?",
+  "Can platform team justify quota allocations to finance (business case)?",
+]} />
+
+## Self-Check
+
+1. **Right now**, what are your top 3 resource consumers in your cluster by namespace? If you can't name them without querying Prometheus, your visibility is poor.
+2. **How much** does your cluster cost per month? Per team? If you don't know, that's a problem. Unknown costs are runaway costs.
+3. **If you double** the number of users tomorrow, will your cluster have room, or will autoscaling kick in (adding $X/day cost)? Can you predict the cost impact?
+4. **One random pod** in prod uses 16GB of memory. Is that a bug, a feature, or expected? How do you find out? How long does investigation take?
+5. **If a team** requests more quota, what's your approval process? Is it data-driven (cost analysis) or political (who shouts loudest)?
+
+## Next Steps
+
+1. **Measure current usage** — Deploy Prometheus or similar. Collect actual CPU/memory metrics for all pods for 1 week.
+2. **Set realistic requests** — For each workload, adjust requests from data (e.g., p95 of observed usage).
+3. **Implement namespace quotas** — One per team/project. Start generous (150% of current usage), then tighten over time.
+4. **Configure LimitRange** — Sane defaults: min 50m CPU/64Mi memory, max 4 CPU/8Gi memory per container.
+5. **Add cost monitoring** — Link resource usage to billing. Build a cost dashboard. Show teams their spend.
+6. **Enable admission webhooks** — Require all pods to declare requests and limits.
+7. **Run cost optimization quarterly** — Review quotas, right-size, delete obsolete workloads, celebrate savings.
+8. **Educate teams** — "Your pod requests 8GB but uses 2GB average. Reduce to 3GB, save ~$60/month."
+
+## References
+
+1. <a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Managing Resources for Containers ↗️</a>
+2. <a href="https://kubernetes.io/docs/concepts/policy/resource-quotas/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Resource Quotas ↗️</a>
+3. <a href="https://kubernetes.io/docs/tasks/administer-cluster/manage-resources/memory-default-namespace/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Configure Default Memory Requests and Limits ↗️</a>
+4. <a href="https://finops.org/" target="_blank" rel="nofollow noopener noreferrer">FinOps: Cloud Cost Optimization ↗️</a>
+5. <a href="https://www.cncf.io/blog/2021/12/15/finops-for-kubernetes/" target="_blank" rel="nofollow noopener noreferrer">CNCF: FinOps for Kubernetes ↗️</a>
+6. <a href="https://kubernetes.io/docs/concepts/policy/limit-range/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Limit Ranges ↗️</a>
+---

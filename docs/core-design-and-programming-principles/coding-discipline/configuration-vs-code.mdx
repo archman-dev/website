@@ -1,0 +1,408 @@
+---
+sidebar_position: 4
+title: "Configuration vs. Code"
+description: "Master the discipline of separating configuration from code for flexibility and safety."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [configuration, environment-variables, settings, flexibility, deployment, code-separation, twelve-factor, operational-concerns]
+image: /img/archman-social-card.webp
+tags: [configuration, deployment, best-practices, flexibility, operational-excellence, environment-management, devops, code-separation, maintainability, security]
+hide_title: true
+---
+
+<Hero title="Configuration vs. Code" subtitle="Master the discipline of separating configuration from code for flexibility and safety." imageAlt="Configuration separation illustration" size="large" />
+
+## TL;DR
+
+Code describes *what* your application does. Configuration describes *where* and *how* it does it. Keep them separate so you can deploy identical code to development, staging, and production—changing only configuration. Configuration should live in environment variables, configuration files, or configuration services, never hardcoded in code. Never commit credentials, secrets, or environment-specific values. This separation enables safe deployments, easier debugging, and reduced risk of exposing sensitive data.
+
+## Learning Objectives
+
+- Distinguish between code logic and deployment configuration
+- Implement configuration management using environment variables
+- Secure sensitive configuration without exposing it in repositories
+- Design code that reads configuration from multiple sources
+- Understand when to use different configuration strategies
+- Handle configuration validation and defaults safely
+
+## Motivating Scenario
+
+A developer hardcodes the database URL as `localhost:5432` in code. When deploying to production, they change it to the production database. Later, someone accidentally commits code with the real production password. Now every developer has access to production credentials. Worse, the code must be recompiled for each environment. Contrast this with a system where code reads the database URL from an environment variable, allowing deployment of identical binaries across all environments with only configuration changes.
+
+## Core Concepts
+
+### The Twelve-Factor App Principle
+
+Store configuration in environment variables. Configuration that changes between deployments shouldn't require code changes. Environment variables are present in all environments, easily overridden, and never accidentally committed to version control.
+
+### Sensitive vs. Non-Sensitive Configuration
+
+API keys, passwords, database credentials are sensitive—never commit them. Environment names, feature flags, timeout values are non-sensitive configuration that can live in files. Treat sensitive data differently: use secure secret management systems.
+
+### Configuration Layers
+
+Application configuration can come from multiple layers: defaults in code, files on disk, environment variables, remote configuration services. Later layers override earlier ones, allowing flexible override hierarchies.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Hardcoded configuration
+DATABASE_URL = "postgresql://admin:password123@prod.db.com/myapp"
+API_KEY = "sk_live_abcd1234"
+DEBUG = False
+MAX_CONNECTIONS = 10
+
+def connect_to_db():
+    connection = psycopg2.connect(DATABASE_URL)
+    return connection
+
+# ✅ EXCELLENT - Configuration from environment
+import os
+from typing import Optional
+
+class Config:
+    """Application configuration from environment with defaults."""
+
+    @staticmethod
+    def get_env(key: str, default: Optional[str] = None) -> str:
+        """Safely get environment variable with fallback."""
+        value = os.environ.get(key, default)
+        if value is None:
+            raise ValueError(f"Required environment variable '{key}' not set")
+        return value
+
+    @staticmethod
+    def get_int(key: str, default: Optional[int] = None) -> int:
+        """Get integer from environment."""
+        value = os.environ.get(key, str(default) if default else None)
+        if value is None:
+            raise ValueError(f"Required environment variable '{key}' not set")
+        return int(value)
+
+    @staticmethod
+    def get_bool(key: str, default: bool = False) -> bool:
+        """Get boolean from environment."""
+        value = os.environ.get(key, str(default)).lower()
+        return value in ('true', '1', 'yes', 'on')
+
+    # Database configuration
+    DATABASE_URL = get_env('DATABASE_URL', 'postgresql://localhost/myapp')
+    DATABASE_POOL_SIZE = get_int('DATABASE_POOL_SIZE', 10)
+
+    # API configuration
+    API_KEY = get_env('API_KEY')  # Required, no default
+    API_TIMEOUT = get_int('API_TIMEOUT', 30)
+
+    # Application settings
+    DEBUG = get_bool('DEBUG', False)
+    LOG_LEVEL = get_env('LOG_LEVEL', 'INFO')
+    ENVIRONMENT = get_env('ENVIRONMENT', 'development')
+
+def connect_to_db():
+    """Connect using configured database URL."""
+    connection = psycopg2.connect(Config.DATABASE_URL)
+    return connection
+
+def get_api_client():
+    """Create API client with configured key and timeout."""
+    return APIClient(
+        api_key=Config.API_KEY,
+        timeout=Config.API_TIMEOUT
+    )
+
+if __name__ == '__main__':
+    app.run(debug=Config.DEBUG, log_level=Config.LOG_LEVEL)
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Hardcoded configuration
+const (
+    DatabaseURL = "postgresql://admin:password123@prod.db.com/myapp"
+    APIKey      = "sk_live_abcd1234"
+    Debug       = false
+)
+
+// ✅ EXCELLENT - Configuration management with validation
+package config
+
+import (
+    "fmt"
+    "os"
+    "strconv"
+)
+
+type AppConfig struct {
+    // Database
+    DatabaseURL      string
+    DatabasePoolSize int
+
+    // API
+    APIKey     string
+    APITimeout int
+
+    // Application
+    Debug       bool
+    LogLevel    string
+    Environment string
+}
+
+// NewAppConfig loads configuration from environment with validation
+func NewAppConfig() (*AppConfig, error) {
+    cfg := &AppConfig{
+        // Database (with defaults)
+        DatabaseURL:      getEnv("DATABASE_URL", "postgresql://localhost/myapp"),
+        DatabasePoolSize: getEnvInt("DATABASE_POOL_SIZE", 10),
+
+        // API (API_KEY required)
+        APIKey:     os.Getenv("API_KEY"),
+        APITimeout: getEnvInt("API_TIMEOUT", 30),
+
+        // Application
+        Debug:       getEnvBool("DEBUG", false),
+        LogLevel:    getEnv("LOG_LEVEL", "INFO"),
+        Environment: getEnv("ENVIRONMENT", "development"),
+    }
+
+    // Validation
+    if cfg.APIKey == "" {
+        return nil, fmt.Errorf("required environment variable API_KEY not set")
+    }
+    if cfg.Environment != "development" && cfg.Environment != "staging" && cfg.Environment != "production" {
+        return nil, fmt.Errorf("invalid ENVIRONMENT: %s", cfg.Environment)
+    }
+
+    return cfg, nil
+}
+
+func getEnv(key, defaultValue string) string {
+    if value := os.Getenv(key); value != "" {
+        return value
+    }
+    return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+    if value := os.Getenv(key); value != "" {
+        if intVal, err := strconv.Atoi(value); err == nil {
+            return intVal
+        }
+    }
+    return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+    value := os.Getenv(key)
+    if value == "" {
+        return defaultValue
+    }
+    return value == "true" || value == "1" || value == "yes"
+}
+
+// Usage in main.go
+func main() {
+    cfg, err := config.NewAppConfig()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    db, _ := sql.Open("postgres", cfg.DatabaseURL)
+    defer db.Close()
+
+    db.SetMaxOpenConns(cfg.DatabasePoolSize)
+
+    apiClient := NewAPIClient(cfg.APIKey, cfg.APITimeout)
+    // ...
+}
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Hardcoded configuration
+const DATABASE_URL = 'postgresql://admin:password123@prod.db.com/myapp';
+const API_KEY = 'sk_live_abcd1234';
+const DEBUG = false;
+const MAX_CONNECTIONS = 10;
+
+// ✅ EXCELLENT - Configuration from environment with validation
+class AppConfig {
+    static getEnv(key, defaultValue = null) {
+        const value = process.env[key];
+        if (value === undefined && defaultValue === null) {
+            throw new Error(`Required environment variable '${key}' not set`);
+        }
+        return value ?? defaultValue;
+    }
+
+    static getInt(key, defaultValue = null) {
+        const value = process.env[key];
+        if (value === undefined && defaultValue === null) {
+            throw new Error(`Required environment variable '${key}' not set`);
+        }
+        return parseInt(value ?? defaultValue, 10);
+    }
+
+    static getBool(key, defaultValue = false) {
+        const value = process.env[key]?.toLowerCase();
+        if (value === undefined) return defaultValue;
+        return ['true', '1', 'yes', 'on'].includes(value);
+    }
+
+    static load() {
+        const config = {
+            // Database
+            database: {
+                url: this.getEnv('DATABASE_URL', 'postgresql://localhost/myapp'),
+                poolSize: this.getInt('DATABASE_POOL_SIZE', 10),
+            },
+
+            // API
+            api: {
+                key: this.getEnv('API_KEY'), // Required
+                timeout: this.getInt('API_TIMEOUT', 30),
+            },
+
+            // Application
+            app: {
+                debug: this.getBool('DEBUG', false),
+                logLevel: this.getEnv('LOG_LEVEL', 'INFO'),
+                environment: this.getEnv('ENVIRONMENT', 'development'),
+            },
+        };
+
+        // Validation
+        if (!['development', 'staging', 'production'].includes(config.app.environment)) {
+            throw new Error(`Invalid ENVIRONMENT: ${config.app.environment}`);
+        }
+
+        return config;
+    }
+}
+
+// Usage
+const config = AppConfig.load();
+
+const db = new Database({
+    connectionString: config.database.url,
+    max: config.database.poolSize,
+});
+
+const api = new APIClient({
+    apiKey: config.api.key,
+    timeout: config.api.timeout,
+});
+
+app.listen(
+    process.env.PORT || 3000,
+    () => console.log(`Running in ${config.app.environment} mode`)
+);
+```
+</TabItem>
+</Tabs>
+
+## Configuration Strategies
+
+### Environment Variables (Recommended for Secrets)
+
+```bash
+# .env.example (commit this, shows required variables)
+DATABASE_URL=postgresql://localhost/myapp
+API_KEY=your_api_key_here
+DEBUG=false
+
+# .env (don't commit this!)
+DATABASE_URL=postgresql://prod-user:secret@prod.db.com/myapp
+API_KEY=sk_live_xxxxxxxxxxxxxx
+DEBUG=false
+```
+
+### Configuration Files (Non-Sensitive Only)
+
+```yaml
+# config/defaults.yaml - commit this
+app:
+  logLevel: INFO
+  timeout: 30
+  maxConnections: 10
+
+# config/production.yaml - don't commit credentials
+database:
+  pool:
+    min: 10
+    max: 50
+```
+
+### Configuration Validation
+
+```javascript
+const schema = {
+    DATABASE_URL: { required: true, type: 'string' },
+    API_KEY: { required: true, type: 'string', minLength: 20 },
+    DEBUG: { required: false, type: 'boolean', default: false },
+    MAX_RETRIES: { required: false, type: 'integer', default: 3, min: 1, max: 10 },
+};
+
+function validateConfig(config) {
+    const errors = [];
+    for (const [key, rules] of Object.entries(schema)) {
+        const value = process.env[key];
+
+        if (rules.required && !value) {
+            errors.push(`Missing required: ${key}`);
+        }
+
+        if (value && rules.type === 'string' && typeof value !== 'string') {
+            errors.push(`${key} must be string, got ${typeof value}`);
+        }
+
+        if (value && rules.minLength && value.length < rules.minLength) {
+            errors.push(`${key} too short (min ${rules.minLength} chars)`);
+        }
+    }
+
+    if (errors.length > 0) {
+        throw new Error('Configuration validation failed:\n' + errors.join('\n'));
+    }
+}
+```
+
+## Design Review Checklist
+
+- Are credentials and secrets stored in environment variables, never in code?
+- Does the code read configuration from multiple sources (env vars, files, services)?
+- Are configuration defaults sensible for development but require explicit override for production?
+- Is there a `.env.example` file showing required variables without sensitive values?
+- Is configuration validated at startup with clear error messages?
+- Can identical compiled/built code run in development, staging, and production?
+- Are sensitive variables never logged or exposed in error messages?
+
+## Self-Check
+
+1. Find three values in your codebase that change between environments. How would you move them to configuration?
+
+2. Do your configuration values include credentials? If so, how would you secure them?
+
+3. What would happen if someone committed `.env` to your repository? What safeguards do you have?
+
+<Admonition type="info" title="One Takeaway">
+Configuration enables code reuse. The same compiled binary or container should run identically in development, staging, and production—only the configuration changes. Keep credentials out of code, out of repositories, and in secure vaults. Design code that validates configuration at startup so deployment failures are obvious immediately rather than hours later in production.
+</Admonition>
+
+## Next Steps
+
+- Explore <a href="../feature-flags-and-toggles">feature flags ↗</a> for runtime configuration flexibility
+- Learn about <a href="../backward-compatibility-and-versioning">versioning ↗</a> when configuration schemas change
+- Study <a href="../../solid/open-closed">Open/Closed Principle ↗</a> for making code configurable without modification
+- Review <a href="../error-handling-and-exceptions">error handling ↗</a> for validating configuration safely
+
+## References
+
+1. Humble, J., & Farley, D. (2010). Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation. Addison-Wesley.
+2. The Twelve-Factor App. Retrieved from https://12factor.net/config
+3. Newman, S. (2015). Building Microservices. O'Reilly Media.
+4. Martin, R. C. (2008). Clean Code: A Handbook of Agile Software Craftsmanship. Prentice Hall.

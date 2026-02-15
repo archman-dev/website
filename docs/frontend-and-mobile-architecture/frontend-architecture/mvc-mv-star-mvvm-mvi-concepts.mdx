@@ -1,0 +1,585 @@
+---
+sidebar_position: 1
+title: MVC, MVP, MVVM, MVI - Architectural Patterns
+description: Compare architectural patterns for separation of concerns and testability
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","frontend-lead"]
+keywords: ["mvc","mvp","mvvm","mvi","patterns","separation-of-concerns","testability"]
+image: /img/archman-social-card.webp
+tags: ["frontend","architecture","patterns"]
+hide_title: true
+---
+
+<Hero
+  title="MVC, MVP, MVVM, MVI - Architectural Patterns"
+  description="Understand separation of concerns, data binding, and unidirectional data flow in frontend patterns"
+  size="large"
+/>
+
+## TL;DR
+
+**MVC (Model-View-Controller)**: Model holds data, View renders UI, Controller handles input. Bidirectional communication, easy to start, hard to reason about at scale.
+
+**MVP (Model-View-Presenter)**: Presenter (logic) separates View (passive) from Model. Better testability, more boilerplate. View is dumb, Presenter is testable.
+
+**MVVM (Model-View-ViewModel)**: ViewModel exposes data/commands to View via two-way data binding. Reduces boilerplate, popular in Angular/WPF. Magic binding can hide bugs.
+
+**MVI (Model-View-Intent)**: Unidirectional flow: User intent → Model update → View render. Most predictable, steepest learning curve, best for complex apps.
+
+## Learning Objectives
+
+You will be able to:
+- Compare patterns by separation of concerns, testability, and data flow complexity.
+- Choose appropriate pattern based on framework (React, Angular, Vue) and app size.
+- Understand bidirectional vs unidirectional data binding trade-offs.
+- Design testable, maintainable component architectures.
+- Recognize anti-patterns and refactor toward better separation.
+
+## Motivating Scenario
+
+You're building a form with user validation, async API calls, and error handling. Different patterns lead to different code structures and maintainability:
+
+**MVC approach**: User types → Controller updates Model → Model notifies View → View renders. Easy to start, but circular dependencies between Model-View-Controller make changes dangerous.
+
+**MVVM approach**: User types in View → ViewModel validates + updates → View re-renders via data binding. Less code, but magic binding makes debugging harder.
+
+**MVI approach**: User types → Intent emitted → Model (reducer) computes new state → View renders. Every change traceable, but more boilerplate.
+
+## Core Patterns Explained
+
+### MVC (Model-View-Controller)
+
+Separates application into three interconnected layers:
+
+```
+Model (data) ↔↔ Controller (logic) ↔↔ View (UI)
+       ↓ (updates)        ↓ (input)        ↓ (renders)
+```
+
+**Flow**:
+1. User interacts with View
+2. Controller receives input, updates Model
+3. Model notifies View of changes
+4. View re-renders
+
+**Example**:
+
+```js title="mvc-form.js" showLineNumbers
+// Model: holds application state
+class UserModel {
+  constructor() {
+    this.name = '';
+    this.email = '';
+    this.listeners = [];
+  }
+
+  subscribe(listener) {
+    this.listeners.push(listener);
+  }
+
+  notify() {
+    this.listeners.forEach(listener => listener());
+  }
+
+  setName(name) {
+    this.name = name;
+    this.notify();
+  }
+
+  setEmail(email) {
+    this.email = email;
+    this.notify();
+  }
+}
+
+// View: renders UI
+class UserView {
+  constructor(model) {
+    this.model = model;
+    this.nameInput = document.getElementById('name');
+    this.emailInput = document.getElementById('email');
+
+    this.model.subscribe(() => this.render());
+  }
+
+  render() {
+    this.nameInput.value = this.model.name;
+    this.emailInput.value = this.model.email;
+  }
+}
+
+// Controller: handles input
+class UserController {
+  constructor(model, view) {
+    this.model = model;
+    this.view = view;
+
+    this.view.nameInput.addEventListener('change', (e) => {
+      this.model.setName(e.target.value);
+    });
+  }
+}
+
+// Wire it up
+const model = new UserModel();
+const view = new UserView(model);
+const controller = new UserController(model, view);
+```
+
+**Pros**:
+- Clear separation of concerns
+- Easy to understand initially
+- Decouples UI from business logic
+
+**Cons**:
+- Bidirectional communication (Model → View, View → Controller → Model) creates circular dependency
+- Hard to trace data flow (who changed what?)
+- Difficult to test (many dependencies)
+
+**Best for**: Small applications, learning architectural concepts.
+
+### MVP (Model-View-Presenter)
+
+Presenter intercepts all View-Model communication. View is completely passive.
+
+```
+Model ← Presenter → View (passive, dumb)
+```
+
+**Flow**:
+1. User interacts with View
+2. View forwards event to Presenter (no logic)
+3. Presenter updates Model
+4. Model notifies Presenter
+5. Presenter updates View
+
+**Example**:
+
+```js title="mvp-form.js" showLineNumbers
+// Model: pure data
+class UserModel {
+  constructor() {
+    this.name = '';
+    this.email = '';
+  }
+}
+
+// View: completely passive (dumb)
+class UserView {
+  constructor() {
+    this.nameInput = document.getElementById('name');
+    this.emailInput = document.getElementById('email');
+    this.errorMsg = document.getElementById('error');
+  }
+
+  // View only exposes input; doesn't contain logic
+  getName() { return this.nameInput.value; }
+  getEmail() { return this.emailInput.value; }
+  setName(name) { this.nameInput.value = name; }
+  setEmail(email) { this.emailInput.value = email; }
+  showError(msg) { this.errorMsg.textContent = msg; }
+
+  onNameChange(callback) {
+    this.nameInput.addEventListener('change', callback);
+  }
+
+  onEmailChange(callback) {
+    this.emailInput.addEventListener('change', callback);
+  }
+}
+
+// Presenter: all logic here (fully testable)
+class UserPresenter {
+  constructor(model, view) {
+    this.model = model;
+    this.view = view;
+
+    this.view.onNameChange(() => this.handleNameChange());
+    this.view.onEmailChange(() => this.handleEmailChange());
+  }
+
+  handleNameChange() {
+    const name = this.view.getName();
+    if (name.length < 2) {
+      this.view.showError('Name too short');
+      return;
+    }
+    this.model.name = name;
+    this.view.showError('');
+  }
+
+  handleEmailChange() {
+    const email = this.view.getEmail();
+    if (!email.includes('@')) {
+      this.view.showError('Invalid email');
+      return;
+    }
+    this.model.email = email;
+    this.view.showError('');
+  }
+}
+
+// Test Presenter (no View needed!)
+test('validate name', () => {
+  const model = new UserModel();
+  const view = new MockView();
+  const presenter = new UserPresenter(model, view);
+
+  view.simulateNameChange('X');
+  expect(view.getError()).toBe('Name too short');
+});
+```
+
+**Pros**:
+- Testable (Presenter doesn't depend on View)
+- View is truly dumb (no logic)
+- Clear one-way communication (View → Presenter → Model)
+
+**Cons**:
+- Verbose (lots of getter/setter boilerplate)
+- More code than MVC
+- Synchronous only (harder for async operations)
+
+**Best for**: Apps requiring extensive testing, Java Swing/Android developers.
+
+### MVVM (Model-View-ViewModel)
+
+ViewModel exposes data to View via two-way data binding. View and ViewModel stay in sync automatically.
+
+```
+Model ← ViewModel ↔ View (bidirectional binding)
+```
+
+**Flow**:
+1. User types in View
+2. Binding automatically updates ViewModel
+3. ViewModel validates, computes
+4. Binding automatically updates View
+
+**Example**:
+
+```js title="mvvm-form.js" showLineNumbers
+// ViewModel: exposes reactive data and methods
+class UserViewModel {
+  constructor(model) {
+    this.model = model;
+    this.name = new Proxy({ value: '' }, {
+      set: (target, key, val) => {
+        target[key] = val;
+        this.validate();
+        return true;
+      }
+    });
+    this.email = new Proxy({ value: '' }, {
+      set: (target, key, val) => {
+        target[key] = val;
+        this.validate();
+        return true;
+      }
+    });
+    this.errors = {};
+  }
+
+  validate() {
+    if (this.name.value.length < 2) {
+      this.errors.name = 'Too short';
+    } else {
+      delete this.errors.name;
+    }
+
+    if (!this.email.value.includes('@')) {
+      this.errors.email = 'Invalid email';
+    } else {
+      delete this.errors.email;
+    }
+  }
+
+  submit() {
+    this.model.name = this.name.value;
+    this.model.email = this.email.value;
+  }
+}
+
+// View: binds to ViewModel
+class UserView {
+  constructor(viewModel) {
+    this.vm = viewModel;
+    this.nameInput = document.getElementById('name');
+    this.emailInput = document.getElementById('email');
+    this.errorDiv = document.getElementById('errors');
+
+    // Two-way binding
+    this.nameInput.addEventListener('input', (e) => {
+      this.vm.name.value = e.target.value;
+    });
+
+    // Watch ViewModel for changes
+    setInterval(() => {
+      this.render();
+    }, 100);
+  }
+
+  render() {
+    this.nameInput.value = this.vm.name.value;
+    this.emailInput.value = this.vm.email.value;
+    this.errorDiv.textContent = Object.values(this.vm.errors).join(', ');
+  }
+}
+```
+
+**Pros**:
+- Less boilerplate (two-way binding)
+- Automatic synchronization
+- Good for data-heavy UIs
+- Popular in Angular, Vue, WPF
+
+**Cons**:
+- "Magic" binding hides complexity
+- Harder to debug (where did change originate?)
+- Performance issues if binding not optimized
+- Learning curve for reactive programming
+
+**Best for**: Data-heavy apps, frameworks with built-in binding (Angular, Vue).
+
+### MVI (Model-View-Intent)
+
+Unidirectional data flow. User intent triggers Model updates, which trigger View re-renders.
+
+```
+View (render Model)
+  ↑
+  │ (intent)
+  │
+Model (compute from intent)
+  ↑
+  │ (update)
+  │
+Intent (user action)
+```
+
+**Flow**:
+1. User action emits Intent
+2. Model processes Intent, returns new state
+3. View renders new state
+
+**Example**:
+
+```js title="mvi-form.js" showLineNumbers
+// Model: pure function (reducer)
+function userReducer(state, intent) {
+  switch (intent.type) {
+    case 'SET_NAME':
+      return { ...state, name: intent.payload };
+    case 'SET_EMAIL':
+      return { ...state, email: intent.payload };
+    case 'VALIDATE':
+      return {
+        ...state,
+        errors: {
+          name: state.name.length < 2 ? 'Too short' : '',
+          email: state.email.includes('@') ? '' : 'Invalid',
+        }
+      };
+    default:
+      return state;
+  }
+}
+
+// View: pure function (given state, returns HTML)
+function UserView(state) {
+  return `
+    <input id="name" value="${state.name}" />
+    <input id="email" value="${state.email}" />
+    <div id="errors">${Object.values(state.errors).join(', ')}</div>
+  `;
+}
+
+// Intent: user actions
+function setupIntents(dispatch) {
+  document.getElementById('name').addEventListener('input', (e) => {
+    dispatch({ type: 'SET_NAME', payload: e.target.value });
+    dispatch({ type: 'VALIDATE' });
+  });
+
+  document.getElementById('email').addEventListener('input', (e) => {
+    dispatch({ type: 'SET_EMAIL', payload: e.target.value });
+    dispatch({ type: 'VALIDATE' });
+  });
+}
+
+// Wiring: Redux-style
+const store = {
+  state: { name: '', email: '', errors: {} },
+
+  dispatch(intent) {
+    this.state = userReducer(this.state, intent);
+    this.render();
+  },
+
+  render() {
+    document.getElementById('app').innerHTML = UserView(this.state);
+    setupIntents((intent) => this.dispatch(intent));
+  },
+};
+
+store.render();
+```
+
+**Pros**:
+- Completely predictable (pure functions)
+- Easy to test (pure functions, no side effects)
+- Time-travel debugging (can replay intents)
+- Scales well to complex apps
+
+**Cons**:
+- Most boilerplate
+- Steeper learning curve
+- Overkill for simple UIs
+
+**Best for**: Large, complex applications, teams familiar with Elm/Redux.
+
+## Pattern Comparison
+
+<Figure caption="Data flow in each pattern">
+```
+MVC:         Model ↔ Controller ↔ View  (bidirectional, circular)
+
+MVP:         View → Presenter → Model  (unidirectional, but multiple layers)
+
+MVVM:        View ↔ ViewModel ↔ Model  (bidirectional with binding)
+
+MVI:         Intent → Model → View  (unidirectional, pure functions)
+```
+</Figure>
+
+## Patterns & Pitfalls
+
+### Pattern: Testability Pyramid
+
+Easier to test:
+- Model (pure functions) ✓ Easiest
+- ViewModel/Presenter (logic isolated) ✓ Easy
+- View (DOM interactions) ✗ Hard to test
+- Integration (all layers) ✗ Hardest
+
+Write more Model/ViewModel tests, fewer View tests.
+
+### Pitfall: God Object
+
+**Problem**: ViewModel or Controller does everything (validation, API calls, caching).
+
+**Mitigation**: Extract services:
+
+```js
+// Bad: all logic in ViewModel
+class CheckoutVM {
+  async submit() {
+    // Validate form
+    // Make API call
+    // Handle errors
+    // Update state
+  }
+}
+
+// Good: separate concerns
+class CheckoutVM {
+  constructor(validationService, apiService) {
+    this.validator = validationService;
+    this.api = apiService;
+  }
+
+  async submit() {
+    const errors = await this.validator.validate(this.form);
+    if (errors) return;
+    const result = await this.api.submit(this.form);
+    this.state = result;
+  }
+}
+```
+
+### Pitfall: Binding Hell (MVVM)
+
+**Problem**: Complex two-way bindings cause infinite loops, hard to debug.
+
+**Mitigation**: Use one-way binding where possible, explicit methods for two-way.
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is the chosen pattern appropriate for app complexity?",
+  "Are concerns separated (Model, View, Controller/ViewModel distinct)?",
+  "Is View truly presentation-only (no business logic)?",
+  "Is Model free of UI dependencies?",
+  "Are data flows unidirectional or well-documented if bidirectional?",
+  "Are logic layers testable (pure functions, mockable dependencies)?",
+  "Are async operations handled cleanly (not in reducers/pure functions)?",
+  "Can state changes be traced (what changed, when, why)?",
+  "Is boilerplate acceptable for the team's experience level?"
+]} />
+
+## When to Use / When Not to Use
+
+**Use MVC For**:
+- Small apps (single page, few features)
+- Rapid prototyping
+- Teams learning architecture
+
+**Use MVP For**:
+- Apps requiring extensive testing
+- Teams with strong testing culture
+- Java/Android developers
+
+**Use MVVM For**:
+- Data-heavy UIs (dashboards, forms)
+- Frameworks with binding support (Angular, Vue)
+- Developers comfortable with reactive programming
+
+**Use MVI For**:
+- Large, complex apps
+- Apps needing time-travel debugging
+- Teams familiar with functional programming
+
+## Showcase: Architecture Evolution
+
+<Vs
+  title="Pattern Characteristics"
+  columns={["MVC", "MVP", "MVVM", "MVI"]}
+  rows={[
+    { aspect: "Data Flow", values: ["Bidirectional (⭕)", "Unidirectional", "Bidirectional", "Unidirectional"] },
+    { aspect: "Testability", values: ["Difficult", "Easy", "Medium", "Very Easy"] },
+    { aspect: "Boilerplate", values: ["Low", "High", "Low", "High"] },
+    { aspect: "Learning Curve", values: ["Beginner", "Intermediate", "Intermediate", "Advanced"] },
+    { aspect: "Best For", values: ["Small", "Testable", "Data-Heavy", "Complex"] },
+  ]}
+/>
+
+## Self-Check
+
+1. **Why is MVC harder to test than MVP? What changes in MVP?**
+2. **How does MVVM differ from MVC in handling user input?**
+3. **When would you choose unidirectional flow (MVP/MVI) over bidirectional (MVC/MVVM)?**
+
+## Next Steps
+
+- <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/state-management-conceptual" target="_blank" rel="nofollow noopener noreferrer">Explore State Management Patterns ↗️</a>
+- Learn about <a href="/docs/frontend-and-mobile-architecture/mobile-architecture/mvvm-clean-for-mobile" target="_blank" rel="nofollow noopener noreferrer">MVVM & Clean Architecture for Mobile ↗️</a>
+- Study <a href="https://redux.js.org/" target="_blank" rel="nofollow noopener noreferrer">Redux (MVI-inspired) ↗️</a>
+- Understand <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/component-based-design-and-design-systems" target="_blank" rel="nofollow noopener noreferrer">Component-Based Design ↗️</a>
+
+## One Takeaway
+
+<Callout tone="info">
+MVC/MVP/MVVM/MVI represent different trade-offs between simplicity and testability. Start with MVC for small apps. Graduate to MVVM for data-heavy UI or MVI for complex state. Choose based on team experience and app complexity, not dogma.
+</Callout>
+
+## References
+
+1. <a href="https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93controller" target="_blank" rel="nofollow noopener noreferrer">MVC Pattern - Wikipedia</a>
+2. <a href="https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93viewmodel" target="_blank" rel="nofollow noopener noreferrer">MVVM Pattern - Wikipedia</a>
+3. <a href="https://cycle.js.org/model-view-intent.html" target="_blank" rel="nofollow noopener noreferrer">Cycle.js: Model-View-Intent</a>
+4. <a href="https://martinfowler.com/eaaDev/uiArchs.html" target="_blank" rel="nofollow noopener noreferrer">GUI Architecture Patterns - Martin Fowler</a>
+5. <a href="https://developer.android.com/topic/architecture" target="_blank" rel="nofollow noopener noreferrer">Android Architecture - Google</a>
+---

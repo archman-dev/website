@@ -1,0 +1,366 @@
+---
+sidebar_position: 3
+title: "Graceful Degradation & Load Shedding"
+description: "Maintain partial functionality and shed load during overload instead of failing completely."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: ["graceful", "degradation", "&"]
+image: /img/archman-social-card.webp
+tags: [reliability, performance, patterns, scalability]
+hide_title: true
+---
+
+<Hero title="Graceful Degradation & Load Shedding" subtitle="Maintain partial functionality and shed load during overload instead of failing completely." imageAlt="graceful degradation & load shedding illustration" size="large" />
+
+## TL;DR
+
+Maintain partial functionality and shed load during overload instead of failing completely. This pattern is proven in production at scale and requires thoughtful implementation, continuous tuning, and rigorous monitoring to realize its benefits.
+
+## Learning Objectives
+
+- Understand the problem this pattern solves
+- Learn when and how to apply it correctly
+- Recognize trade-offs and failure modes
+- Implement monitoring to validate effectiveness
+- Apply the pattern in your own systems
+
+## Motivating Scenario
+
+Your payment processing system experiences sudden traffic spikes. Without graceful degradation, the entire system degrades. With it, you maintain 95% functionality for critical paths while gracefully shedding non-essential features. Or your checkout times out waiting for a slow recommendation engine. With timeouts and retries, you serve customers instantly while collecting recommendations asynchronously. These patterns prevent cascading failures and keep systems available under adverse conditions.
+
+## Core Concepts
+
+### Pattern Purpose
+
+Graceful Degradation & Load Shedding addresses specific reliability and performance challenges proven at scale. It enables systems to handle failures, slowdowns, and overload without cascading failures or complete outages.
+
+### Key Principles
+
+1. **Fail fast, not loud:** Detect problems and take corrective action quickly
+2. **Graceful degradation:** Maintain partial functionality under stress
+3. **Isolation:** Prevent failures from cascading to other components
+4. **Feedback loops:** Monitor constantly and adapt
+
+### When to Use
+
+- Handling distributed system failures gracefully
+- Performance or reliability critical to business
+- Preventing cascading failures across systems
+- Managing variable and unpredictable load
+
+### When NOT to Use
+
+- Simplicity is more important than fault tolerance
+- Failures are rare and acceptable
+- Pattern overhead exceeds the benefit
+
+## Practical Example
+
+<Tabs>
+<TabItem value="patterns" label="Core Patterns">
+
+```yaml
+# Graceful Degradation & Load Shedding Patterns and Their Use
+
+Circuit Breaker:
+  Purpose: Prevent cascading failures by stopping requests to failing service
+  When_Failing: Return fast with cached or degraded response
+  When_Recovering: Gradually allow requests to verify recovery
+  Metrics_to_Track: Failure rate, response time, circuit trips
+
+Timeout & Retry:
+  Purpose: Handle transient failures and slow responses
+  Implementation: Set timeout, wait, retry with backoff
+  Max_Retries: 3-5 depending on operation cost and urgency
+  Backoff: Exponential (1s, 2s, 4s) to avoid overwhelming failing service
+
+Bulkhead:
+  Purpose: Isolate resources so one overload doesn't affect others
+  Implementation: Separate thread pools, connection pools, queues
+  Example: Checkout path has dedicated database connections
+  Benefit: One slow query doesn't affect other traffic
+
+Graceful Degradation:
+  Purpose: Maintain partial service when components fail
+  Example: Show cached data when personalization service is down
+  Requires: Knowledge of what's essential vs. nice-to-have
+  Success: Users barely notice the degradation
+
+Load Shedding:
+  Purpose: Shed less important work during overload
+  Implementation: Reject low-priority requests when queue is full
+  Alternative: Increase latency for all rather than reject some
+  Trade-off: Some customers don't get served vs. all customers are slow
+```
+
+</TabItem>
+<TabItem value="config" label="Configuration Example">
+
+```yaml
+Reliability_Configuration:
+  service_timeouts:
+    payment_api: 5s
+    recommendation_engine: 2s
+    user_auth: 1s
+  
+  retry_policy:
+    transient_errors: [408, 429, 503, 504]
+    max_retries: 3
+    backoff_multiplier: 2
+    initial_delay: 100ms
+  
+  circuit_breaker:
+    failure_threshold: 50%
+    window: 10 requests
+    open_timeout: 30s
+    
+  load_shedding:
+    queue_threshold: 1000
+    shed_non_essential: true
+    reject_priority: low
+```
+
+</TabItem>
+<TabItem value="metrics" label="Monitoring">
+
+```
+Essential Metrics:
+
+Latency:
+  - P50, P95, P99 response times
+  - Alert if P99 > acceptable threshold
+  
+Failure Rates:
+  - Error rate percentage
+  - Alert if >5% errors
+  
+Pattern-Specific:
+  - Circuit breaker trips (alert if >3 in 5min)
+  - Retry count distribution
+  - Load shed requests
+  - Bulkhead resource utilization
+
+Example Dashboard:
+  - Real-time traffic flow with failures highlighted
+  - Circuit breaker state (Open/Closed/Half-Open)
+  - Retry success rates by service
+  - Queue depths and shedding rates
+```
+
+</TabItem>
+</Tabs>
+
+## Implementation Guide
+
+1. **Identify the Problem:** What specific failure mode are you protecting against?
+2. **Choose the Right Pattern:** Different problems need different solutions
+3. **Implement Carefully:** Half-implemented patterns are worse than nothing
+4. **Configure Based on Data:** Don't copy thresholds from blog posts
+5. **Monitor Relentlessly:** Validate the pattern actually solves your problem
+6. **Tune Continuously:** Thresholds need adjustment as load and systems change
+
+## Characteristics of Effective Implementation
+
+✓ Clear objectives: Can state in one sentence what you're solving
+✓ Proper monitoring: Can see whether pattern is working
+✓ Appropriate thresholds: Based on data from your system
+✓ Graceful failure mode: Unacceptable in production
+✓ Well-tested: Failure scenarios explicitly tested
+✓ Documented: Future maintainers understand why it exists
+
+## Pitfalls to Avoid
+
+❌ Blindly copying patterns: Thresholds from one system don't work for another
+❌ Over-retrying: Making failing service worse by hammering it
+❌ Forgetting timeouts: Retries without timeouts extend the pain
+❌ Silent failures: If circuit breaker opens, someone needs to know
+❌ No monitoring: Deploying patterns without metrics to validate
+❌ Set and forget: Patterns need tuning as load and systems change
+
+## Related Patterns
+
+- **Bulkheads:** Isolate different use cases so failures don't cascade
+- **Graceful Degradation:** Degrade functionality when load is high
+- **Health Checks:** Detect failures requiring retry or circuit breaker
+- **Observability:** Metrics and logs showing whether pattern works
+
+## Checklist: Implementation Readiness
+
+- [ ] Problem clearly identified and measured
+- [ ] Pattern selected is appropriate for the problem
+- [ ] Thresholds based on actual data from your system
+- [ ] Failure mode is explicit and acceptable
+- [ ] Monitoring and alerts configured before deployment
+- [ ] Failure scenarios tested explicitly
+- [ ] Team understands the pattern and trade-offs
+- [ ] Documentation explains rationale and tuning
+
+## Self-Check
+
+1. **Can you state in one sentence why you need this pattern?** If not, you might not need it.
+2. **Have you measured baseline before and after?** If not, you don't know if it helps.
+3. **Did you tune thresholds for your system?** Or copy them from a blog post?
+4. **Can someone on-call understand what triggers and what it does?** If not, document better.
+
+## Degradation Levels in E-Commerce
+
+### Level 1: Full Service (All Features)
+```
+Homepage:
+- Product recommendations (ML service)
+- User personalization (recommendation engine)
+- Reviews and ratings (review service)
+- Pricing (pricing service)
+- Inventory (inventory service)
+Response time: 2-3 seconds
+```
+
+### Level 2: Degraded (Some Features Missing)
+```
+Homepage:
+- Product recommendations: DISABLED
+- User personalization: DISABLED
+- Reviews and ratings: DISABLED (too slow)
+- Pricing: ENABLED (cached)
+- Inventory: ENABLED
+Response time: 500ms
+
+Message to user: "Some features temporarily unavailable"
+```
+
+### Level 3: Minimal (Core Only)
+```
+Homepage:
+- Product list (from cache)
+- Basic pricing
+- Inventory status
+- NO recommendations, reviews, personalization
+Response time: 200ms
+
+Message: "We're experiencing high traffic, some features unavailable"
+```
+
+### Level 4: Maintenance Mode
+```
+- Static error page: "We're down for maintenance"
+- No functionality
+- Retry-After header: 3600 (1 hour)
+```
+
+## Load Shedding Strategies
+
+### Strategy 1: Priority-Based Rejection
+```python
+class PriorityLoadShedder:
+    def __init__(self):
+        self.queue_threshold = 1000
+
+    def should_accept(self, request):
+        if len(request_queue) < self.queue_threshold:
+            return True  # Accept all
+
+        # Queue full, reject by priority
+        priority = request.metadata.get('priority', 'normal')
+        if priority == 'critical':
+            return True  # Always accept critical
+        elif priority == 'normal':
+            return random.random() < 0.5  # 50% acceptance
+        else:  # low priority
+            return False  # Reject all low-priority
+
+# Usage
+if not load_shedder.should_accept(request):
+    return HttpResponse(429, "Too busy, try later")
+```
+
+### Strategy 2: Percentage-Based Rejection (Overload Shedding)
+```python
+if system_load > 80%:
+    if random.random() < 0.3:  # Shed 30% of traffic
+        return HttpResponse(503, "Service temporarily unavailable")
+
+if system_load > 95%:
+    if random.random() < 0.7:  # Shed 70% of traffic
+        return HttpResponse(503, "Service overloaded")
+```
+
+### Strategy 3: Token Bucket (Rate Limiting)
+```python
+class TokenBucket:
+    def __init__(self, rate, capacity):
+        self.rate = rate  # tokens per second
+        self.capacity = capacity
+        self.tokens = capacity
+        self.last_update = time.time()
+
+    def can_accept(self):
+        now = time.time()
+        elapsed = now - self.last_update
+        self.tokens = min(
+            self.capacity,
+            self.tokens + elapsed * self.rate
+        )
+        self.last_update = now
+
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+# Usage: Allow 1000 requests/second, burst up to 2000
+limiter = TokenBucket(rate=1000, capacity=2000)
+if not limiter.can_accept():
+    return HttpResponse(429, "Rate limit exceeded")
+```
+
+## Monitoring Degradation
+
+```yaml
+metrics:
+  - name: circuit_breaker_state
+    values: [CLOSED, HALF_OPEN, OPEN]
+    alert_if: state == OPEN
+    action: "Alert ops, check service health"
+
+  - name: requests_shed
+    type: counter
+    alert_if: rate > 100/sec
+    action: "Degradation active, investigate cause"
+
+  - name: cache_hit_rate
+    type: percentage
+    alert_if: < 80%
+    action: "Low cache hit, check cache settings"
+
+  - name: request_latency_p99
+    alert_if: > 5 seconds
+    action: "Latency spike, check dependencies"
+
+dashboard:
+  - Real-time degradation state
+  - % of traffic shed
+  - Cache hit rates
+  - Circuit breaker status
+  - Request latencies
+```
+
+## Takeaway
+
+These patterns are powerful because proven in production. But power comes with complexity. Implement only what you need, tune based on data, and monitor relentlessly. Start with circuit breakers and graceful degradation—they address the most common failure modes. Add load shedding when your system reaches capacity. Always measure degradation—without metrics, you don't know if your resilience patterns are actually helping.
+
+## Next Steps
+
+1. **Identify the problem:** What specific failure mode are you protecting against?
+2. **Gather baseline data:** Measure current behavior before implementing
+3. **Implement carefully:** Start simple, add complexity only if needed
+4. **Monitor and measure:** Validate the pattern actually helps
+5. **Tune continuously:** Adjust thresholds based on production experience
+
+## References
+
+1. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+2. <a href="https://www.amazon.com/Site-Reliability-Engineering-Production-Systems/dp/149192912X" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book ↗️</a>
+3. <a href="https://martinfowler.com/bliki/CircuitBreaker.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Circuit Breaker Pattern ↗️</a>

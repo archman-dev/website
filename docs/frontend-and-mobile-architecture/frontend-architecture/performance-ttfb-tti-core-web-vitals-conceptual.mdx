@@ -1,0 +1,651 @@
+---
+sidebar_position: 5
+title: Performance - TTFB, TTI, Core Web Vitals
+description: Key metrics for fast, responsive user experience
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","frontend-lead"]
+keywords: ["performance","ttfb","tti","core-web-vitals","lcp","fid","cls","lighthouse"]
+image: /img/archman-social-card.webp
+tags: ["frontend","performance"]
+hide_title: true
+---
+
+<Hero
+  title="Performance - TTFB, TTI, Core Web Vitals"
+  description="Measure and optimize for user-centric metrics: LCP, FID, CLS"
+  size="large"
+/>
+
+### TL;DR
+
+**TTFB (Time to First Byte)**: Server response time until first byte arrives. Optimize: CDN, caching, compression, server optimization. Target &lt;600ms.
+
+**TTI (Time to Interactive)**: App is interactive (main thread idle, event listeners ready). Optimize: code splitting, lazy loading, tree-shaking, bundle optimization.
+
+**Core Web Vitals** (Google's three UX metrics):
+- **LCP (Largest Contentful Paint)**: Main content visible. Target ≤2.5s.
+- **FID (First Input Delay)**: Responsiveness to user input. Target ≤100ms. (Deprecated, replaced by INP)
+- **CLS (Cumulative Layout Shift)**: Visual stability. Target ≤0.1.
+
+**INP (Interaction to Next Paint)**: New metric replacing FID. Time from interaction to visible response. Target ≤200ms.
+
+### Learning Objectives
+
+You will be able to:
+- Measure performance metrics using Lighthouse, WebVitals API, and Chrome DevTools.
+- Identify performance bottlenecks and prioritize optimizations (RAIL model).
+- Optimize bundle size through code splitting, lazy loading, and tree-shaking.
+- Minimize layout shifts through font strategies, reserved space, and animations.
+- Set performance budgets and monitor regression in CI/CD.
+
+### Motivating Scenario
+
+Your e-commerce site loads in 6 seconds on 4G networks. Users bounce after 3 seconds. You lose 40% of conversion due to slow performance.
+
+Performance audit reveals:
+- TTFB: 2s (server + network latency)
+- LCP: 4.5s (large hero image, not optimized)
+- TTI: 5s (JavaScript bloated, no code splitting)
+- CLS: 0.25 (images and ads causing jumps)
+
+These issues compound: users see blank page → slow image load → click button → unresponsive (main thread blocked by JS). Users leave.
+
+With optimization: TTFB→1s (CDN), LCP→1.5s (image optimization + lazy loading), TTI→2.5s (code splitting, lazy hydration), CLS→0.05 (reserved space). Users see content in 1.5s, app is interactive in 2.5s. Conversion increases 30%.
+
+## Core Metrics Explained
+
+### TTFB (Time to First Byte)
+
+Time from request initiation to first byte of response. Measures server + network latency.
+
+```
+[User initiates request]
+  │
+  ├─ Network latency (DNS, TCP, TLS)
+  ├─ Server processing
+  └─ First byte arrives ← TTFB measured here
+```
+
+**Why matters**: TTFB is the foundation. Even perfect frontend optimization can't overcome poor TTFB. Users perceive nothing happening.
+
+**How to optimize**:
+
+1. **CDN**: Serve from edge locations near users. 50-300ms savings.
+2. **Caching**: Cache HTML, API responses. 1-2s savings.
+3. **Compression**: Gzip/Brotli compression. 30-50% size reduction.
+4. **Backend optimization**: Database queries, N+1 queries, CPU bottlenecks.
+
+<Tabs>
+<TabItem value="cdn" label="CDN Configuration">
+```js title="next.config.js" showLineNumbers
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  images: {
+    // Use image optimization with CDN
+    domains: ['images.example.com'],
+    sizes: [320, 640, 1280, 1920],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+  },
+  // Enable compression
+  compress: true,
+};
+
+module.exports = nextConfig;
+```
+</TabItem>
+<TabItem value="cache" label="Cache Headers">
+```
+# nginx.conf
+location / {
+  # HTML: no cache (always fetch fresh)
+  add_header Cache-Control "max-age=0, no-cache, must-revalidate" always;
+}
+
+location ~* \.(js|css|png|jpg|gif|ico)$ {
+  # Static assets: cache 1 year
+  add_header Cache-Control "public, max-age=31536000, immutable" always;
+}
+```
+</TabItem>
+</Tabs>
+
+### LCP (Largest Contentful Paint)
+
+Time when largest visible element is painted on page. Measures perceived performance.
+
+```
+[Page starts loading]
+  │
+  ├─ Small elements appear (header, text)
+  │
+  ├─ Hero image loads...
+  │
+  └─ Hero image painted ← LCP measured here (largest element)
+```
+
+**Target**: ≤2.5s (Good), &lt;4s (Needs improvement), &gt;4s (Poor).
+
+**What triggers LCP**:
+- Text blocks
+- Images (`&lt;img&gt;`, background images)
+- Video posters
+- Canvas elements
+
+**How to optimize**:
+
+1. **Lazy load below-fold images**: Load only when needed
+2. **Optimize images**: Modern formats (WebP), responsive sizes
+3. **Preload LCP images**: Hint browser to prioritize
+4. **Reduce JavaScript**: Parse/eval time blocks rendering
+
+<Tabs>
+<TabItem value="image-opt" label="Image Optimization">
+```jsx title="HeroImage.jsx" showLineNumbers
+
+export function HeroImage() {
+  return (
+    <Image
+      src="/hero.webp"
+      alt="Hero banner"
+      width={1920}
+      height={1080}
+      priority // Preload LCP image
+      sizes="(max-width: 768px) 100vw, 1920px"
+      // Automatically serves optimized sizes
+    />
+  );
+}
+```
+</TabItem>
+<TabItem value="preload" label="Preload LCP Resource">
+```html title="head" showLineNumbers
+<!-- Preload hero image -->
+<link
+  rel="preload"
+  as="image"
+  href="/images/hero.webp"
+  imagesrcset="/images/hero-640.webp 640w, /images/hero-1920.webp 1920w"
+  imagesizes="(max-width: 768px) 100vw, 1920px"
+/>
+
+<!-- Preload critical fonts -->
+<link
+  rel="preload"
+  as="font"
+  href="/fonts/inter.woff2"
+  type="font/woff2"
+  crossorigin
+/>
+```
+</TabItem>
+<TabItem value="lazy-load" label="Lazy Load Below-Fold Images">
+```jsx title="ProductCard.jsx" showLineNumbers
+export function ProductCard({ product }) {
+  return (
+    <div>
+      <Image
+        src={product.image}
+        alt={product.name}
+        loading="lazy" // Lazy load
+        width={300}
+        height={300}
+      />
+    </div>
+  );
+}
+```
+</TabItem>
+</Tabs>
+
+### TTI (Time to Interactive)
+
+Time when page is fully interactive. Main thread is idle, event listeners are attached.
+
+```
+[LCP achieved]
+  │
+  ├─ JavaScript parsing/eval
+  ├─ React hydration
+  ├─ Event listeners attached
+  │
+  └─ Main thread idle ← TTI measured here
+```
+
+**Why matters**: LCP might show content, but app isn't responsive. Clicks don't work, interactions stall.
+
+**How to optimize**:
+
+1. **Code splitting**: Load only code for current route
+2. **Lazy loading**: Load components on-demand (React.lazy)
+3. **Tree-shaking**: Remove unused code
+4. **Defer non-critical JS**: Load analytics, ads after TTI
+
+<Tabs>
+<TabItem value="code-split" label="Route-Based Code Splitting">
+```jsx title="App.jsx" showLineNumbers
+
+const Home = lazy(() => import('./pages/Home'));
+const Product = lazy(() => import('./pages/Product'));
+const Checkout = lazy(() => import('./pages/Checkout'));
+
+export default function App() {
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={<Suspense fallback={<div>Loading...</div>}><Home /></Suspense>}
+      />
+      <Route
+        path="/product/:id"
+        element={<Suspense fallback={<div>Loading...</div>}><Product /></Suspense>}
+      />
+    </Routes>
+  );
+}
+```
+</TabItem>
+<TabItem value="defer-js" label="Defer Non-Critical JavaScript">
+```html title="index.html" showLineNumbers
+<!-- Critical: inline or defer -->
+<script src="/app.js" defer></script>
+
+<!-- Non-critical: load after TTI -->
+<script>
+  window.addEventListener('load', () => {
+    // Load analytics script after page interactive
+    const script = document.createElement('script');
+    script.src = '/analytics.js';
+    document.head.appendChild(script);
+  });
+</script>
+```
+</TabItem>
+</Tabs>
+
+### CLS (Cumulative Layout Shift)
+
+Measure of unexpected layout changes. When elements move, it's jarring.
+
+```
+User sees text, reads first word...
+  │
+  └─ Ad loads below, pushes text down
+      User lost place, confused.
+```
+
+CLS = sum of individual layout shift scores. Target: ≤0.1 (very stable).
+
+**Common causes**:
+- Images/videos without dimensions
+- Ads, embeds loading late
+- Fonts loading (FOUT/FOIT)
+- Spinners, modals appearing
+
+**How to optimize**:
+
+1. **Reserve space**: Set width/height on images
+2. **Font strategy**: font-display: swap to avoid FOIT
+3. **Avoid surprise inserts**: Ads after fold, modals with user action
+
+<Tabs>
+<TabItem value="reserve-space" label="Reserve Space for Images">
+```jsx title="ProductImage.jsx" showLineNumbers
+export function ProductImage({ src, alt }) {
+  return (
+    <div style={{ position: 'relative', width: '100%', aspectRatio: '3/2' }}>
+      <Image
+        src={src}
+        alt={alt}
+        fill
+        sizes="(max-width: 768px) 100vw, 50vw"
+      />
+    </div>
+  );
+}
+
+// Result: space reserved, no layout shift when image loads
+```
+</TabItem>
+<TabItem value="font-display" label="Font Display Strategy">
+```css title="style.css" showLineNumbers
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/inter.woff2') format('woff2');
+  font-display: swap; /* FOUT: show fallback, swap when ready */
+  /* Avoids invisible text while font loads (FOIT) */
+}
+```
+</TabItem>
+<TabItem value="stable-modal" label="Avoid Unexpected Modals">
+```jsx title="Modal.jsx" showLineNumbers
+export function Modal({ isOpen, onClose, children }) {
+  if (!isOpen) return null;
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        // Fixed positioning means modal doesn't shift page layout
+      }}
+    >
+      <div style={{ backgroundColor: 'white', padding: '20px' }}>
+        {children}
+        <button onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+```
+</TabItem>
+</Tabs>
+
+### INP (Interaction to Next Paint)
+
+New metric replacing FID. Time from user interaction (click, tap, keystroke) to visual response.
+
+```
+[User clicks button]
+  │
+  ├─ Main thread processes click
+  ├─ Updates state
+  ├─ Re-renders
+  │
+  └─ Next paint with changes ← INP measured here
+```
+
+**Target**: ≤200ms (Good), ≤500ms (Needs work), >500ms (Poor).
+
+**How to optimize**:
+
+1. **Break long tasks**: Long-running JS blocks responsiveness
+2. **Debounce/throttle**: Prevent excessive updates
+3. **Use Web Workers**: Offload heavy computation
+
+```js title="performance-optimization.js" showLineNumbers
+// Bad: blocks main thread
+function handleSearch(query) {
+  const results = expensiveSearch(query); // 500ms
+  updateUI(results);
+}
+
+// Good: break into smaller tasks
+function handleSearchOptimized(query) {
+  // Use setTimeout to yield to browser
+  setTimeout(() => {
+    const results = expensiveSearch(query);
+    updateUI(results);
+  }, 0);
+}
+
+// Better: use Web Worker
+const worker = new Worker('/search-worker.js');
+function handleSearchWithWorker(query) {
+  worker.postMessage({ query });
+  worker.onmessage = (e) => {
+    updateUI(e.data.results);
+  };
+}
+```
+
+## Measuring Performance
+
+### Lighthouse
+
+Chrome DevTools integrated performance audit:
+
+```bash
+# Install Lighthouse CLI
+npm install -g lighthouse
+
+# Audit URL
+lighthouse https://example.com --view
+
+# Output includes LCP, CLS, FID scores
+```
+
+Lighthouse simulates 4G network, mid-range device. Conservative but realistic.
+
+### Web Vitals API
+
+Runtime measurement in real user sessions:
+
+<Tabs>
+<TabItem value="web-vitals" label="Web Vitals Collection">
+```js title="monitoring.js" showLineNumbers
+import {
+  getLCP,
+  getFID,
+  getCLS,
+  getINP,
+  getLCPResourceTiming,
+} from 'web-vitals';
+
+// Collect metrics
+getLCP((metric) => {
+  console.log(`LCP: ${metric.value}ms`);
+  if (metric.value > 2500) {
+    reportToAnalytics({
+      type: 'SLOW_LCP',
+      value: metric.value,
+      url: metric.url,
+    });
+  }
+});
+
+getCLS((metric) => {
+  console.log(`CLS: ${metric.value}`);
+});
+
+getINP((metric) => {
+  console.log(`INP: ${metric.value}ms`);
+});
+
+// Track which resource caused LCP
+getLCPResourceTiming((resource) => {
+  console.log(`LCP caused by: ${resource.name}`);
+});
+```
+</TabItem>
+<TabItem value="analytics" label="Send to Analytics">
+```js title="send-metrics.js" showLineNumbers
+function reportToAnalytics(metric) {
+  const body = JSON.stringify(metric);
+
+  // Use sendBeacon for reliability (queued even if page unloads)
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon('/api/metrics', body);
+  } else {
+    // Fallback
+    fetch('/api/metrics', { method: 'POST', body });
+  }
+}
+```
+</TabItem>
+</Tabs>
+
+### Performance Budget
+
+Set targets and enforce in CI:
+
+```json title="performance-budget.json" showLineNumbers
+[
+  {
+    "type": "bundle",
+    "name": "JavaScript",
+    "budget": 150000, // 150KB
+    "threshold": 10 // Warn if +10% over budget
+  },
+  {
+    "type": "bundle",
+    "name": "CSS",
+    "budget": 50000, // 50KB
+    "threshold": 10
+  },
+  {
+    "type": "metric",
+    "name": "LCP",
+    "target": 2500, // 2.5s
+    "threshold": 100 // Fail if >2600ms
+  }
+]
+```
+
+## Patterns & Pitfalls
+
+### Pattern: RAIL Model
+
+**Response** (input latency &lt;100ms) → **Animation** (60fps) → **Idle** (main thread idle) → **Load** (content visible &lt;5s)
+
+Focus optimization on user-centric phases:
+
+- **Response**: Debounce, preload, optimize handlers
+- **Animation**: 60fps (16.67ms per frame), use CSS for smooth motion
+- **Idle**: Load non-critical JS while idle
+- **Load**: Optimize TTFB, LCP, TTI
+
+### Pitfall: Bundle Size Creep
+
+**Problem**: Unnoticed dependencies bloat bundle. App slow after 6 months.
+
+**Mitigation**: Monitor bundle in CI, fail on size increases.
+
+```bash
+# Check bundle size
+npx bundlesize --config bundlesize.config.json
+
+# Or use webpack-bundle-analyzer
+npx webpack-bundle-analyzer dist/stats.json
+```
+
+### Pitfall: Ignoring Mobile
+
+**Problem**: Optimize for desktop (fast network, powerful CPU), ignore mobile (slow 3G, dual-core).
+
+**Mitigation**: Test on real devices, simulate low-end phones in DevTools.
+
+## Operational Considerations
+
+### Performance Monitoring in Production
+
+Track real user metrics (RUM):
+
+```js title="rum.js" showLineNumbers
+// Google Analytics
+gtag('event', 'page_view', {
+  'page_location': window.location.href,
+  'metric_lcp': lcp,
+  'metric_cls': cls,
+  'metric_inp': inp,
+});
+
+// Custom analytics
+const metrics = await getMetrics();
+customAnalytics.track('PageMetrics', metrics);
+```
+
+### Performance Regression Detection
+
+Set up alerts:
+
+```yaml title=".github/workflows/perf-check.yml" showLineNumbers
+name: Performance Check
+on:
+  pull_request:
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Lighthouse
+        uses: treosh/lighthouse-ci-action@v9
+        with:
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is TTFB &lt;600ms? Check with Lighthouse throttling.",
+  "Is LCP &lt;2.5s on 4G, mid-range device?",
+  "Is TTI &lt;5s? Check for long tasks blocking main thread.",
+  "Is CLS &lt;0.1? Check for unexpected layout shifts.",
+  "Are images optimized (WebP, responsive sizes, lazy loading)?",
+  "Is code split by route/feature (not one big bundle)?",
+  "Are non-critical resources deferred (analytics, ads)?",
+  "Is font-display: swap used to prevent FOIT?",
+  "Are performance budgets set and enforced in CI?",
+  "Is RUM metrics collection in place (production monitoring)?"
+]} />
+
+## When to Use / When Not to Use
+
+**Prioritize Performance Optimization When:**
+- Mobile users significant (3G-affected)
+- High-traffic site (small improvements = big impact)
+- E-commerce/conversion-focused (CRO influenced by speed)
+- User retention critical
+
+**Don't Over-Optimize If:**
+- Internal tool, low-traffic
+- Users have fast networks
+- Performance not user pain point
+
+## Showcase: Performance Optimization Impact
+
+<Figure caption="Performance improvements impact conversion">
+```
+Initial State:
+├─ TTFB: 2s
+├─ LCP: 4.5s
+├─ TTI: 5.5s
+├─ CLS: 0.25
+└─ Conversion: 2%
+
+After Optimization:
+├─ TTFB: 1s (CDN, caching)
+├─ LCP: 1.5s (image optimization)
+├─ TTI: 2.5s (code splitting)
+├─ CLS: 0.05 (reserved space)
+└─ Conversion: 2.6% (+30%)
+```
+</Figure>
+
+## Self-Check
+
+1. **What's the difference between LCP and TTI? Why does both matter?**
+2. **You measure LCP: 3.5s on 4G simulator. How would you debug what's slow?**
+3. **How would you prevent layout shifts when images load?**
+
+## Next Steps
+
+- <a href="https://web.dev/vitals/" target="_blank" rel="nofollow noopener noreferrer">Web Vitals: Essential Metrics for UX ↗️</a>
+- Use <a href="https://developers.google.com/web/tools/lighthouse" target="_blank" rel="nofollow noopener noreferrer">Lighthouse ↗️</a> for audits
+- Learn about <a href="/docs/frontend-and-mobile-architecture/frontend-architecture/ssr-ssg-isr-high-level" target="_blank" rel="nofollow noopener noreferrer">SSR/SSG/ISR Rendering Strategies ↗️</a>
+- Study <a href="https://web.dev/performance/" target="_blank" rel="nofollow noopener noreferrer">Google's Performance Documentation ↗️</a>
+
+### One Takeaway
+
+<Admonition type="info">
+Core Web Vitals directly impact user experience and SEO ranking. Focus on LCP (content visible), TTI (interactive), and CLS (stable). Measure in production with real user data. Set budgets and monitor for regression in CI.
+</Admonition>
+
+## References
+
+1. <a href="https://web.dev/vitals/" target="_blank" rel="nofollow noopener noreferrer">Web Vitals: Essential User Experience Metrics</a>
+2. <a href="https://developers.google.com/web/tools/lighthouse" target="_blank" rel="nofollow noopener noreferrer">Lighthouse: Automated Auditing Tool</a>
+3. <a href="https://web.dev/performance/" target="_blank" rel="nofollow noopener noreferrer">Google Web: Performance</a>
+4. <a href="https://www.npmjs.com/package/web-vitals" target="_blank" rel="nofollow noopener noreferrer">web-vitals NPM Package</a>
+5. <a href="https://web.dev/inp/" target="_blank" rel="nofollow noopener noreferrer">INP: Interaction to Next Paint</a>
+---

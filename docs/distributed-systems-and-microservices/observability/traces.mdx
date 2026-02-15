@@ -1,0 +1,978 @@
+---
+sidebar_position: 3
+title: "Distributed Tracing"
+description: "Follow requests across microservices using distributed tracing."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 18
+lastReviewed: 2025-02-14
+personas: [engineer, sre]
+keywords: [tracing, distributed tracing, OpenTelemetry, observability, Jaeger]
+image: /img/archman-social-card.webp
+tags: [observability, distributed-systems, tracing]
+hide_title: true
+---
+
+<Hero title="Distributed Tracing" subtitle="Track requests across services to identify bottlenecks and failures." size="large" />
+
+## TL;DR
+
+Distributed tracing follows a single request (trace) as it flows through multiple microservices. A trace is a tree of spans—each span represents work in one service. Spans include: operation name, start/end time, status, tags, logs. Trace ID propagates through all services via HTTP headers (traceparent, baggage). Collectors (Jaeger, Zipkin) aggregate spans. Query traces to debug slow requests, find latency bottlenecks, and investigate failures. Instrumentation patterns: auto-instrumentation (easier, less control), manual instrumentation (more control, verbose). OpenTelemetry is the standard. Sample traces in development, all in production (store 30 days).
+
+## Learning Objectives
+
+- Understand trace structure (traces, spans, context propagation)
+- Implement tracing in microservices using OpenTelemetry
+- Configure tracing backends (Jaeger, Zipkin, cloud providers)
+- Use traces to debug latency issues and failures
+- Design sampling strategies for production
+- Correlate traces with logs and metrics
+- Avoid common pitfalls (missing context, high overhead, poor sampling)
+- Trace async/message-driven architectures
+
+## Motivating Scenario
+
+Customer reports: "Checkout sometimes takes 30 seconds, sometimes instant." Without tracing, you see metrics (avg checkout time: 2s) but not individual requests. With tracing: you see that one specific checkout took 30s because:
+- Payment service took 1s (ok)
+- Fraud check took 5s (ok)
+- Inventory check took 24s (SLOW!)
+
+Without tracing, you'd optimize payment. With tracing, you fix inventory.
+
+## Core Concepts
+
+### Trace Structure
+
+A trace is a directed acyclic graph (DAG) of spans:
+
+```
+Trace ID: abc123
+├── Span: api-gateway (0-100ms)
+│   ├── Span: checkout-service (1-50ms)
+│   │   ├── Span: payment-service (5-10ms)
+│   │   ├── Span: fraud-service (5-25ms) ← SLOW
+│   │   └── Span: inventory-service (1-30ms) ← VERY SLOW
+│   └── Span: notification-service (60-95ms, async)
+└── HTTP 200
+```
+
+**Span**: Unit of work in one service. Contains:
+- Operation name
+- Start/end time
+- Status (ok, error)
+- Tags (key-value pairs)
+- Logs/events
+- Parent span ID (links to parent)
+
+**Trace Context**: Metadata propagated across services:
+- Trace ID (same for all spans in trace)
+- Span ID (unique per span)
+- Parent span ID (links to parent)
+- Baggage (key-value data passed to all children)
+- Sampled flag (should this trace be recorded?)
+
+### Instrumentation Levels
+
+| Level | Description | Overhead | Effort |
+|-------|-------------|----------|--------|
+| **Auto** | Framework auto-instruments (HTTP, DB, etc.) | Low | Low |
+| **Manual** | Explicit span creation | Medium | High |
+| **Hybrid** | Auto + manual for complex flows | Low-Medium | Medium |
+
+### Sampling Strategies
+
+- **No sampling**: All traces recorded (100%). High volume, complete data.
+- **Static sampling**: Always sample X% (e.g., 10%). Low volume, partial data.
+- **Head-based sampling**: Decision made at start of trace. Client decides.
+- **Tail-based sampling**: Decision made after trace completes. Server decides based on content.
+
+Head-based is most common; tail-based is best but complex.
+
+### Context Propagation
+
+Trace context must flow through:
+- **HTTP headers**: traceparent, baggage (W3C Trace Context standard)
+- **Message queues**: Baggage in message metadata
+- **RPC calls**: Context in RPC metadata
+- **Async jobs**: Store context in job payload
+
+## Code Examples: OpenTelemetry Tracing
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from opentelemetry import trace, metrics
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.propagators.jaeger import JaegerPropagator
+from opentelemetry.propagators.composite import CompositePropagator
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from flask import Flask, request
+import requests
+
+# Setup Jaeger exporter
+jaeger_exporter = JaegerExporter(
+    agent_host_name="localhost",
+    agent_port=6831,
+)
+
+trace_provider = TracerProvider(
+    resource=Resource.create({SERVICE_NAME: "checkout-service"})
+)
+trace_provider.add_span_processor(BatchSpanProcessor(jaeger_exporter))
+trace.set_tracer_provider(trace_provider)
+
+# Setup context propagation
+CompositePropagator.set_default([JaegerPropagator()])
+
+# Auto-instrument libraries
+FlaskInstrumentor().instrument()
+RequestsInstrumentor().instrument()
+
+app = Flask(__name__)
+tracer = trace.get_tracer(__name__)
+
+# Example 1: Auto-instrumented endpoint
+@app.route("/checkout", methods=["POST"])
+def checkout():
+    """
+    Auto-instrumented via FlaskInstrumentor
+    Span created automatically for HTTP request
+    """
+    order_id = request.json["order_id"]
+    amount = request.json["amount"]
+    
+    # Automatic span from Flask
+    # trace context propagated to downstream services
+    return process_checkout(order_id, amount)
+
+# Example 2: Manual span creation
+def process_checkout(order_id, amount):
+    """Create explicit spans for business logic"""
+    with tracer.start_as_current_span("process_checkout") as span:
+        span.set_attribute("order_id", order_id)
+        span.set_attribute("amount", amount)
+        
+        # Call payment service - context automatically propagated
+        payment_result = call_payment_service(order_id, amount)
+        
+        if not payment_result["success"]:
+            span.set_attribute("status", "payment_failed")
+            span.record_exception(Exception("Payment declined"))
+            raise Exception("Payment failed")
+        
+        # Call fraud service - context automatically propagated
+        fraud_check = call_fraud_service(order_id, amount)
+        
+        if not fraud_check["passed"]:
+            span.set_attribute("fraud_risk", "high")
+            span.add_event("fraud_check_failed", {
+                "risk_score": fraud_check["risk_score"]
+            })
+            raise Exception("Fraud detected")
+        
+        # Call inventory service - context automatically propagated
+        inventory_result = call_inventory_service(order_id)
+        
+        span.set_attribute("success", True)
+        return {"status": "confirmed", "order_id": order_id}
+
+# Example 3: Nested spans
+def call_payment_service(order_id, amount):
+    """Demonstrates span nesting"""
+    with tracer.start_as_current_span("call_payment_service") as span:
+        span.set_attribute("service", "payment")
+        span.set_attribute("method", "POST")
+        span.set_attribute("endpoint", "/charge")
+        
+        try:
+            # Manual instrumentation for HTTP call
+            # (RequestsInstrumentor would auto-instrument, but showing manual)
+            response = requests.post(
+                "http://payment-service:8080/charge",
+                json={"order_id": order_id, "amount": amount},
+                timeout=5
+            )
+            
+            span.set_attribute("status_code", response.status_code)
+            return response.json()
+        
+        except requests.Timeout:
+            span.set_attribute("error", "timeout")
+            span.set_attribute("error.type", "TimeoutError")
+            raise
+        
+        except Exception as e:
+            span.set_attribute("error", True)
+            span.record_exception(e)
+            raise
+
+# Example 4: Recording events and logs
+def call_fraud_service(order_id, amount):
+    """Record detailed events within span"""
+    with tracer.start_as_current_span("call_fraud_service") as span:
+        span.set_attribute("order_id", order_id)
+        span.set_attribute("amount", amount)
+        
+        # Event: checking rules
+        span.add_event("fraud_check_started", {
+            "rules": "basic,velocity,pattern"
+        })
+        
+        # Simulate check
+        import time
+        time.sleep(0.5)  # Fraud check takes 500ms
+        
+        span.add_event("fraud_check_completed", {
+            "duration_ms": 500,
+            "rules_passed": 3,
+            "risk_score": 25
+        })
+        
+        return {"passed": True, "risk_score": 25}
+
+# Example 5: Baggage (cross-service metadata)
+from opentelemetry.baggage import get_baggage, set_baggage
+
+def call_inventory_service(order_id):
+    """Use baggage to propagate metadata"""
+    with tracer.start_as_current_span("call_inventory_service") as span:
+        span.set_attribute("order_id", order_id)
+        
+        # Add to baggage (propagated to all downstream services)
+        set_baggage("customer_tier", "premium")
+        set_baggage("region", "us-west")
+        
+        # Baggage is automatically included in context propagation
+        # Downstream services can read it
+        customer_tier = get_baggage("customer_tier")
+        span.set_attribute("customer_tier", customer_tier)
+        
+        return {"status": "reserved", "warehouse": "PDX"}
+
+# Example 6: Error handling with tracing
+def handle_checkout_error(order_id, error):
+    """Record errors in spans"""
+    with tracer.start_as_current_span("handle_checkout_error") as span:
+        span.set_attribute("order_id", order_id)
+        span.set_attribute("error.type", type(error).__name__)
+        span.set_attribute("error.message", str(error))
+        span.record_exception(error)
+        
+        # Log compensation logic
+        span.add_event("initiating_compensation", {
+            "compensation": "cancel_order"
+        })
+        
+        # Call compensation service
+        return {"status": "cancelled", "reason": str(error)}
+
+# Example 7: Async context propagation
+import asyncio
+from opentelemetry.context import set_span
+
+async def process_checkout_async(order_id, amount):
+    """Handle async operations with tracing"""
+    with tracer.start_as_current_span("process_checkout_async") as span:
+        span.set_attribute("order_id", order_id)
+        
+        # Context is automatically set for current async task
+        # Child operations inherit this context
+        
+        # Create child spans for parallel operations
+        payment_task = asyncio.create_task(
+            call_payment_service_async(order_id, amount)
+        )
+        fraud_task = asyncio.create_task(
+            call_fraud_service_async(order_id, amount)
+        )
+        
+        payment_result, fraud_result = await asyncio.gather(
+            payment_task,
+            fraud_task
+        )
+        
+        return {
+            "payment": payment_result,
+            "fraud": fraud_result
+        }
+
+async def call_payment_service_async(order_id, amount):
+    """Async operation with tracing"""
+    with tracer.start_as_current_span("call_payment_service_async") as span:
+        span.set_attribute("order_id", order_id)
+        await asyncio.sleep(0.1)
+        return {"success": True}
+
+async def call_fraud_service_async(order_id, amount):
+    """Async operation with tracing"""
+    with tracer.start_as_current_span("call_fraud_service_async") as span:
+        span.set_attribute("order_id", order_id)
+        await asyncio.sleep(0.5)  # Slower
+        return {"passed": True}
+
+if __name__ == "__main__":
+    app.run(port=5000)
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/exporters/jaeger"
+	"go.opentelemetry.io/sdk/resource"
+	"go.opentelemetry.io/sdk/trace"
+	sdktrace "go.opentelemetry.io/sdk/trace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/semconv/v1.4.0"
+)
+
+func initTracer() (*sdktrace.TracerProvider, error) {
+	exporter, err := jaeger.New(
+		jaeger.WithAgentHost("localhost"),
+		jaeger.WithAgentPort(6831),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("checkout-service"),
+		)),
+	)
+
+	otel.SetTracerProvider(tp)
+	return tp, nil
+}
+
+func main() {
+	tp, err := initTracer()
+	if err != nil {
+		panic(err)
+	}
+	defer tp.Shutdown(context.Background())
+
+	router := gin.Default()
+
+	// Auto-instrumented middleware
+	router.Use(otelgin.Middleware("checkout-service"))
+
+	tracer := otel.Tracer("main")
+
+	// Example 1: Auto-instrumented endpoint
+	router.POST("/checkout", func(c *gin.Context) {
+		handleCheckout(c, tracer)
+	})
+
+	router.Run(":8080")
+}
+
+// Example 2: Manual span creation
+func handleCheckout(c *gin.Context, tracer trace.Tracer) {
+	ctx := c.Request.Context()
+
+	with Tracer.start(ctx, "process_checkout") as span:
+		ctx = span.context
+
+		var req struct {
+			OrderID string  `json:"order_id"`
+			Amount  float64 `json:"amount"`
+		}
+
+		if err := c.BindJSON(&req); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "invalid_request")
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		span.SetAttributes(
+			attribute.String("order_id", req.OrderID),
+			attribute.Float64("amount", req.Amount),
+		)
+
+		result, err := processCheckout(ctx, tracer, req.OrderID, req.Amount)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+// Example 3: Nested spans
+func processCheckout(ctx context.Context, tracer trace.Tracer, orderID string, amount float64) (map[string]interface{}, error) {
+	ctx, span := tracer.Start(ctx, "process_checkout")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("order_id", orderID),
+		attribute.Float64("amount", amount),
+	)
+
+	// Call payment service
+	paymentResult, err := callPaymentService(ctx, tracer, orderID, amount)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	// Call fraud service
+	fraudResult, err := callFraudService(ctx, tracer, orderID, amount)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	// Call inventory service
+	inventoryResult, err := callInventoryService(ctx, tracer, orderID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+
+	span.AddEvent("checkout_completed", trace.WithAttributes(
+		attribute.String("payment_status", paymentResult["status"].(string)),
+		attribute.Bool("fraud_passed", fraudResult["passed"].(bool)),
+	))
+
+	return map[string]interface{}{
+		"order_id": orderID,
+		"status":   "confirmed",
+	}, nil
+}
+
+// Example 4: Recording events
+func callPaymentService(ctx context.Context, tracer trace.Tracer, orderID string, amount float64) (map[string]interface{}, error) {
+	ctx, span := tracer.Start(ctx, "call_payment_service")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("service", "payment"),
+		attribute.String("method", "POST"),
+	)
+
+	// Simulate payment call
+	span.AddEvent("payment_initiated", trace.WithAttributes(
+		attribute.Float64("amount", amount),
+	))
+
+	time.Sleep(100 * time.Millisecond)
+
+	span.AddEvent("payment_completed", trace.WithAttributes(
+		attribute.String("transaction_id", "txn-123"),
+	))
+
+	return map[string]interface{}{
+		"status": "success",
+		"transaction_id": "txn-123",
+	}, nil
+}
+
+// Example 5: Error handling
+func callFraudService(ctx context.Context, tracer trace.Tracer, orderID string, amount float64) (map[string]interface{}, error) {
+	ctx, span := tracer.Start(ctx, "call_fraud_service")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("service", "fraud"),
+		attribute.Float64("amount", amount),
+	)
+
+	span.AddEvent("fraud_check_started")
+
+	time.Sleep(500 * time.Millisecond)
+
+	span.AddEvent("fraud_check_completed", trace.WithAttributes(
+		attribute.Int("risk_score", 25),
+	))
+
+	return map[string]interface{}{
+		"passed": true,
+		"risk_score": 25,
+	}, nil
+}
+
+// Example 6: Baggage propagation
+func callInventoryService(ctx context.Context, tracer trace.Tracer, orderID string) (map[string]interface{}, error) {
+	ctx, span := tracer.Start(ctx, "call_inventory_service")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("order_id", orderID),
+	)
+
+	// Add to baggage (propagated downstream)
+	baggage, _ := baggage.New(
+		baggage.NewMember("customer_tier", "premium"),
+		baggage.NewMember("region", "us-west"),
+	)
+	ctx = baggage.ContextWithBaggage(ctx, baggage)
+
+	span.AddEvent("inventory_reserved", trace.WithAttributes(
+		attribute.String("warehouse", "PDX"),
+	))
+
+	return map[string]interface{}{
+		"status": "reserved",
+		"warehouse": "PDX",
+	}, nil
+}
+
+// Example 7: HTTP client instrumentation
+func callExternalService(ctx context.Context, url string) (*http.Response, error) {
+	// Wrap HTTP client to auto-instrument
+	client := &http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	return client.Do(req)
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// Setup OpenTelemetry with Jaeger exporter
+const { NodeTracer } = require('@opentelemetry/node');
+const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+const { JaegerExporter } = require('@opentelemetry/exporter-jaeger-thrift');
+const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+const { TracerProvider, Resource } = require('@opentelemetry/sdk-trace-base');
+const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+const { ExpressInstrumentation } = require('@opentelemetry/instrumentation-express');
+const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
+const { trace } = require('@opentelemetry/api');
+const { W3CTraceContextPropagator } = require('@opentelemetry/core');
+const express = require('express');
+
+// Initialize Jaeger exporter
+const jaegerExporter = new JaegerExporter({
+  serviceName: 'checkout-service',
+  host: 'localhost',
+  port: 6831,
+});
+
+// Setup tracer provider
+const tracerProvider = new TracerProvider({
+  resource: Resource.default().merge(
+    new Resource({
+      [SemanticResourceAttributes.SERVICE_NAME]: 'checkout-service',
+    })
+  ),
+});
+
+tracerProvider.addSpanProcessor(new BatchSpanProcessor(jaegerExporter));
+trace.setGlobalTracerProvider(tracerProvider);
+
+// Auto-instrument Express and HTTP
+new ExpressInstrumentation().enable();
+new HttpInstrumentation().enable();
+
+const app = express();
+app.use(express.json());
+
+const tracer = trace.getTracer('checkout-service');
+
+// Example 1: Auto-instrumented endpoint
+app.post('/checkout', async (req, res) => {
+  try {
+    const { orderId, amount } = req.body;
+
+    // Automatic span from Express middleware
+    // Manual span creation within endpoint
+    const result = await processCheckout(orderId, amount);
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Example 2: Manual span creation
+async function processCheckout(orderId, amount) {
+  const span = tracer.startSpan('process_checkout');
+  span.setAttributes({
+    'order_id': orderId,
+    'amount': amount,
+  });
+
+  try {
+    // Call payment service - context automatically propagated
+    const paymentResult = await callPaymentService(orderId, amount);
+
+    if (!paymentResult.success) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: 'Payment failed' });
+      throw new Error('Payment declined');
+    }
+
+    // Call fraud service
+    const fraudResult = await callFraudService(orderId, amount);
+
+    if (!fraudResult.passed) {
+      span.addEvent('fraud_check_failed', {
+        'risk_score': fraudResult.riskScore,
+      });
+      span.setStatus({ code: SpanStatusCode.ERROR, message: 'Fraud detected' });
+      throw new Error('Fraud detected');
+    }
+
+    // Call inventory service
+    const inventoryResult = await callInventoryService(orderId);
+
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+
+    return {
+      status: 'confirmed',
+      orderId,
+      warehouse: inventoryResult.warehouse,
+    };
+  } catch (error) {
+    span.recordException(error);
+    span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+    throw error;
+  }
+}
+
+// Example 3: Nested spans
+async function callPaymentService(orderId, amount) {
+  const span = tracer.startSpan('call_payment_service', {
+    attributes: {
+      'service': 'payment',
+      'method': 'POST',
+      'endpoint': '/charge',
+    },
+  });
+
+  try {
+    span.addEvent('payment_initiated', {
+      'amount': amount,
+    });
+
+    // Simulate payment call
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    span.addEvent('payment_completed', {
+      'transaction_id': 'txn-123',
+    });
+
+    span.end();
+
+    return { success: true, transactionId: 'txn-123' };
+  } catch (error) {
+    span.recordException(error);
+    span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+    throw error;
+  }
+}
+
+// Example 4: Recording events and logs
+async function callFraudService(orderId, amount) {
+  const span = tracer.startSpan('call_fraud_service', {
+    attributes: {
+      'order_id': orderId,
+      'amount': amount,
+    },
+  });
+
+  try {
+    span.addEvent('fraud_check_started', {
+      'rules': 'basic,velocity,pattern',
+    });
+
+    // Simulate fraud check
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    span.addEvent('fraud_check_completed', {
+      'duration_ms': 500,
+      'risk_score': 25,
+    });
+
+    span.end();
+
+    return { passed: true, riskScore: 25 };
+  } catch (error) {
+    span.recordException(error);
+    span.end();
+    throw error;
+  }
+}
+
+// Example 5: Baggage propagation
+const { baggage } = require('@opentelemetry/api');
+
+async function callInventoryService(orderId) {
+  const span = tracer.startSpan('call_inventory_service', {
+    attributes: {
+      'order_id': orderId,
+    },
+  });
+
+  try {
+    // Add to baggage (propagated downstream)
+    const b = baggage.createBaggage();
+    b.setEntry('customer_tier', 'premium');
+    b.setEntry('region', 'us-west');
+
+    span.setAttributes({
+      'customer_tier': 'premium',
+      'region': 'us-west',
+    });
+
+    span.addEvent('inventory_reserved', {
+      'warehouse': 'PDX',
+    });
+
+    span.end();
+
+    return { status: 'reserved', warehouse: 'PDX' };
+  } catch (error) {
+    span.recordException(error);
+    span.end();
+    throw error;
+  }
+}
+
+// Example 6: Context propagation with HTTP headers
+async function callDownstreamService(url, data) {
+  const span = tracer.startSpan('call_downstream_service');
+
+  try {
+    // HTTP client auto-instrumentation handles context propagation
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Trace context automatically added by instrumentation
+      },
+      body: JSON.stringify(data),
+    });
+
+    const result = await response.json();
+    span.end();
+    return result;
+  } catch (error) {
+    span.recordException(error);
+    span.end();
+    throw error;
+  }
+}
+
+// Example 7: Async context tracking
+async function processCheckoutAsync(orderId, amount) {
+  const span = tracer.startSpan('process_checkout_async');
+
+  try {
+    // Run parallel operations (both tracked)
+    const [paymentResult, fraudResult] = await Promise.all([
+      callPaymentService(orderId, amount),
+      callFraudService(orderId, amount),
+    ]);
+
+    span.addEvent('operations_completed', {
+      'payment_success': paymentResult.success,
+      'fraud_passed': fraudResult.passed,
+    });
+
+    span.end();
+
+    return { payment: paymentResult, fraud: fraudResult };
+  } catch (error) {
+    span.recordException(error);
+    span.end();
+    throw error;
+  }
+}
+
+app.listen(3000, () => {
+  console.log('Checkout service listening on port 3000');
+  console.log('Tracing to Jaeger on localhost:6831');
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Latency Investigation
+
+Customer reports: "Search is slow." Metrics show: avg 200ms, p99 1000ms.
+
+Trace shows:
+```
+├── GET /search (0-150ms)
+│   ├── Query Elasticsearch (0-50ms)
+│   ├── Enrich results (50-100ms)
+│   │   └── Call recommendation service (60-140ms) ← SLOW
+│   │       └── Call ML model (80-120ms) ← VERY SLOW
+│   └── Format response (140-150ms)
+```
+
+Without tracing: Blame Elasticsearch (fast but gets all blame). With tracing: Fix ML model latency.
+
+### Failure Investigation
+
+Trace shows:
+```
+├── POST /checkout (0-5000ms) ERROR
+│   ├── Call payment service (0-500ms) OK
+│   ├── Call fraud service (500-2500ms) TIMEOUT
+│   │   └── Network latency to fraud service (>2s)
+│   └── [timeout, no inventory call]
+```
+
+Root cause: Fraud service timeout, not fraud logic.
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: Missing Context Propagation
+
+```
+❌ WRONG: Context lost between services
+Service A creates span, calls Service B
+Service B sees no trace context
+→ Service B spans not linked to Service A
+
+✅ CORRECT: Propagate context via headers
+Service A: Serialize trace context to HTTP headers
+Service B: Extract trace context from headers
+→ Service B spans linked to Service A
+```
+
+### Mistake 2: High Sampling Rate in Production
+
+```
+❌ WRONG: Sample 100% of traces
+1M requests/day = 1M traces stored
+Storage cost: high, retention: short
+
+✅ CORRECT: Tail-based sampling
+Sample 100% in dev, 10% in prod
+Store failure traces + slow traces (100%)
+Keep 30 days
+```
+
+### Mistake 3: No Baggage for Context
+
+```
+❌ WRONG: No customer context in traces
+Can't correlate user actions
+Fraud detection blind
+
+✅ CORRECT: Use baggage
+Set baggage: customer_id, region, tier
+Propagate to all downstream services
+Available in logs and metrics
+```
+
+## Production Considerations
+
+### Tracing Infrastructure
+
+- **Jaeger**: Open source, self-hosted. Good for on-prem.
+- **Zipkin**: Open source, simpler than Jaeger.
+- **Cloud providers**: AWS X-Ray, GCP Cloud Trace, Azure Application Insights.
+- **SaaS**: Datadog, New Relic, Lightstep.
+
+### Sampling Strategy
+
+Development: 100% sampling (complete visibility)
+Production: Adaptive sampling
+- All errors (100%)
+- All slow requests (p95+)
+- All requests from specific users
+- Random 1-5% otherwise
+
+### Retention and Storage
+
+- Development: 7 days
+- Staging: 14 days
+- Production: 30 days
+- Archive old traces to cold storage
+
+### Correlating with Logs and Metrics
+
+Trace ID in logs:
+```json
+{
+  "level": "info",
+  "message": "processing checkout",
+  "trace_id": "abc123",
+  "order_id": "order-456",
+  "timestamp": "2024-01-01T12:00:00Z"
+}
+```
+
+Reference trace from log: Click trace ID in log viewer → Jaeger.
+
+## Self-Check
+
+- What's a trace vs. a span?
+- How does trace context propagate?
+- What's the difference between head-based and tail-based sampling?
+- When should you create manual spans?
+- How do you correlate logs with traces?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Auto-instrumentation enabled (HTTP, DB, cache)?",
+  "Context propagation configured (W3C Trace Context)?",
+  "Manual spans for business logic?",
+  "Error handling recorded in spans?",
+  "Baggage for critical context (user_id, region)?",
+  "Sampling strategy defined (head vs tail)?",
+  "Tracing backend configured (Jaeger, cloud)?",
+  "Storage and retention policy set?",
+  "Trace correlation with logs/metrics?",
+  "Performance overhead acceptable?",
+  "PII filtered from traces?",
+  "Runbooks for slow/error traces?"
+]} />
+
+## Next Steps
+
+1. Install OpenTelemetry libraries
+2. Configure auto-instrumentation
+3. Setup tracing backend
+4. Add manual spans for business logic
+5. Configure sampling strategy
+6. Create dashboards and alerts
+7. Document runbook for investigating traces
+
+## References
+
+- <a href="https://opentelemetry.io/" target="_blank" rel="nofollow noopener noreferrer">OpenTelemetry ↗</a>
+- <a href="https://www.jaegertracing.io/" target="_blank" rel="nofollow noopener noreferrer">Jaeger ↗</a>
+- <a href="https://www.w3.org/TR/trace-context/" target="_blank" rel="nofollow noopener noreferrer">W3C Trace Context ↗</a>
+- <a href="https://opentelemetry.io/docs/concepts/sampling/" target="_blank" rel="nofollow noopener noreferrer">OpenTelemetry Sampling ↗</a>

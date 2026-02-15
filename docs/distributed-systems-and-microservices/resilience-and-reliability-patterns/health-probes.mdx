@@ -1,0 +1,511 @@
+---
+sidebar_position: 6
+title: "Health Probes"
+description: "Detect failures quickly with liveness and readiness probes. Enable self-healing and automatic instance removal."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [health probes, liveness, readiness, self-healing, failure detection, automatic recovery]
+image: /img/archman-social-card.webp
+tags: [health-probes, liveness, readiness, self-healing, failure-detection, automatic-recovery, service-discovery]
+hide_title: true
+---
+
+<Hero title="Health Probes" subtitle="Detect failures quickly and enable automatic self-healing" imageAlt="Health probes illustration" size="large" />
+
+## TL;DR
+
+Services silently fail without active monitoring. Liveness probes answer "Is the service alive?" (restart if dead). Readiness probes answer "Can it serve traffic?" (remove from load balancer if not ready). Implement /health and /ready endpoints that check dependencies and resource usage. Integrate with orchestrators like Kubernetes for automatic self-healing. Fast detection (< 30 seconds) prevents cascading failures. Both types are essential: liveness detects zombie processes; readiness handles temporary overload.
+
+## Learning Objectives
+
+- Distinguish liveness vs. readiness probes and their recovery actions
+- Design health checks that detect both hard failures and performance degradation
+- Implement deep health checks that validate dependencies, not just process existence
+- Configure probe frequency, timeout, and failure thresholds appropriately
+- Integrate probes with container orchestrators and load balancers
+
+## Motivating Scenario
+
+A Kubernetes cluster runs 10 payment service replicas. One replica's database connection pool exhausts (a leak in the code). The service is still running (process alive) but cannot process payments. Without readiness probes, the load balancer continues routing traffic to it. Customers experience timeouts on 10% of requests. With readiness probes, Kubernetes detects database connectivity failure within 10 seconds, removes the replica from the service mesh, and distributes traffic to healthy replicas. Customer-facing latency stays within SLA.
+
+## Core Concepts
+
+<Figure
+  caption="Liveness vs. Readiness Probes"
+  content={`
+graph TB
+    subgraph liveness["Liveness Probe"]
+        L1["Running"]
+        L2["Zombie Process<br/>(deadlock)"]
+        L3["Restart"]
+        L1 -->|Fail 3x| L2
+        L2 -->|Yes| L3
+        style L1 fill:#c8e6c9
+        style L2 fill:#ffcccc
+        style L3 fill:#fff9c4
+    end
+
+    subgraph readiness["Readiness Probe"]
+        R1["Ready"]
+        R2["Degraded<br/>(DB slow)"]
+        R3["Remove<br/>from LB"]
+        R4["Recovering"]
+        R1 -->|Fail 2x| R2
+        R2 -->|Yes| R3
+        R3 -->|Success| R4
+        R4 -->|Recovered| R1
+        style R1 fill:#c8e6c9
+        style R2 fill:#fff9c4
+        style R3 fill:#e0e0e0
+        style R4 fill:#fff9c4
+    end
+`}
+/>
+
+**Liveness Probes** detect when a process is stuck and needs restarting. A stuck service won't recover on its own—restart it. Kubernetes kills the container and starts a new one.
+
+**Readiness Probes** detect when a service is temporarily unable to serve traffic (database connection pool exhausted, downstream service slow, disk full). The process is alive but degraded. Remove it from the load balancer; clients route to healthy replicas. Once recovered, readd it to the balancer.
+
+Both types query the service's /health endpoint. The endpoint must quickly check critical dependencies and return status. Slow health checks defeat their purpose (detection timeout > failure recovery time).
+
+## Practical Example
+
+<Tabs>
+  <TabItem value="python" label="Python">
+```python
+import time
+import asyncio
+from enum import Enum
+from datetime import datetime
+
+class ProbeStatus(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+
+class HealthProbe:
+    def __init__(self, timeout_sec=5, check_interval_sec=10):
+        self.timeout_sec = timeout_sec
+        self.check_interval_sec = check_interval_sec
+        self.db_connected = True
+        self.cache_connected = True
+        self.request_latency_ms = 50
+        self.queue_depth = 100
+        self.max_queue = 10000
+
+    async def check_database(self):
+        """Simulate database connectivity check"""
+        try:
+            # In real code: execute SELECT 1 or equivalent
+            await asyncio.sleep(0.01)
+            return self.db_connected
+        except Exception:
+            return False
+
+    async def check_cache(self):
+        """Simulate cache connectivity check"""
+        try:
+            await asyncio.sleep(0.005)
+            return self.cache_connected
+        except Exception:
+            return False
+
+    async def check_latency(self):
+        """Check if request latency is acceptable"""
+        # Latency threshold: 500ms
+        return self.request_latency_ms < 500
+
+    async def check_resources(self):
+        """Check queue depth and resource usage"""
+        queue_utilization = self.queue_depth / self.max_queue
+        return queue_utilization < 0.9
+
+    async def liveness_check(self):
+        """Full process check (restart if fails)"""
+        try:
+            db = await asyncio.wait_for(
+                self.check_database(), timeout=self.timeout_sec
+            )
+            if not db:
+                return ProbeStatus.UNHEALTHY
+
+            # If database is reachable, process is alive
+            return ProbeStatus.HEALTHY
+        except asyncio.TimeoutError:
+            return ProbeStatus.UNHEALTHY
+
+    async def readiness_check(self):
+        """Can serve traffic? (remove from LB if not)"""
+        try:
+            db = await asyncio.wait_for(
+                self.check_database(), timeout=2
+            )
+            cache = await asyncio.wait_for(
+                self.check_cache(), timeout=2
+            )
+            latency_ok = await self.check_latency()
+            resources_ok = await self.check_resources()
+
+            if not db or not cache:
+                return ProbeStatus.DEGRADED
+
+            if not latency_ok or not resources_ok:
+                return ProbeStatus.DEGRADED
+
+            return ProbeStatus.HEALTHY
+        except asyncio.TimeoutError:
+            return ProbeStatus.DEGRADED
+
+    async def get_health_report(self):
+        """Full health report for /health endpoint"""
+        liveness = await self.liveness_check()
+        readiness = await self.readiness_check()
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "liveness": liveness.value,
+            "readiness": readiness.value,
+            "uptime_seconds": 3600,
+            "dependencies": {
+                "database": "connected" if self.db_connected else "disconnected",
+                "cache": "connected" if self.cache_connected else "disconnected"
+            },
+            "metrics": {
+                "request_latency_ms": self.request_latency_ms,
+                "queue_depth": self.queue_depth,
+                "queue_utilization_percent": (self.queue_depth / self.max_queue) * 100
+            }
+        }
+
+# Example usage
+async def main():
+    probe = HealthProbe()
+
+    # Simulate normal operation
+    report = await probe.get_health_report()
+    print("Health Report:", report)
+
+    # Simulate degradation
+    probe.db_connected = False
+    report = await probe.get_health_report()
+    print("Degraded Report:", report)
+
+asyncio.run(main())
+```
+  </TabItem>
+  <TabItem value="go" label="Go">
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+)
+
+type ProbeStatus string
+
+const (
+    Healthy   ProbeStatus = "healthy"
+    Degraded  ProbeStatus = "degraded"
+    Unhealthy ProbeStatus = "unhealthy"
+)
+
+type HealthProbe struct {
+    dbConnected       bool
+    cacheConnected    bool
+    requestLatencyMs  int64
+    queueDepth        int64
+    maxQueue          int64
+    lastFailureTime   time.Time
+}
+
+func NewHealthProbe() *HealthProbe {
+    return &HealthProbe{
+        dbConnected:      true,
+        cacheConnected:   true,
+        requestLatencyMs: 50,
+        queueDepth:       100,
+        maxQueue:         10000,
+    }
+}
+
+func (hp *HealthProbe) CheckDatabase() bool {
+    // In real code: execute SELECT 1
+    return hp.dbConnected
+}
+
+func (hp *HealthProbe) CheckCache() bool {
+    // In real code: ping Redis/Memcached
+    return hp.cacheConnected
+}
+
+func (hp *HealthProbe) CheckLatency() bool {
+    return hp.requestLatencyMs < 500
+}
+
+func (hp *HealthProbe) CheckResources() bool {
+    utilization := float64(hp.queueDepth) / float64(hp.maxQueue)
+    return utilization < 0.9
+}
+
+func (hp *HealthProbe) LivenessCheck() ProbeStatus {
+    if !hp.CheckDatabase() {
+        hp.lastFailureTime = time.Now()
+        return Unhealthy
+    }
+    return Healthy
+}
+
+func (hp *HealthProbe) ReadinessCheck() ProbeStatus {
+    if !hp.CheckDatabase() || !hp.CheckCache() {
+        return Degraded
+    }
+
+    if !hp.CheckLatency() || !hp.CheckResources() {
+        return Degraded
+    }
+
+    return Healthy
+}
+
+func (hp *HealthProbe) ServeHealth(w http.ResponseWriter, r *http.Request) {
+    liveness := hp.LivenessCheck()
+    readiness := hp.ReadinessCheck()
+
+    health := map[string]interface{}{
+        "timestamp": time.Now().Format(time.RFC3339),
+        "liveness":  liveness,
+        "readiness": readiness,
+        "uptime_seconds": 3600,
+        "dependencies": map[string]string{
+            "database": map[bool]string{true: "connected", false: "disconnected"}[hp.dbConnected],
+            "cache":    map[bool]string{true: "connected", false: "disconnected"}[hp.cacheConnected],
+        },
+        "metrics": map[string]interface{}{
+            "request_latency_ms":   hp.requestLatencyMs,
+            "queue_depth":          hp.queueDepth,
+            "queue_utilization_pct": (hp.queueDepth * 100) / hp.maxQueue,
+        },
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+
+    // Return 503 if unhealthy
+    if liveness == Unhealthy {
+        w.WriteHeader(http.StatusServiceUnavailable)
+    } else if readiness == Degraded {
+        w.WriteHeader(http.StatusServiceUnavailable)
+    } else {
+        w.WriteHeader(http.StatusOK)
+    }
+
+    fmt.Fprintf(w, "%v\n", health)
+}
+
+func main() {
+    probe := NewHealthProbe()
+    http.HandleFunc("/health", probe.ServeHealth)
+    http.ListenAndServe(":8080", nil)
+}
+```
+  </TabItem>
+  <TabItem value="nodejs" label="Node.js">
+```javascript
+const http = require('http');
+
+const ProbeStatus = {
+    HEALTHY: 'healthy',
+    DEGRADED: 'degraded',
+    UNHEALTHY: 'unhealthy'
+};
+
+class HealthProbe {
+    constructor() {
+        this.dbConnected = true;
+        this.cacheConnected = true;
+        this.requestLatencyMs = 50;
+        this.queueDepth = 100;
+        this.maxQueue = 10000;
+    }
+
+    checkDatabase() {
+        // In real code: query database
+        return this.dbConnected;
+    }
+
+    checkCache() {
+        // In real code: ping Redis
+        return this.cacheConnected;
+    }
+
+    checkLatency() {
+        return this.requestLatencyMs < 500;
+    }
+
+    checkResources() {
+        const utilization = this.queueDepth / this.maxQueue;
+        return utilization < 0.9;
+    }
+
+    livenessCheck() {
+        if (!this.checkDatabase()) {
+            return ProbeStatus.UNHEALTHY;
+        }
+        return ProbeStatus.HEALTHY;
+    }
+
+    readinessCheck() {
+        if (!this.checkDatabase() || !this.checkCache()) {
+            return ProbeStatus.DEGRADED;
+        }
+
+        if (!this.checkLatency() || !this.checkResources()) {
+            return ProbeStatus.DEGRADED;
+        }
+
+        return ProbeStatus.HEALTHY;
+    }
+
+    getHealthReport() {
+        const liveness = this.livenessCheck();
+        const readiness = this.readinessCheck();
+
+        return {
+            timestamp: new Date().toISOString(),
+            liveness,
+            readiness,
+            uptime_seconds: 3600,
+            dependencies: {
+                database: this.dbConnected ? 'connected' : 'disconnected',
+                cache: this.cacheConnected ? 'connected' : 'disconnected'
+            },
+            metrics: {
+                request_latency_ms: this.requestLatencyMs,
+                queue_depth: this.queueDepth,
+                queue_utilization_percent: (this.queueDepth / this.maxQueue) * 100
+            }
+        };
+    }
+}
+
+const probe = new HealthProbe();
+
+const server = http.createServer((req, res) => {
+    if (req.url === '/health') {
+        const report = probe.getHealthReport();
+
+        res.setHeader('Content-Type', 'application/json');
+
+        if (report.liveness === ProbeStatus.UNHEALTHY ||
+            report.readiness === ProbeStatus.DEGRADED) {
+            res.writeHead(503);
+        } else {
+            res.writeHead(200);
+        }
+
+        res.end(JSON.stringify(report, null, 2));
+    } else {
+        res.writeHead(404);
+        res.end('Not found');
+    }
+});
+
+server.listen(8080, () => {
+    console.log('Health probe listening on port 8080');
+});
+```
+  </TabItem>
+</Tabs>
+
+## When to Use vs. When NOT to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "Use Health Probes",
+    points: [
+      "Running in Kubernetes or auto-scaling environments",
+      "Multiple service replicas behind a load balancer"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid Health Probes",
+    points: [
+      "Dependencies that can fail (databases, caches, APIs)",
+      "Long-running processes that may hang or deadlock",
+      "Services with both availability and performance SLAs"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Separate Liveness and Readiness Endpoints",
+      body: "/live checks process existence (minimal). /ready checks dependencies (complete). Kubernetes can fail readiness without restarting—better for temporary issues like database maintenance."
+    },
+    {
+      label: "Pattern: Dependency Health in Deep Checks",
+      body: "Readiness probes check all critical dependencies. Database down? Don't accept traffic. Cache timeout? Degrade but stay ready. Queue backed up? Don't accept traffic. Check actual connectivity, not just configuration."
+    },
+    {
+      label: "Pitfall: Slow Health Checks",
+      body: "A 30-second health check on a 10-second probe interval = overlapping checks. Health check failure takes 30+ seconds to detect. Use 1-5 second timeouts. Fast fail on any latency > threshold."
+    },
+    {
+      label: "Pitfall: Checking Everything",
+      body: "Liveness probe pings 5 dependencies, writes to log, queries database. This is a readiness check. Liveness should be minimal: process alive? Yes/no. Separate concerns = faster detection."
+    },
+    {
+      label: "Pattern: Graceful Draining",
+      body: "When readiness probe fails, don't reject mid-flight. Add PreStop hook to finish in-flight requests before container terminates. Prevents customer-facing errors from abrupt termination."
+    },
+    {
+      label: "Pitfall: Ignoring Thresholds",
+      body: "Failure threshold too low (fail after 1 probe) = false positives, thrashing. Too high (fail after 100) = slow detection. Use 2-3 consecutive failures for readiness, 3-5 for liveness."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Liveness probe is minimal (< 2 sec) and only checks process state",
+    "Readiness probe checks all critical dependencies (database, cache, APIs)",
+    "Readiness probe includes latency and resource checks (queue depth, memory)",
+    "Health endpoints return HTTP 200 when healthy, 503 when unhealthy",
+    "Failure thresholds are tuned (2-3 for readiness, 3-5 for liveness)",
+    "Probe interval is 10-30 seconds; timeout is 1-5 seconds",
+    "Health checks have detailed logging for debugging failures",
+    "Load balancer configuration matches probe behavior (uses readiness)",
+    "Kubernetes probes are defined in container specs",
+    "Monitoring alerts on repeated probe failures"
+  ]}
+/>
+
+## Self-Check
+
+- Can you explain why liveness and readiness are different actions?
+- What should a liveness probe check? What should it skip?
+- How do you distinguish between a bug (needs liveness) vs. overload (needs readiness)?
+- What's the impact if a health check takes longer than the probe timeout?
+- How does your load balancer respond to failed readiness probes?
+
+## Next Steps
+
+1. **Circuit Breaker:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/circuit-breaker" target="_blank" rel="nofollow noopener noreferrer">Circuit Breaker ↗️</a> to detect dependency failures
+2. **Load Shedding:** Learn <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/load-shedding-backpressure" target="_blank" rel="nofollow noopener noreferrer">Load Shedding and Backpressure ↗️</a> to handle overload gracefully
+3. **Bulkhead Isolation:** Read <a href="/docs/distributed-systems-and-microservices/resilience-and-reliability-patterns/bulkhead-isolation" target="_blank" rel="nofollow noopener noreferrer">Bulkhead Isolation ↗️</a> to prevent cascading resource exhaustion
+
+## References
+
+- Burns, B., Grant, B., Oppenheimer, D., Brewer, E., & Wilkes, J. (2016). <a href="https://research.google/pubs/large-scale-cluster-management-at-google-with-borg/" target="_blank" rel="nofollow noopener noreferrer">Borg, Omega, and Kubernetes ↗️</a>. ACM Queue.
+- Kubernetes Documentation. <a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/" target="_blank" rel="nofollow noopener noreferrer">Configure Liveness, Readiness, and Startup Probes ↗️</a>

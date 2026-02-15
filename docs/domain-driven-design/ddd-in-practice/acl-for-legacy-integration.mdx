@@ -1,0 +1,427 @@
+---
+sidebar_position: 3
+title: "Anti-Corruption Layers for Legacy Integration"
+description: "Protect new bounded contexts from legacy system pollution"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [anti-corruption-layer, acl, legacy-integration, translation, adapter, bounded-context-protection]
+image: /img/archman-social-card.webp
+tags: [ddd, anti-corruption-layer, integration, legacy, adaptation]
+hide_title: true
+---
+
+<Hero title="Anti-Corruption Layers for Legacy Integration" subtitle="Protect new bounded contexts from legacy system pollution" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+An Anti-Corruption Layer (ACL) is a translation adapter positioned at the boundary between a legacy system and a new bounded context. It converts legacy data structures, APIs, and domain language into clean, domain-aligned models that make sense in your new system. ACLs prevent the legacy system's poor design, inconsistent terminology, and technical constraints from polluting your new context. They isolate complexity, enable independent evolution of both systems, and allow you to maintain a clean domain model. ACLs are temporary—they buy you time to migrate away from legacy systems.
+
+## Learning Objectives
+
+- Design translation layers that convert legacy concepts to domain models
+- Implement ACLs for reading from and writing to legacy systems
+- Protect new bounded contexts from legacy design pollution
+- Manage bidirectional synchronization with legacy systems
+- Handle data mapping and transformation at the boundary
+- Plan migration strategies when legacy systems are involved
+- Test ACLs independently from legacy systems
+
+## Motivating Scenario
+
+Your company built a new order management system with clean DDD models: Order (aggregate), OrderLineItem (value object), Customer (aggregate). But the legacy billing system stores orders in an old database with cryptic abbreviations: ord_id, ord_stat_cd, ord_cust_fk, ord_totl_amt, ord_crte_ts, ord_updt_ts. The billing system's API returns XML with inconsistent field names and encoding issues. If you import legacy models directly into your new system, your domain code becomes polluted with legacy complexity. Every developer must understand the legacy schema. Refactoring the new system becomes risky because legacy dependencies are everywhere. An ACL solves this: it sits between the systems, translates legacy data to clean domain models, and shields your new code from legacy ugliness.
+
+## Core Concepts
+
+<Figure
+  caption="Anti-Corruption Layer Translation"
+  diagram={`graph LR
+    LC["Legacy Context"] -->|messy API<br/>old terminology<br/>bad design| ACL["Anti-Corruption<br/>Layer"]
+    ACL -->|clean domain<br/>models<br/>ubiquitous language| NC["New Context"]
+
+    style LC fill:#ffccbc
+    style ACL fill:#fff9c4
+    style NC fill:#c8e6c9`}
+/>
+
+**What Legacy Systems Have:**
+
+- Cryptic abbreviations (cust_nm, ord_totl_amt, ord_stat_cd)
+- Inconsistent terminology (customer vs. client vs. account)
+- Poor separation of concerns (one table does everything)
+- Technical compromises (numeric codes for states, date formats)
+- No clear domain language
+
+**What Your New System Needs:**
+
+- Clear, expressive names (Customer, Order, Address)
+- Consistent ubiquitous language
+- Proper domain boundaries
+- Type safety and validation
+- Clean separation of concerns
+
+## Practical Example
+
+<Tabs>
+<TabItem value="legacy" label="Legacy System">
+
+```python
+# Legacy database schema
+# Orders table: ord_id, ord_cust_fk, ord_totl_amt, ord_stat_cd, ord_crte_ts
+
+# Legacy API response (XML)
+"""
+<order>
+    <ord_id>12345</ord_id>
+    <ord_cust_fk>999</ord_cust_fk>
+    <ord_stat_cd>C</ord_stat_cd>  <!-- C = Confirmed, S = Shipped, D = Delivered -->
+    <ord_totl_amt>125.50</ord_totl_amt>
+    <ord_crte_ts>2025-01-15T10:30:00Z</ord_crte_ts>
+    <ord_updt_ts>2025-01-16T14:22:00Z</ord_updt_ts>
+    <ord_items>
+        <item>
+            <itm_id>1</itm_id>
+            <itm_prod_fk>777</itm_prod_fk>
+            <itm_qty>2</itm_qty>
+            <itm_prc>62.75</itm_prc>
+        </item>
+    </ord_items>
+</order>
+"""
+
+class LegacyOrderApiClient:
+    """Client for legacy order API."""
+
+    def get_order(self, order_id: str) -> dict:
+        """Get order from legacy system."""
+        response = requests.get(f"{self.legacy_base_url}/orders/{order_id}")
+        return xmltodict.parse(response.text)
+
+    def save_order(self, legacy_order: dict) -> bool:
+        """Save order back to legacy system."""
+        xml = self._dict_to_xml(legacy_order)
+        response = requests.post(f"{self.legacy_base_url}/orders", data=xml)
+        return response.status_code == 200
+```
+
+</TabItem>
+<TabItem value="acl" label="Anti-Corruption Layer">
+
+```python
+from datetime import datetime
+from enum import Enum
+from typing import List
+
+class OrderACL:
+    """Anti-Corruption Layer translating legacy orders to domain models."""
+
+    def __init__(self, legacy_api_client: LegacyOrderApiClient):
+        self.legacy_api_client = legacy_api_client
+
+    def get_order(self, order_id: str) -> 'Order':
+        """Get order from legacy system and translate to domain model.
+
+        Shields new system from legacy API and data format.
+        """
+        # Get from legacy system (messy API)
+        legacy_order = self.legacy_api_client.get_order(order_id)
+
+        # Translate to clean domain model
+        return self._translate_legacy_to_domain(legacy_order)
+
+    def save_order(self, order: 'Order') -> None:
+        """Save domain order back to legacy system.
+
+        Translates domain model to legacy format.
+        """
+        # Translate domain model to legacy format
+        legacy_order = self._translate_domain_to_legacy(order)
+
+        # Save to legacy system
+        self.legacy_api_client.save_order(legacy_order)
+
+    def _translate_legacy_to_domain(self, legacy_order: dict) -> 'Order':
+        """Translate legacy order dict to domain Order aggregate.
+
+        This is where the translation magic happens.
+        All the ugly legacy terminology is converted here.
+        """
+        # Extract and decode legacy data
+        order_id = legacy_order['ord_id']
+        customer_id = legacy_order['ord_cust_fk']
+        status_code = legacy_order['ord_stat_cd']
+        total = float(legacy_order['ord_totl_amt'])
+        created_at = datetime.fromisoformat(legacy_order['ord_crte_ts'])
+
+        # Translate legacy status code to domain enum
+        status = self._translate_status(status_code)
+
+        # Create domain aggregate with clean data
+        order = Order(
+            order_id=order_id,
+            customer_id=customer_id,
+            status=status,
+            created_at=created_at
+        )
+
+        # Translate line items
+        for legacy_item in legacy_order.get('ord_items', {}).get('item', []):
+            item = OrderLineItem(
+                product_id=legacy_item['itm_prod_fk'],
+                quantity=int(legacy_item['itm_qty']),
+                unit_price=float(legacy_item['itm_prc'])
+            )
+            order.add_item(item)
+
+        order.set_total(Money(total, "USD"))
+
+        return order
+
+    def _translate_domain_to_legacy(self, order: 'Order') -> dict:
+        """Translate domain Order aggregate back to legacy format.
+
+        Needed for synchronizing changes back to legacy system.
+        """
+        # Map domain enum to legacy status code
+        legacy_status = self._translate_status_reverse(order.status)
+
+        legacy_order = {
+            'ord_id': order.order_id,
+            'ord_cust_fk': order.customer_id,
+            'ord_stat_cd': legacy_status,
+            'ord_totl_amt': str(order.total.amount),
+            'ord_crte_ts': order.created_at.isoformat(),
+            'ord_updt_ts': datetime.now().isoformat(),
+            'ord_items': {
+                'item': [
+                    {
+                        'itm_id': item.id,
+                        'itm_prod_fk': item.product_id,
+                        'itm_qty': str(item.quantity),
+                        'itm_prc': str(item.unit_price.amount)
+                    }
+                    for item in order.items
+                ]
+            }
+        }
+
+        return legacy_order
+
+    def _translate_status(self, legacy_status_code: str) -> 'OrderStatus':
+        """Translate legacy status code to domain enum."""
+        mapping = {
+            'C': OrderStatus.CONFIRMED,
+            'S': OrderStatus.SHIPPED,
+            'D': OrderStatus.DELIVERED,
+            'X': OrderStatus.CANCELLED
+        }
+        return mapping.get(legacy_status_code, OrderStatus.UNKNOWN)
+
+    def _translate_status_reverse(self, domain_status: 'OrderStatus') -> str:
+        """Translate domain status back to legacy code."""
+        mapping = {
+            OrderStatus.CONFIRMED: 'C',
+            OrderStatus.SHIPPED: 'S',
+            OrderStatus.DELIVERED: 'D',
+            OrderStatus.CANCELLED: 'X'
+        }
+        return mapping.get(domain_status, 'X')
+
+# Domain models (clean and unaware of legacy)
+class Order(AggregateRoot):
+    def __init__(self, order_id: str, customer_id: str, status: 'OrderStatus'):
+        self.order_id = order_id
+        self.customer_id = customer_id
+        self.status = status
+        self.items: List[OrderLineItem] = []
+        self.total: Money = None
+        self.created_at = datetime.now()
+
+    def add_item(self, item: 'OrderLineItem'):
+        self.items.append(item)
+
+    def set_total(self, total: 'Money'):
+        self.total = total
+
+class OrderLineItem:
+    def __init__(self, product_id: str, quantity: int, unit_price: float):
+        self.product_id = product_id
+        self.quantity = quantity
+        self.unit_price = Money(unit_price, "USD")
+
+class OrderStatus(Enum):
+    CONFIRMED = "confirmed"
+    SHIPPED = "shipped"
+    DELIVERED = "delivered"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+class Money:
+    def __init__(self, amount: float, currency: str):
+        self.amount = amount
+        self.currency = currency
+
+# Application service uses the ACL transparently
+class OrderService:
+    def __init__(self, order_acl: OrderACL):
+        self.order_acl = order_acl
+
+    def get_order(self, order_id: str) -> Order:
+        """Get order—doesn't know about legacy system."""
+        return self.order_acl.get_order(order_id)
+
+    def update_order_status(self, order_id: str, new_status: OrderStatus):
+        """Update order—works with clean domain models."""
+        order = self.order_acl.get_order(order_id)
+        order.status = new_status
+        self.order_acl.save_order(order)
+```
+
+</TabItem>
+<TabItem value="usage" label="Usage in Application">
+
+```python
+# Application code is completely isolated from legacy
+def confirm_order_endpoint(order_id: str):
+    """HTTP endpoint for confirming orders."""
+    try:
+        # Application doesn't know about legacy system
+        order = order_service.get_order(order_id)
+
+        # Work with clean domain model
+        if order.status != OrderStatus.CONFIRMED:
+            order.status = OrderStatus.CONFIRMED
+            order_service.update_order_status(order_id, OrderStatus.CONFIRMED)
+
+        return {"status": "order_confirmed", "order_id": order_id}
+
+    except OrderNotFound:
+        return {"error": "order_not_found"}, 404
+
+# Testing is isolated from legacy too
+def test_order_service():
+    """Test uses mock ACL, not real legacy system."""
+    mock_acl = MockOrderACL()
+    order_service = OrderService(mock_acl)
+
+    order = order_service.get_order("123")
+
+    assert order.order_id == "123"
+    assert order.status == OrderStatus.CONFIRMED
+    # No legacy system needed for testing
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use / Not Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Use an ACL",
+    points: [
+      "Integrating with a legacy system that doesn't match your domain language",
+      "Legacy system has poor design you don't want to replicate",
+      "You want to evolve your domain independently from legacy",
+      "Bidirectional sync needed—reading from and writing to legacy",
+      "You're planning to migrate away from legacy eventually",
+      "Your new context will outlive the legacy system"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Don't Use an ACL",
+    points: [
+      "Legacy system is well-designed and matches your ubiquitous language",
+      "You're not planning to change your domain—legacy is the source of truth",
+      "Integration is read-only and temporary",
+      "The legacy system is stable and won't change",
+      "You're decommissioning the legacy system soon (just bear it)"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  title="Patterns and Pitfalls"
+  sections={[
+    {
+      label: "Pitfall: No Translation at All",
+      body: "Using legacy models directly in your new system. Your domain code becomes aware of legacy schema, abbreviations, and design flaws. Creates tight coupling and makes your domain code ugly.\n\n**Fix**: Always create a translation layer. Spend the effort to translate legacy data to clean domain models. It pays off in code clarity and independence."
+    },
+    {
+      label: "Pitfall: ACL Too Complex",
+      body: "The ACL becomes so large and complicated that it's harder to understand than the direct coupling it was meant to prevent. Transformation logic is scattered and hard to follow.\n\n**Fix**: If ACL is huge, question the integration strategy. Maybe the legacy system is so fundamentally different that integration is too expensive. Consider alternatives: accept legacy design, migrate data entirely, or have limited integration."
+    },
+    {
+      label: "Pitfall: Translation Logic Scattered",
+      body: "Transformation scattered across multiple classes. Some translation in ACL, some in repositories, some in domain services. Hard to understand the complete picture.\n\n**Fix**: Centralize all legacy→domain and domain→legacy translation in the ACL. Single responsibility."
+    },
+    {
+      label: "Pattern: Bidirectional ACL",
+      body: "Translation works both ways: reading from legacy (legacy→domain) and writing back (domain→legacy). Requires careful mapping in both directions.\n\n**How to Use**: Implement translate_to_domain() and translate_to_legacy() methods. Test both directions. Ensure consistency—if you round-trip data, it should come out the same."
+    },
+    {
+      label: "Pattern: Gradual Migration",
+      body: "ACL is temporary—a stepping stone. Eventually, migrate all data and dependencies off legacy system. Track migration progress.\n\n**How to Use**: Every new feature uses new system. Legacy is accessed only via ACL. As features mature, migrate users off legacy. Eventually decommission legacy."
+    },
+    {
+      label: "Pattern: ACL with Caching",
+      body: "Cache data from legacy system locally. Don't call legacy API on every request. Reduces coupling and improves performance.\n\n**How to Use**: Synchronize cache periodically (nightly batch job, or on-demand). Accept data staleness."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is the ACL at the boundary between legacy and new contexts?",
+  "Does it translate to clean domain models that make sense in new context?",
+  "Is the legacy system accessed ONLY through ACL (no direct imports)?",
+  "Are all transformations documented with examples?",
+  "Can you test the ACL independently (mocking legacy system)?",
+  "Is bidirectional translation (if needed) consistent?",
+  "Does the ACL hide complexity effectively?",
+  "Are error cases handled gracefully?",
+  "Is there a migration plan and timeline?",
+  "Are metrics in place to track migration progress?",
+  "Can you trace a request through ACL to understand the flow?"
+]} />
+
+## Self-Check
+
+1. **When do you need an ACL?**
+   When integrating with a system whose design, terminology, or constraints differ significantly from your new domain. ACL protects your clean domain model from legacy pollution.
+
+2. **Can you avoid the ACL?**
+   You can avoid it by accepting legacy design directly in your new code. But this couples your domain to legacy decisions, making refactoring risky and code harder to understand.
+
+3. **How long do ACLs typically last?**
+   As long as you depend on the legacy system. Once you migrate data and dependencies off legacy, the ACL becomes unnecessary and can be removed.
+
+4. **What if the legacy system changes?**
+   Update ACL translation logic. Because ACL is isolated, changes are localized and don't ripple through your domain.
+
+5. **How do you test an ACL?**
+   Mock the legacy API client. Test translation logic in isolation. Don't require a running legacy system to test your domain.
+
+<Callout type="info">
+**One Takeaway**: Anti-Corruption Layers protect your bounded context from legacy system pollution. They isolate complexity at the boundary, enable independent evolution, and give you a clear path to migration. Build the ACL layer—it's an investment that pays dividends.
+</Callout>
+
+## Next Steps
+
+1. **Strategic Decomposition**: Learn how to decompose monoliths using ACLs
+2. **Bounded Contexts**: Understand how ACLs fit into context mapping
+3. **Event-Driven Integration**: See alternatives to ACLs using event streaming
+4. **Migration Planning**: Strategies for gradually moving away from legacy systems
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Vernon, V. (2013). *Implementing Domain-Driven Design*. Addison-Wesley.
+- Fowler, M. & Richardson, C. (2018). <a href="https://microservices.io/" target="_blank" rel="nofollow noopener noreferrer">Microservices.io ↗️</a>

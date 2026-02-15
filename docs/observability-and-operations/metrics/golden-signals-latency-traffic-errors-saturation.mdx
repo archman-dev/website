@@ -1,0 +1,517 @@
+---
+sidebar_position: 1
+title: "Golden Signals: Latency, Traffic, Errors, Saturation"
+description: "Google's four key metrics for understanding service health: measure these well, and you'll know your system."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [metrics, golden-signals, latency, traffic, errors, saturation, capacity, observability, sre, monitoring]
+image: /img/archman-social-card.webp
+tags: [metrics, observability, sre, golden-signals, latency, throughput, error-rate, saturation, capacity, monitoring]
+hide_title: true
+---
+
+<Hero title="Golden Signals: Latency, Traffic, Errors, Saturation" subtitle="Google's four key metrics for understanding service health: measure these well, and you'll know your system." imageAlt="Metrics illustration" size="large" />
+
+## TL;DR
+
+Google's SRE book identified four metrics that predict service health: **Latency** (how long requests take), **Traffic** (how many requests), **Errors** (request failures), **Saturation** (how full is your system). These four metrics cover 90% of debugging. Measure latency by percentile (p50, p99), not average. Count errors by type. Traffic is requests per second or bytes per second. Saturation is CPU, memory, queue depth—whatever resource is scarce. Alert on these four. Build dashboards around them. If your system is slow, look at latency and saturation first. If errors spike, alert. If traffic drops suddenly, investigate. These four metrics form a complete picture of system health.
+
+## Learning Objectives
+
+- Understand what each golden signal measures and why
+- Instrument services to measure latency, traffic, errors, saturation
+- Choose appropriate percentiles for latency
+- Define saturation thresholds for your infrastructure
+- Use golden signals to troubleshoot system problems
+- Design dashboards that expose golden signals
+
+## Motivating Scenario
+
+Your user-facing API is slow. You check CPU: 20%. Memory: 30%. Network: fine. Everything looks healthy. But latency is 2 seconds (p99), and users are timing out. You scale horizontally, but it doesn't help. Eventually you realize the database is the bottleneck—CPU on the database is 95%. You weren't measuring database saturation. Golden signals would have surfaced this: saturation for the database would have shown the problem immediately.
+
+## Core Concepts
+
+### Latency
+
+Measure request time from entry to response. Report percentiles: p50 (median), p95, p99, p99.9. Average latency is useless—one slow request doesn't move the average. Percentiles expose tail latency, which causes user-facing slowness.
+
+### Traffic
+
+Measure load: requests per second (RPS), bytes per second (Bps), transactions per second (TPS). Traffic + Latency tells you capacity: can you serve twice the traffic at acceptable latency?
+
+### Errors
+
+Count failures: HTTP 5xx, connection failures, timeouts, validation failures. Report error rate (errors per total requests) and error count. Distinguish between types: client errors (4xx) vs server errors (5xx).
+
+### Saturation
+
+Measure resource scarcity: CPU, memory, disk, network, queue depth. A system at 70% CPU has 30% headroom. At 90%, degradation starts. Saturation predicts when the system will fail under load.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# Golden Signals in Python using Prometheus client
+
+from prometheus_client import Counter, Histogram, Gauge
+import time
+
+# Latency: histogram with percentiles
+request_latency = Histogram(
+    'request_latency_seconds',
+    'Request latency in seconds',
+    ['endpoint', 'method'],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+)
+
+# Traffic: counter
+request_total = Counter(
+    'request_total',
+    'Total requests',
+    ['endpoint', 'method', 'status']
+)
+
+# Errors: counter by type
+errors_total = Counter(
+    'errors_total',
+    'Total errors',
+    ['endpoint', 'error_type']
+)
+
+# Saturation: gauges
+cpu_usage = Gauge(
+    'cpu_usage_percent',
+    'CPU usage percentage'
+)
+
+memory_usage = Gauge(
+    'memory_usage_percent',
+    'Memory usage percentage'
+)
+
+queue_depth = Gauge(
+    'queue_depth',
+    'Number of items in processing queue',
+    ['queue_name']
+)
+
+# Middleware to measure golden signals
+from flask import Flask, request
+import functools
+
+app = Flask(__name__)
+
+def measure_golden_signals(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        endpoint = request.endpoint or 'unknown'
+        method = request.method
+        start_time = time.time()
+
+        try:
+            result = f(*args, **kwargs)
+            status = result[1] if isinstance(result, tuple) else 200
+            return result
+        except Exception as e:
+            status = 500
+            errors_total.labels(
+                endpoint=endpoint,
+                error_type=type(e).__name__
+            ).inc()
+            raise
+        finally:
+            # Latency
+            duration = time.time() - start_time
+            request_latency.labels(
+                endpoint=endpoint,
+                method=method
+            ).observe(duration)
+
+            # Traffic
+            request_total.labels(
+                endpoint=endpoint,
+                method=method,
+                status=status
+            ).inc()
+
+    return decorated
+
+@app.route('/api/users/<int:user_id>')
+@measure_golden_signals
+def get_user(user_id):
+    user = find_user(user_id)
+    if not user:
+        return {'error': 'not found'}, 404
+    return {'id': user.id, 'name': user.name}, 200
+
+# System metrics (run periodically)
+import psutil
+
+def update_system_metrics():
+    """Update saturation metrics."""
+    cpu_usage.set(psutil.cpu_percent())
+    memory_usage.set(psutil.virtual_memory().percent)
+
+# Queries to extract golden signals
+"""
+Latency (p99):
+  histogram_quantile(0.99, request_latency_seconds)
+
+Traffic (RPS):
+  rate(request_total[1m])
+
+Error Rate:
+  rate(errors_total[1m]) / rate(request_total[1m])
+
+Saturation:
+  cpu_usage_percent
+  memory_usage_percent
+  queue_depth
+"""
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// Golden Signals using prom-client (Prometheus for Node.js)
+
+const client = require('prom-client');
+
+// Latency histogram
+const httpRequestDuration = new client.Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'HTTP request latency in seconds',
+    labelNames: ['endpoint', 'method'],
+    buckets: [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+});
+
+// Traffic counter
+const httpRequestTotal = new client.Counter({
+    name: 'http_request_total',
+    help: 'Total HTTP requests',
+    labelNames: ['endpoint', 'method', 'status']
+});
+
+// Errors counter
+const errorsTotal = new client.Counter({
+    name: 'errors_total',
+    help: 'Total errors',
+    labelNames: ['endpoint', 'error_type']
+});
+
+// Saturation gauges
+const cpuUsage = new client.Gauge({
+    name: 'cpu_usage_percent',
+    help: 'CPU usage percentage'
+});
+
+const memoryUsage = new client.Gauge({
+    name: 'memory_usage_percent',
+    help: 'Memory usage percentage'
+});
+
+const queueDepth = new client.Gauge({
+    name: 'queue_depth',
+    help: 'Number of items in queue',
+    labelNames: ['queue_name']
+});
+
+// Express middleware to measure golden signals
+function measureGoldenSignals(req, res, next) {
+    const startTime = Date.now();
+    const endpoint = req.path;
+    const method = req.method;
+
+    // Measure time when response is sent
+    res.on('finish', () => {
+        const duration = (Date.now() - startTime) / 1000;
+
+        // Latency
+        httpRequestDuration
+            .labels(endpoint, method)
+            .observe(duration);
+
+        // Traffic
+        httpRequestTotal
+            .labels(endpoint, method, res.statusCode)
+            .inc();
+
+        // Errors
+        if (res.statusCode >= 500) {
+            errorsTotal
+                .labels(endpoint, 'server_error')
+                .inc();
+        }
+    });
+
+    res.on('error', (err) => {
+        errorsTotal
+            .labels(endpoint, err.name || 'unknown')
+            .inc();
+    });
+
+    next();
+}
+
+const express = require('express');
+const app = express();
+
+app.use(measureGoldenSignals);
+
+app.get('/api/users/:userId', (req, res) => {
+    const user = findUser(req.params.userId);
+    if (!user) {
+        return res.status(404).json({ error: 'not found' });
+    }
+    res.json({ id: user.id, name: user.name });
+});
+
+// Update saturation metrics periodically
+setInterval(() => {
+    const cpus = require('os').cpus();
+    const usage = 100 - (100 * cpus.reduce((a, b) => a + b.idle, 0) / (cpus.length * cpus[0].idle));
+
+    cpuUsage.set(Math.min(100, Math.max(0, usage)));
+
+    const memUsage = process.memoryUsage();
+    const memPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+    memoryUsage.set(memPercent);
+}, 1000);
+
+// Queue monitoring
+function enqueueTask(queueName, task) {
+    queue[queueName] = queue[queueName] || [];
+    queue[queueName].push(task);
+    queueDepth.labels(queueName).set(queue[queueName].length);
+}
+
+// Prometheus metrics endpoint
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', client.register.contentType);
+    res.end(await client.register.metrics());
+});
+```
+</TabItem>
+</Tabs>
+
+## Queries for Golden Signals
+
+### Prometheus Queries
+
+```promql
+# Latency (p99 over last 5 minutes)
+histogram_quantile(0.99, rate(request_latency_seconds_bucket[5m]))
+
+# Traffic (requests per second)
+rate(request_total[1m])
+
+# Error rate (percentage of requests that error)
+rate(errors_total[1m]) / rate(request_total[1m]) * 100
+
+# Saturation
+cpu_usage_percent
+memory_usage_percent
+queue_depth
+
+# Combined: show all golden signals for a service
+{job="payment-service"}
+```
+
+## Design Review Checklist
+
+- Are you measuring latency with percentiles (p99 especially)?
+- Is traffic/throughput measured in your system?
+- Are all error types counted and categorized?
+- Is saturation measured for every scarce resource (CPU, mem, disk, queue)?
+- Do you have dashboards that surface these four signals?
+- Are thresholds set to alert on these metrics?
+- Can you quickly identify the root cause when any signal degrades?
+
+## Self-Check
+
+1. What is your p99 latency for your slowest endpoint? What causes the tail latency?
+
+2. During peak traffic, which resource hits saturation first? Is it the expected bottleneck?
+
+3. What is your error rate at baseline? Design an alert that triggers when it doubles.
+
+<Admonition type="info" title="One Takeaway">
+Don't measure everything. Measure latency, traffic, errors, and saturation. These four metrics are sufficient to understand system health, predict failure, and guide scaling decisions. Ignore everything else until these four are perfect.
+</Admonition>
+
+## Real-World Metrics Strategy
+
+### Building a Monitoring Dashboard
+
+```promql
+# Essential dashboard panels (Grafana)
+
+# Panel 1: Request Latency (p50, p99)
+- Title: "API Latency"
+- Queries:
+  - p50: histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))
+  - p99: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+- Thresholds: green (under 100ms p99), yellow (100-500ms), red (over 500ms)
+
+# Panel 2: Request Rate (RPS)
+- Title: "Requests Per Second"
+- Query: rate(http_requests_total[1m])
+- Thresholds: normal 1000 RPS, alert at 5000 RPS (high load)
+
+# Panel 3: Error Rate
+- Title: "Error Rate %"
+- Query: rate(http_requests_total{status=~"5.."}[1m]) / rate(http_requests_total[1m]) * 100
+- Thresholds: green (0%), yellow (1%), red (5%+)
+
+# Panel 4: Saturation (CPU, Memory, DB Connections)
+- CPU: node_cpu_percent
+- Memory: node_memory_percent
+- DB Connections: pg_stat_activity_count / max_connections * 100
+- Thresholds: green (under 60%), yellow (60-80%), red (80%+)
+```
+
+### Alert Rules Based on Golden Signals
+
+```yaml
+# Prometheus alerting rules
+
+groups:
+  - name: golden_signals
+    rules:
+      # High latency alert
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        annotations:
+          summary: "API latency p99 over 500ms for 5 minutes"
+
+      # Error rate spike
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m]) > 0.05 * on() rate(http_requests_total[5m])
+        for: 2m
+        annotations:
+          summary: "Error rate exceeds 5% for 2 minutes"
+
+      # Traffic spike
+      - alert: TrafficSpike
+        expr: |
+          rate(http_requests_total[5m]) > 5000
+        for: 1m
+        annotations:
+          summary: "Unusual traffic spike: over 5000 RPS"
+
+      # High saturation
+      - alert: HighCPU
+        expr: node_cpu_percent > 80
+        for: 5m
+        annotations:
+          summary: "CPU utilization over 80% for 5 minutes"
+
+      - alert: HighMemory
+        expr: node_memory_percent > 85
+        for: 5m
+        annotations:
+          summary: "Memory utilization over 85% for 5 minutes"
+```
+
+### Incident Response Using Golden Signals
+
+**Scenario**: P99 latency sudden jump from 100ms to 2 seconds
+
+**Investigation** (using golden signals):
+1. Check latency: p99 at 2 seconds (spike confirmed)
+2. Check traffic: 1000 RPS (normal, no traffic spike)
+3. Check errors: 0.1% (normal, no error spike)
+4. Check saturation:
+   - CPU: 45% (normal)
+   - Memory: 60% (normal)
+   - Database CPU: 95% (FOUND IT!)
+
+**Root cause**: Database slow query, not application issue
+
+**Fix**:
+- Add index on hot column
+- Reduce query batch size
+- Scale database (vertical or horizontal)
+
+### Metrics Per Service
+
+For microservices, measure golden signals per service:
+
+```yaml
+# Service A (Payment)
+- Latency: 50ms p99
+- Traffic: 500 RPS peak
+- Errors: 0.01%
+- Saturation: CPU 30%, Memory 40%, DB Connections 10/100
+
+# Service B (Recommendation Engine)
+- Latency: 2000ms p99 (acceptable for async)
+- Traffic: 100 RPS (lower priority path)
+- Errors: 1% (some recommendation failures tolerable)
+- Saturation: CPU 70% (uses ML models, compute-heavy)
+
+# Service C (Cache Layer)
+- Latency: 5ms p99 (very fast)
+- Traffic: 50000 RPS (handle cache misses from A, B)
+- Errors: 0% (no errors expected)
+- Saturation: Memory 80% (in-memory, memory is bottleneck)
+```
+
+### Latency Percentiles Deep Dive
+
+| Percentile | Example Value | Impact |
+|-----------|---------------|--------|
+| p50 (median) | 50ms | Half of users see this latency |
+| p95 | 150ms | 95% of users tolerate this |
+| p99 | 500ms | 1% of users experience this |
+| p99.9 | 2000ms | 0.1% of users experience this |
+
+**Why focus on p99?**
+- p50 can be misleading (most users happy, some suffering)
+- p99 catches slowness affecting 1 in 100 users
+- p99.9 is tail (network glitch, GC pause) — often acceptable
+
+**Resource allocation**:
+- Improve p50: Benefits majority, easy wins (caching)
+- Improve p99: Harder, requires root cause analysis (database indexing, hotspot)
+- Accept p99.9: Tail is often systemic (GC, network jitter)
+
+## Scaling Using Golden Signals
+
+**When to scale UP**:
+- Latency trending up (p99 going from 100ms to 200ms to 300ms)
+- Saturation consistently over 70%
+- Error rate increasing with load
+
+**When to scale OUT** (add instances):
+- Traffic increasing linearly
+- Latency stable at high traffic (enough capacity currently)
+- Saturation across multiple instances
+
+**When to scale DB** (different story):
+- Latency fine, but DB CPU high
+- Database connections at limit
+- Slow queries found in logs
+
+## Next Steps
+
+- Explore <a href="./red-use-methodologies">RED and USE methodologies ↗</a> for extending golden signals
+- Learn <a href="./dashboards-and-kpis">dashboards and KPIs ↗</a> for presenting metrics
+- Study <a href="../alerting">alerting ↗</a> to act on metrics
+- Review <a href="../capacity-and-performance-ops">capacity operations ↗</a> for using metrics to scale
+- Instrument your services with golden signals today
+- Build dashboards and set alert thresholds
+- Use metrics to guide scaling decisions
+
+## References
+
+1. Beyer, B., Jones, C., Petoff, J., & Murphy, N. C. (2016). Site Reliability Engineering. O'Reilly Media.
+2. Prometheus Metrics. (2024). Retrieved from https://prometheus.io/docs/concepts/metric_types/
+3. USE Method - Brendan Gregg. (2024). Retrieved from http://www.brendangregg.com/usemethod.html
+4. RED Method - Tom Wilkie. (2018). Retrieved from https://www.weave.works/blog/the-red-method-key-metrics-for-microservices-architecture/

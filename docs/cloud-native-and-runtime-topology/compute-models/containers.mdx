@@ -1,0 +1,728 @@
+---
+sidebar_position: 13
+title: "Containers"
+description: "Package applications with dependencies using container technology."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, sre, architect]
+keywords: [containers, Docker, Dockerfile, images, registries]
+image: /img/archman-social-card.webp
+tags: [cloud-native, containers, compute]
+hide_title: true
+---
+
+<Hero title="Containers" subtitle="Standardize application packaging with Docker and container images." size="large" />
+
+## TL;DR
+
+Container: Lightweight OS-level virtualization. Packages app + dependencies + config. Benefits: consistency (works on laptop = works in prod), portability (run on Linux/Windows/Mac), isolation (can't affect other apps). Docker: Most popular container engine. Dockerfile: Recipe for building image. Image: Snapshot (immutable). Container: Running instance of image. Registry: Storage for images (Docker Hub, ECR, GCR). Multi-stage builds reduce size. Security: scan for vulnerabilities, minimal base images, run as non-root.
+
+## Learning Objectives
+
+- Understand container concept and benefits
+- Write Dockerfiles effectively
+- Optimize image size and layers
+- Use multi-stage builds
+- Manage container registries
+- Scan for security vulnerabilities
+- Understand container networking
+- Debug running containers
+
+## Motivating Scenario
+
+Dependency hell: Python app works on dev machine, fails in CI/CD (different Python version). In prod: another Python version, different library versions. Containerization: Dockerfile specifies exact versions. Build once, run everywhere. No "works on my machine" surprises.
+
+## Core Concepts
+
+### Container vs. VM
+
+| Aspect | Container | VM |
+|--------|-----------|-----|
+| **Size** | 10-100 MB | 1-10 GB |
+| **Startup** | < 1 second | 10-30 seconds |
+| **Isolation** | Process-level | Full OS |
+| **Overhead** | Minimal | 15-20% |
+| **Best for** | Microservices | Legacy apps |
+
+### Docker Architecture
+
+```
+┌──────────────────────────────────────┐
+│ Dockerfile (recipe)                  │
+│ FROM python:3.9                      │
+│ COPY app.py /                        │
+│ RUN pip install -r requirements.txt  │
+│ CMD ["python", "app.py"]             │
+└──────────────────────────────────────┘
+                ↓
+        docker build .
+                ↓
+┌──────────────────────────────────────┐
+│ Image (snapshot/template)            │
+│ - Read-only layers                   │
+│ - All dependencies included          │
+│ - SHA256 hash for versioning         │
+└──────────────────────────────────────┘
+                ↓
+        docker run image
+                ↓
+┌──────────────────────────────────────┐
+│ Container (running instance)         │
+│ - Read-write layer on top            │
+│ - Isolated filesystem                │
+│ - Network namespace                  │
+│ - Process namespace                  │
+└──────────────────────────────────────┘
+```
+
+### Image Layers
+
+```
+Dockerfile:
+FROM python:3.9           → Layer 1: Base image
+RUN apt-get update        → Layer 2: System packages
+COPY app.py /             → Layer 3: Application code
+RUN pip install flask     → Layer 4: Python packages
+CMD ["python", "app.py"]  → Layer 5: Entrypoint
+
+Image has 5 layers (stacked, read-only)
+Container has writable layer on top
+```
+
+## Implementation
+
+<Tabs>
+<TabItem value="dockerfile" label="Dockerfile">
+
+```dockerfile
+# ❌ BAD: Large image, security issues
+FROM ubuntu:latest
+
+RUN apt-get update
+RUN apt-get install -y python3 python3-pip
+RUN apt-get install -y curl wget git
+
+COPY requirements.txt /
+RUN pip install -r /requirements.txt
+
+COPY . /app
+WORKDIR /app
+
+RUN chmod 777 /app
+
+EXPOSE 5000
+
+CMD ["python3", "app.py"]
+
+# Problems:
+# - Base image huge (77 MB vs 40 MB for python:3.9)
+# - Each RUN creates separate layer
+# - Running as root (security issue)
+# - No health check
+# - No non-root user
+---
+
+# ✅ GOOD: Optimized, secure
+# Stage 1: Build stage
+FROM python:3.9-slim AS builder
+
+WORKDIR /build
+
+# Copy requirements first (better caching)
+COPY requirements.txt .
+
+# Install dependencies in venv
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Stage 2: Runtime stage (minimal)
+FROM python:3.9-slim
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+# Copy venv from builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy application code
+COPY --chown=appuser:appuser . .
+
+# Set environment
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:5000/health')"
+
+# Switch to non-root user
+USER appuser
+
+EXPOSE 5000
+
+# Use exec form (proper signal handling)
+CMD ["python", "app.py"]
+
+# Benefits:
+# - Multi-stage: small final image (only 120 MB vs 200+)
+# - Non-root user (security)
+# - Health check (orchestration knows when ready)
+# - Proper signal handling
+# - venv isolation
+# - No-cache pip to reduce layer size
+```
+
+</TabItem>
+<TabItem value="buildkit" label="Build Optimization">
+
+```dockerfile
+# Modern Dockerfile using BuildKit
+# Enable: DOCKER_BUILDKIT=1
+
+# Use buildkit cache mount for pip
+FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+COPY . .
+
+CMD ["python", "app.py"]
+
+# Build command:
+# DOCKER_BUILDKIT=1 docker build -t myapp:1.0 .
+
+# Multi-platform build
+# docker buildx build \
+#   --platform linux/amd64,linux/arm64 \
+#   -t myapp:1.0 .
+---
+
+# Build arguments and labels
+FROM python:3.9-slim
+
+ARG VERSION=latest
+ARG BUILD_DATE
+ARG VCS_REF
+
+LABEL version=${VERSION}
+LABEL org.opencontainers.image.created=${BUILD_DATE}
+LABEL org.opencontainers.image.revision=${VCS_REF}
+LABEL org.opencontainers.image.description="My Python app"
+
+WORKDIR /app
+COPY . .
+
+RUN pip install -r requirements.txt
+
+CMD ["python", "app.py"]
+
+# Build:
+# docker build \
+#   --build-arg VERSION=1.0.0 \
+#   --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+#   --build-arg VCS_REF=$(git rev-parse --short HEAD) \
+#   -t myapp:1.0 .
+```
+
+</TabItem>
+<TabItem value="security" label="Security Best Practices">
+
+```dockerfile
+# Secure Dockerfile checklist
+
+FROM gcr.io/distroless/python3.9-debian11
+
+# Benefits of distroless:
+# - No shell (can't exec into container)
+# - No package manager (can't install backdoors)
+# - Minimal attack surface
+# - 20 MB vs 120 MB
+
+WORKDIR /app
+
+# Non-root user already in distroless
+USER nonroot:nonroot
+
+COPY --chown=nonroot:nonroot . .
+
+EXPOSE 8000
+
+CMD ["app.py"]
+---
+
+# Scan for vulnerabilities
+# docker scan myapp:latest
+# or
+# trivy image myapp:latest
+
+# Base image security updates
+# Don't pin to ubuntu:20.04 - use specific hash
+# FROM ubuntu@sha256:abc123def456...
+# Check for security updates regularly
+---
+
+# Runtime security
+# Don't run as root
+# Use read-only filesystem where possible
+# Limit capabilities
+# Use network policies
+
+# Kubernetes pod spec:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+  containers:
+  - name: app
+    image: myapp:1.0
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+  volumes:
+  - name: tmp
+    emptyDir: {}
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Example 1: Multi-Service Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  api:
+    build: ./api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://db:5432/app
+      - REDIS_URL=redis://cache:6379
+    depends_on:
+      - db
+      - cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  db:
+    image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  cache:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+### Example 2: CI/CD Container Building
+
+```yaml
+# GitHub Actions
+name: Build Docker Image
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: myrepo/myapp:${{ github.sha }}
+          cache-from: type=registry,ref=myrepo/myapp:buildcache
+          cache-to: type=registry,ref=myrepo/myapp:buildcache,mode=max
+      
+      - name: Scan for vulnerabilities
+        run: |
+          docker pull myrepo/myapp:${{ github.sha }}
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image myrepo/myapp:${{ github.sha }}
+```
+
+## Common Mistakes
+
+### Mistake 1: Huge Images
+
+```dockerfile
+# ❌ WRONG: 500 MB image
+FROM ubuntu:latest
+RUN apt-get update && apt-get install ...
+COPY . /app
+
+# ✅ CORRECT: 50 MB image
+FROM python:3.9-slim
+COPY --from=builder /opt/venv /opt/venv
+```
+
+### Mistake 2: Root User
+
+```dockerfile
+# ❌ WRONG: Runs as root
+FROM python:3.9
+COPY . /app
+CMD ["python", "app.py"]
+
+# ✅ CORRECT: Non-root
+RUN useradd -m appuser
+USER appuser
+```
+
+### Mistake 3: No Health Check
+
+```dockerfile
+# ❌ WRONG: Container starts but app not ready
+CMD ["python", "app.py"]
+
+# ✅ CORRECT: Health check
+HEALTHCHECK --interval=30s CMD curl -f http://localhost:8000/health
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "Multi-stage build used?",
+  "Non-root user specified?",
+  "Health check configured?",
+  "Minimal base image (python:3.9-slim)?",
+  "Image size optimized (< 200 MB)?",
+  "Security scan passing (trivy)?",
+  "Environment variables used?",
+  "Volume mounts documented?",
+  "Port exposure correct?",
+  "Proper signal handling (exec form)?",
+  "Caching optimized (pip, apt)?",
+  "Metadata labels added (version, created)?"
+]} />
+
+## Next Steps
+
+1. Create Dockerfile
+2. Optimize with multi-stage build
+3. Add health check
+4. Setup security scanning
+5. Create image registry account
+6. Setup CI/CD for building
+7. Push images to registry
+8. Deploy containers to orchestrator
+
+## References
+
+- <a href="https://docs.docker.com/" target="_blank" rel="nofollow noopener noreferrer">Docker Documentation ↗</a>
+- <a href="https://docs.docker.com/develop/develop-images/dockerfile_best-practices/" target="_blank" rel="nofollow noopener noreferrer">Dockerfile Best Practices ↗</a>
+- <a href="https://github.com/aquasecurity/trivy" target="_blank" rel="nofollow noopener noreferrer">Trivy Container Security ↗</a>
+
+## Container Orchestration
+
+### Running Containers
+
+Local development:
+```bash
+docker build -t myapp:1.0 .
+docker run -p 8080:8080 myapp:1.0
+```
+
+Production (Kubernetes):
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myapp:1.0
+        ports:
+        - containerPort: 8080
+```
+
+### Image Registry Management
+
+Docker Hub (free, public):
+```bash
+docker tag myapp:1.0 username/myapp:1.0
+docker push username/myapp:1.0
+```
+
+Private registry (ECR, GCR, etc):
+```bash
+aws ecr create-repository --repository-name myapp
+aws ecr get-login-password | docker login --username AWS --password-stdin 123456789.dkr.ecr.us-west-2.amazonaws.com
+
+docker tag myapp:1.0 123456789.dkr.ecr.us-west-2.amazonaws.com/myapp:1.0
+docker push 123456789.dkr.ecr.us-west-2.amazonaws.com/myapp:1.0
+```
+
+### Base Image Selection
+
+| Base Image | Size | Use Case |
+|-----------|------|----------|
+| `ubuntu:22.04` | 77 MB | When you need full tools |
+| `python:3.9` | 883 MB | Python apps |
+| `python:3.9-slim` | 125 MB | Smaller Python apps |
+| `alpine` | 7 MB | Ultra-minimal |
+| `distroless/python3.9` | 53 MB | Secure, minimal Python |
+
+Choice depends on:
+- Image size (bandwidth, storage cost)
+- Security (fewer vulnerabilities in minimal images)
+- Dependencies (does your app need what's in base image?)
+
+### Container Security Scanning
+
+Tools:
+- Trivy (open source, fast)
+- Clair (registry-integrated)
+- Snyk (detailed remediation)
+- Anchore (policy enforcement)
+
+Workflow:
+```bash
+# Local scanning
+trivy image myapp:1.0
+
+# Registry scanning (automatic)
+# ECR integrates Clair
+# GCR scans automatically
+
+# CI/CD policy
+if trivy image myapp:1.0 | grep CRITICAL; then
+  echo "Critical vulnerabilities found"
+  exit 1
+fi
+```
+
+## Container Lifecycle
+
+### Signals and Graceful Shutdown
+
+```dockerfile
+# Handle termination signals
+# SIGTERM (15): Graceful shutdown
+# SIGKILL (9): Force kill (can't catch)
+
+# Python
+import signal
+def handle_sigterm(signum, frame):
+    print("Shutting down...")
+    cleanup()
+    exit(0)
+
+signal.signal(signal.SIGTERM, handle_sigterm)
+
+# Ensure process catches signals:
+# CMD ["python", "app.py"]  # Good (PID 1)
+# CMD ["gunicorn", "app.py"]  # Also good
+
+# Avoid shell wrapper:
+# CMD ["sh", "-c", "python app.py"]  # Bad (shell is PID 1)
+```
+
+Kubernetes termination sequence:
+1. Pod receives SIGTERM
+2. App has `terminationGracePeriodSeconds` (default 30s)
+3. If still running after period, send SIGKILL
+4. Pod removed
+
+Configure graceful shutdown:
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+  - name: app
+    lifecycle:
+      preStop:
+        exec:
+          command: ["/bin/sh", "-c", "sleep 15"]
+```
+
+### Container Networking
+
+Container isolation:
+- Network namespace: Separate network stack
+- Can talk to other containers via DNS or IP
+- Port mapping: Container port → Host port
+
+Example:
+```bash
+# Expose port 8080 (inside container) to 9090 (host)
+docker run -p 9090:8080 myapp:1.0
+
+# Access from host: localhost:9090
+# Redirects to container port 8080
+```
+
+### Environment Variables and Secrets
+
+Pass configuration:
+```dockerfile
+FROM python:3.9
+ENV DATABASE_URL=postgres://localhost/myapp
+ENV LOG_LEVEL=INFO
+
+WORKDIR /app
+COPY . .
+RUN pip install -r requirements.txt
+
+CMD ["python", "app.py"]
+```
+
+Secrets (passwords, tokens):
+```bash
+# NOT in Dockerfile (baked into image!)
+# Instead:
+
+# Environment variable at runtime
+docker run -e DB_PASSWORD=$DB_PASSWORD myapp:1.0
+
+# Or file-based
+docker run -v /etc/secrets/db.password:/app/db.password myapp:1.0
+
+# Kubernetes
+kubectl create secret generic db-password --from-literal=password=$DB_PASSWORD
+# Pod mounts as env var or file
+```
+
+## Conclusion
+
+Containers enable:
+- Consistent environment (dev = prod)
+- Easy deployment (same image everywhere)
+- Resource isolation
+- Fast startup
+
+Best practices:
+- Multi-stage builds (smaller images)
+- Non-root user (security)
+- Health checks (visibility)
+- Security scanning (vulnerabilities)
+
+In production: Use orchestration (Kubernetes), registry (ECR/GCR), and monitoring.
+
+## Container Registry Best Practices
+
+### Image Tagging Strategy
+
+```
+latest     → Current stable (use in prod)
+v1.0.0     → Semantic versioning (immutable)
+staging    → Pre-release
+main       → Latest from main branch
+sha-abc123 → Specific commit (CI/CD)
+```
+
+Example:
+```bash
+docker tag myapp:latest myrepo/myapp:latest
+docker tag myapp:latest myrepo/myapp:v1.0.0
+docker tag myapp:latest myrepo/myapp:2024-02-15
+
+# Push all versions
+docker push myrepo/myapp --all-tags
+```
+
+Never use `latest` in production; use version tags.
+
+### Private Registry Security
+
+```yaml
+# Kubernetes secret for registry auth
+kubectl create secret docker-registry regcred \
+  --docker-server=myrepo.azurecr.io \
+  --docker-username=$USERNAME \
+  --docker-password=$PASSWORD
+
+# Pod references secret
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+spec:
+  imagePullSecrets:
+  - name: regcred
+  containers:
+  - name: app
+    image: myrepo.azurecr.io/myapp:1.0
+```
+
+### Image Size Reduction Techniques
+
+Reduce image size (faster pull, less storage):
+
+```dockerfile
+# ❌ Large image (200 MB)
+FROM python:3.9
+RUN apt-get install -y build-essential python3-dev
+
+# ✅ Smaller image (80 MB)
+FROM python:3.9-slim
+# Excludes build tools, reduces by 50%
+
+# ✅ Minimal image (50 MB)
+FROM python:3.9-slim
+RUN rm -rf /usr/share/doc/*
+RUN apt-get clean
+
+# ✅ Distroless (20 MB)
+FROM gcr.io/distroless/python3.9
+# No OS, no shell, no apt
+```
+

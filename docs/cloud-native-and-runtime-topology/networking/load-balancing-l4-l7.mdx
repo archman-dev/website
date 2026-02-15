@@ -1,0 +1,736 @@
+---
+sidebar_position: 15
+title: "Load Balancing: L4 vs L7"
+description: "Distribute traffic across instances using layer 4 and layer 7 load balancers."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [architect, engineer, sre]
+keywords: [load balancing, L4, L7, TCP, HTTP, traffic distribution]
+image: /img/archman-social-card.webp
+tags: [networking, cloud-native, operations]
+hide_title: true
+---
+
+<Hero title="Load Balancing: L4 vs L7" subtitle="Route traffic across instances at transport and application layers." size="large" />
+
+## TL;DR
+
+L4 (Transport): TCP/UDP level. Fast (minimal overhead), simple (round-robin, least conn). Best for: bulk data, latency-critical, non-HTTP. L7 (Application): HTTP level. Slow (overhead), smart routing (by path, hostname, header). Best for: APIs, microservices, content-based routing. L4 → L7 if you need content-based routing. Hairpin: Load balancer should not send traffic to itself. Health checks: TCP (fast) vs. HTTP (accurate). Session affinity: If needed, persist to same backend (but breaks horizontal scaling).
+
+## Learning Objectives
+
+- Understand L4 vs. L7 tradeoffs
+- Design load balancing strategies
+- Implement health checks
+- Handle session affinity
+- Debug load balancing issues
+- Optimize for latency
+- Design for high availability
+- Monitor load balancer health
+
+## Motivating Scenario
+
+API deployed to 10 instances. Random failures (some instances slower). Round-robin sends equal traffic to slow instances. Solution: L7 load balancer routes by latency percentile (least connections). Failing instances marked unhealthy. Result: 10x better latency p99.
+
+## Core Concepts
+
+### L4 vs. L7
+
+| Aspect | L4 (Transport) | L7 (Application) |
+|--------|---|---|
+| **Protocol** | TCP/UDP | HTTP/gRPC |
+| **Overhead** | Low | High |
+| **Speed** | Fast | Slower |
+| **Routing** | IP + Port | Path, hostname, header |
+| **Latency** | < 1ms | 1-5ms |
+| **Stickiness** | Hash-based | Header/cookie-based |
+| **Best for** | High throughput | APIs, microservices |
+
+### Load Balancing Algorithms
+
+| Algorithm | Behavior | Use Case |
+|-----------|----------|----------|
+| **Round-Robin** | Cycle through instances | Stateless, equal capacity |
+| **Least Connections** | Route to instance with fewest active | Varying request durations |
+| **IP Hash** | Hash client IP to instance | Session affinity (but not ideal) |
+| **Weighted** | Custom weights per instance | Different instance sizes |
+| **Latency** | Route to lowest latency instance | Geo-distributed |
+| **Random** | Random selection | Simple, distributed |
+
+## Implementation
+
+<Tabs>
+<TabItem value="l4" label="L4 (TCP Load Balancing)">
+
+```yaml
+# NGINX L4 load balancing (TCP)
+stream {
+  upstream api_backend {
+    server 10.0.1.10:8080 weight=5;  # More traffic
+    server 10.0.1.11:8080 weight=3;
+    server 10.0.1.12:8080 weight=2;
+  }
+  
+  server {
+    listen 8080;
+    proxy_pass api_backend;
+    
+    # Load balancing method
+    # (default: round-robin)
+    # least_conn: route to fewest connections
+    # hash $remote_addr: IP-based stickiness
+    
+    # Health check (TCP)
+    proxy_connect_timeout 5s;
+    proxy_socket_keepalive on;
+    
+    # Logging
+    access_log /var/log/nginx/l4.log;
+  }
+}
+---
+
+# HAProxy L4 load balancing
+global
+  maxconn 50000
+  
+defaults
+  mode tcp
+  balance leastconn  # Least connections algorithm
+  timeout connect 5000
+  timeout client 50000
+  timeout server 50000
+
+frontend api_frontend
+  bind *:8080
+  mode tcp
+  default_backend api_servers
+
+backend api_servers
+  mode tcp
+  balance leastconn
+  
+  # Health check (TCP)
+  option tcpchk
+  tcp-check connect port 8080
+  
+  server api1 10.0.1.10:8080 check inter 2000
+  server api2 10.0.1.11:8080 check inter 2000
+  server api3 10.0.1.12:8080 check inter 2000
+---
+
+# AWS Network Load Balancer (L4)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-nlb
+spec:
+  type: LoadBalancer
+  loadBalancerClass: network
+  sessionAffinity: None
+  externalTrafficPolicy: Local  # Preserve source IP
+  
+  selector:
+    app: api
+  
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  
+  healthCheckNodePort: 30000
+```
+
+</TabItem>
+<TabItem value="l7" label="L7 (HTTP Load Balancing)">
+
+```yaml
+# NGINX L7 load balancing (HTTP)
+http {
+  upstream api_backend {
+    # Least connections (good for varying request times)
+    least_conn;
+    
+    server api1.example.com:8080 weight=5;
+    server api2.example.com:8080 weight=3;
+    server api3.example.com:8080 weight=2;
+    
+    # Keepalive connections
+    keepalive 32;
+  }
+  
+  server {
+    listen 80;
+    server_name api.example.com;
+    
+    # Route by path
+    location /api/users {
+      proxy_pass http://user_backend;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+    }
+    
+    location /api/orders {
+      proxy_pass http://order_backend;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+    
+    # Default route
+    location / {
+      proxy_pass http://api_backend;
+      
+      # Headers
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      
+      # Timeouts
+      proxy_connect_timeout 5s;
+      proxy_send_timeout 60s;
+      proxy_read_timeout 60s;
+      
+      # Buffering
+      proxy_buffering on;
+      proxy_buffer_size 4k;
+      proxy_buffers 8 4k;
+      
+      # Keepalive
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+    }
+    
+    # Health check
+    location /health {
+      access_log off;
+      return 200 "healthy";
+    }
+  }
+}
+---
+
+# Kubernetes Ingress (L7)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      # Route by path
+      - path: /api/users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8080
+      
+      - path: /api/orders
+        pathType: Prefix
+        backend:
+          service:
+            name: order-service
+            port:
+              number: 8080
+      
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 8080
+
+  # TLS/HTTPS
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: api-tls-cert
+---
+
+# Session affinity (sticky sessions)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP  # Route same client to same backend
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  
+  selector:
+    app: api
+  
+  ports:
+  - port: 8080
+    targetPort: 8080
+```
+
+</TabItem>
+<TabItem value="healthcheck" label="Health Checks">
+
+```yaml
+# Kubernetes Service health checks
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+spec:
+  selector:
+    app: api
+  
+  # Defines endpoints for service
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: api
+---
+
+# Pod with health check probes
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-pod
+spec:
+  containers:
+  - name: api
+    image: api:1.0
+    ports:
+    - containerPort: 8080
+    
+    # Liveness probe: restart if fails
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    
+    # Readiness probe: remove from LB if fails
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 2
+    
+    # Startup probe: wait before health checks
+    startupProbe:
+      httpGet:
+        path: /startup
+        port: 8080
+      failureThreshold: 30
+      periodSeconds: 10
+---
+
+# L4 health check (TCP)
+backend api_servers
+  option tcpchk
+  tcp-check connect port 8080
+  
+  server api1 10.0.1.10:8080 check inter 2000 rise 2 fall 3
+  # inter: check every 2 seconds
+  # rise: healthy after 2 successful checks
+  # fall: unhealthy after 3 failed checks
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Scenario 1: Global Traffic Distribution
+
+```
+User in US:      Latency 50ms to us-east-1
+User in EU:      Latency 200ms to us-east-1
+
+L7 Load Balancer with geo-routing:
+  US traffic → us-east-1 (50ms)
+  EU traffic → eu-west-1 (50ms)
+
+Result: 4x better latency for EU users
+```
+
+### Scenario 2: Canary Deployment
+
+```
+Current: v1 (100% traffic)
+New: v2 (canary)
+
+L7 routing:
+  - 95% traffic → v1
+  - 5% traffic → v2
+  - Monitor v2 error rate
+  - If OK: increase to 50%, then 100%
+  - If errors: rollback
+
+L4 can't do this (no HTTP awareness)
+```
+
+### Scenario 3: High-Frequency Trading
+
+```
+Latency-critical workload
+Requirement: < 1ms
+
+Solution: L4 Network Load Balancer
+  - No HTTP overhead
+  - Direct TCP pass-through
+  - < 100μs added latency
+  - 50k+ concurrent connections
+
+L7 would add 1-5ms (unacceptable)
+```
+
+## Common Mistakes
+
+### Mistake 1: Session Affinity (Breaks Scaling)
+
+```
+❌ WRONG: Sticky sessions
+  User A always routes to Instance 1
+  Instance 1 fails → User A disconnected
+  Can't add instances (breaks affinity)
+
+✅ CORRECT: Stateless design
+  User state in database/cache
+  Any instance can serve user
+  Easy horizontal scaling
+```
+
+### Mistake 2: Health Check Not Matching Traffic
+
+```
+❌ WRONG: TCP health check on HTTP service
+  TCP connects, but service is hung
+  Instance marked healthy, but returns errors
+
+✓ CORRECT: HTTP health check
+  GET /health returns 200
+  Accurate detection of real problems
+```
+
+### Mistake 3: Single Load Balancer (SPOF)
+
+```
+❌ WRONG: Single LB
+  LB fails → all traffic lost
+
+✓ CORRECT: HA load balancers
+  2+ load balancers
+  VIP (virtual IP) for failover
+  Active-passive or active-active
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "L4 or L7 chosen based on use case?",
+  "Load balancing algorithm appropriate?",
+  "Health checks configured?",
+  "Timeouts set (connect, read, send)?",
+  "Connection pooling/keepalive enabled?",
+  "Session affinity justified and configured?",
+  "TLS termination at LB?",
+  "Compression enabled for static content?",
+  "Rate limiting configured?",
+  "Logging enabled for debugging?",
+  "HA setup (multiple LBs)?",
+  "Monitoring of LB health and metrics?"
+]} />
+
+## Next Steps
+
+1. Choose L4 or L7 (or both)
+2. Select load balancing algorithm
+3. Configure health checks
+4. Setup timeouts and connection pooling
+5. Test failover scenarios
+6. Monitor load balancer metrics
+7. Document routing rules
+8. Plan for scaling
+
+## References
+
+- <a href="https://www.nginx.com/" target="_blank" rel="nofollow noopener noreferrer">NGINX ↗</a>
+- <a href="http://www.haproxy.org/" target="_blank" rel="nofollow noopener noreferrer">HAProxy ↗</a>
+- <a href="https://aws.amazon.com/elasticloadbalancing/" target="_blank" rel="nofollow noopener noreferrer">AWS ELB ↗</a>
+- <a href="https://kubernetes.io/docs/concepts/services-networking/service/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes Services ↗</a>
+
+## Advanced Load Balancing
+
+### Consistent Hashing
+
+For distributed caches/databases, regular hashing breaks on server addition:
+
+```python
+import hashlib
+
+# Simple hashing (breaks on server change)
+def simple_hash(key, servers):
+    h = hash(key) % len(servers)
+    return servers[h]
+
+# Consistent hashing (adds/removes servers gracefully)
+class ConsistentHash:
+    def __init__(self, servers):
+        self.servers = sorted(servers)
+        self.hash_ring = {}
+        for server in self.servers:
+            for i in range(160):  # Virtual nodes
+                node_key = f"{server}:{i}"
+                hash_val = int(hashlib.md5(node_key.encode()).hexdigest(), 16)
+                self.hash_ring[hash_val] = server
+    
+    def get_server(self, key):
+        hash_val = int(hashlib.md5(key.encode()).hexdigest(), 16)
+        for ring_key in sorted(self.hash_ring.keys()):
+            if ring_key >= hash_val:
+                return self.hash_ring[ring_key]
+        return self.hash_ring[min(self.hash_ring.keys())]
+
+# When server added/removed, only ~1/n of keys rehash
+# vs. simple hashing which rehashes all keys
+```
+
+### Connection Draining
+
+Gracefully remove instance from load balancer:
+
+```
+Phase 1: Drain (stop sending NEW connections)
+  - LB marks instance as "draining"
+  - Existing connections continue
+  - New connections go to other instances
+
+Phase 2: Wait (existing connections finish)
+  - LB waits for existing connections
+  - Timeout if connections don't close
+  - Usually 30-60 seconds
+
+Phase 3: Remove (instance removed from LB)
+  - Instance can now restart or terminate
+  - No connection loss
+```
+
+### Content-Based Routing
+
+L7 routing rules:
+
+```yaml
+# Route by hostname
+api.example.com → api-backend
+admin.example.com → admin-backend
+cdn.example.com → cdn-backend
+
+# Route by path
+/api/v1/* → v1-backend
+/api/v2/* → v2-backend
+/admin/* → admin-backend (requires auth)
+
+# Route by header
+X-Client: mobile → mobile-optimized-backend
+X-Client: web → web-backend
+
+# Route by cookie
+session-type: premium → premium-backend
+session-type: free → free-tier-backend
+```
+
+### SSL/TLS Termination
+
+Decrypt HTTPS at load balancer:
+
+```
+Client (HTTPS) → LB (decrypt) → Backend (HTTP)
+                                  (fast, local)
+```
+
+Benefits:
+- Backends don't waste CPU on encryption
+- Certificate management centralized
+- Can inspect/modify headers
+
+Drawbacks:
+- Requires storing private key in LB
+- LB becomes security boundary
+
+Modern approach: mTLS
+```
+Client (HTTPS) → LB (HTTPS) → Backend (HTTPS)
+                  |
+              Decrypt for inspection only
+              (re-encrypt for backend)
+```
+
+## Load Balancer Monitoring
+
+### Key Metrics
+
+- **Connection count**: Active connections to backend
+- **Request latency**: Time for LB to forward + wait for response
+- **Error rate**: 5xx responses from backend
+- **Dropped connections**: LB dropped due to overload
+- **Backend health**: Number of healthy backends
+
+### Alerting
+
+```yaml
+alerts:
+- name: UnhealthyBackends
+  condition: healthy_backends < 2
+  message: "Only 2 backends healthy, risk of outage"
+
+- name: HighErrorRate
+  condition: error_rate > 0.01
+  message: "Error rate > 1%, investigate backends"
+
+- name: HighLatency
+  condition: latency_p99 > 500ms
+  message: "p99 latency > 500ms, possible overload"
+
+- name: DrainedBackends
+  condition: draining_backends > 1
+  message: "Multiple backends draining, potential issue"
+```
+
+### Performance Tuning
+
+For high throughput (>100k req/s):
+
+1. **Connection pooling**: Reuse connections to backends
+   ```
+   Without pooling: New TCP connection per request (slow)
+   With pooling: Reuse connection (fast)
+   ```
+
+2. **Keepalive timeout**: Keep connections open longer
+   ```
+   Short (60s): Quick resource cleanup, more overhead
+   Long (300s): Less overhead, higher resource usage
+   ```
+
+3. **Buffer sizes**: Match expected packet sizes
+   ```yaml
+   send_buffer_size: 64KB
+   receive_buffer_size: 64KB
+   # Adjust based on average request/response size
+   ```
+
+4. **CPU affinity**: Pin LB to CPU cores
+   ```bash
+   taskset -c 0,1,2,3 nginx
+   # Improves cache locality, reduces context switching
+   ```
+
+## Failover and Resilience
+
+### Active-Passive Failover
+
+Two load balancers, one active:
+```
+VIP: 10.0.1.100 (Virtual IP)
+  ↓
+Active LB: 10.0.1.10 (owns VIP)
+  ↓
+Backends: 10.0.2.*
+
+If Active fails → Passive takes VIP
+Clients don't notice (same IP)
+```
+
+Technologies:
+- VRRP (Virtual Router Redundancy Protocol)
+- AWS Elastic IP + Lambda failover
+- DNS failover (Route53)
+
+### Active-Active Load Balancing
+
+Both load balancers serve traffic:
+```
+LB1: 10.0.1.10 → Route A traffic
+LB2: 10.0.1.11 → Route B traffic
+
+Failure: Route traffic from failed LB to other
+```
+
+Pros: Better utilization, no single point of failure
+Cons: More complex, requires distributed coordination
+
+## Conclusion
+
+Load balancing is critical for availability:
+- L4: Fast, simple, good for TCP protocols
+- L7: Smart routing, good for HTTP
+
+Design for:
+- High availability (multiple LBs)
+- Graceful failover (connection draining)
+- Content-based routing (microservices)
+- Observability (metrics, logging)
+
+Monitor:
+- Backend health
+- Request latency
+- Error rates
+- Dropped connections
+
+Scale:
+- Spot instances for cost savings
+- Reserved instances for baseline
+- Mixed strategy for flexibility
+
+### L4 vs. L7 Decision Matrix
+
+Use L4 when:
+- Protocol: TCP, UDP, non-HTTP
+- Throughput: > 100k req/sec
+- Latency: < 1ms required
+- Examples: Gaming, DNS, NTP, custom protocols
+
+Use L7 when:
+- Protocol: HTTP(S), gRPC
+- Routing: By path, hostname, header
+- Throughput: < 100k req/sec acceptable
+- Examples: APIs, web apps, microservices
+
+### Common L7 Routing Patterns
+
+**API versioning**:
+```
+GET /api/v1/users  → v1-backend
+GET /api/v2/users  → v2-backend
+```
+
+**Feature flags**:
+```
+Header: X-Feature-Flag: experimental
+Route to experimental-backend
+```
+
+**A/B testing**:
+```
+Cookie: ab-test=group-a → a-backend
+Cookie: ab-test=group-b → b-backend
+Random → 50/50 split
+```
+
+**Tenant isolation**:
+```
+Header: X-Tenant: acme → acme-backend
+Header: X-Tenant: widgetcorp → widget-backend
+```
+

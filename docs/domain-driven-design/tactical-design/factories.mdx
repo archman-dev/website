@@ -1,0 +1,321 @@
+---
+sidebar_position: 6
+title: "Factories"
+description: "Encapsulate complex object creation logic"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 10
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [factory, object-creation, complex-initialization, factory-pattern, aggregate-creation]
+image: /img/archman-social-card.webp
+tags: [ddd, tactical-design, factories, creation-patterns, design-patterns]
+hide_title: true
+---
+
+<Hero title="Factories" subtitle="Encapsulate complex object creation logic" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Factories encapsulate complex object creation logic into dedicated objects that ensure aggregates are properly initialized and valid immediately after construction. Rather than spreading creation logic across client code or using raw constructors, factories concentrate this complexity in domain-centric methods that express intent through the ubiquitous language. Use factories when creation complexity is significant enough to warrant a separate responsibility, when you need to enforce invariants before returning an aggregate, or when multiple ways of constructing similar objects exist. Factories keep your client code clean and make creation expectations explicit.
+
+## Learning Objectives
+
+- Identify when creation complexity justifies a factory
+- Design factories using domain language and business concepts
+- Encapsulate initialization logic and validation
+- Ensure aggregates maintain invariants from construction
+- Avoid the pitfall of over-engineering simple creation
+- Test factories effectively without external dependencies
+- Recognize when not to use factories
+
+## Motivating Scenario
+
+You're building an e-commerce system where orders must be created with multiple validation steps. When an order is placed, you need to:
+1. Validate the customer exists and has payment method on file
+2. Ensure all items are in stock and have valid pricing
+3. Calculate totals including taxes, discounts, and shipping
+4. Apply business rules about minimum order amounts
+5. Set the order status to CONFIRMED
+6. Ensure the complete aggregate is valid before returning
+
+Without a factory, every caller must perform these steps and remember the correct sequence. This scatters creation logic across your codebase, making it error-prone and difficult to maintain.
+
+## Core Concepts
+
+<Figure
+  caption="Factory Pattern in Domain-Driven Design"
+  diagram={`graph TB
+    A["Client Code"] -->|creates via| F["Factory"]
+    F -->|creates| AG["Valid Aggregate"]
+    F -->|validates| V["Business Rules"]
+    V -->|ensures| INV["Invariants Maintained"]
+    AG -->|ready to use| D["Domain Logic"]
+    style F fill:#e1f5ff
+    style AG fill:#c8e6c9
+    style INV fill:#fff9c4`}
+/>
+
+**What Factories Encapsulate:**
+
+- **Complex initialization**: Multi-step setup beyond simple assignment
+- **Validation logic**: Ensuring data meets business constraints before aggregates exist
+- **Dependency injection**: Providing aggregates with required services
+- **Invariant enforcement**: Guaranteeing aggregates are valid immediately after construction
+- **Domain intent**: Expressing creation semantics in business language
+
+**Factory vs. Constructor**:
+
+- **Constructor**: Simple, direct initialization. Good for trivial objects.
+- **Factory**: Orchestrates complex creation, enforces business rules, ensures validity. Used for aggregates.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="problem" label="Without Factory">
+
+```python
+# Scattered logic, unclear sequence, error-prone
+def create_order_endpoint(request):
+    customer_id = request.customer_id
+    items = request.items
+
+    # Client must remember all steps
+    order = Order(uuid4(), customer_id)
+
+    # Validation scattered everywhere
+    for item in items:
+        product = get_product(item.product_id)
+        if not product:
+            raise InvalidProduct()
+        if product.stock < item.quantity:
+            raise InsufficientStock()
+
+        order.add_item(item.product_id, item.quantity, product.price)
+
+    # Calculation scattered
+    subtotal = sum(line.total() for line in order.items)
+    tax = subtotal * TAX_RATE
+    shipping = calculate_shipping(order.items)
+    total = subtotal + tax + shipping
+    order.total = total  # Could be invalid if total is negative!
+
+    # Status set after calculation
+    order.status = OrderStatus.CONFIRMED
+
+    # Order might be invalid at this point
+    save_order(order)
+    return order
+```
+
+</TabItem>
+<TabItem value="solution" label="With Factory">
+
+```python
+class OrderFactory:
+    def __init__(self,
+                 product_repo: ProductRepository,
+                 pricing_service: PricingService,
+                 inventory_service: InventoryService):
+        self.product_repo = product_repo
+        self.pricing_service = pricing_service
+        self.inventory_service = inventory_service
+
+    def create_confirmed_order(self, customer_id: str,
+                               items: List[CreateOrderItem]) -> Order:
+        """Create a confirmed order with full validation and calculation.
+
+        Ensures the returned order is valid and ready to use.
+        """
+        if not items:
+            raise OrderMustHaveItems()
+
+        # Step 1: Validate all items before creating order
+        order_items = []
+        for item in items:
+            product = self.product_repo.get_by_id(item.product_id)
+            if not product:
+                raise ProductNotFound(item.product_id)
+
+            # Check inventory
+            if not self.inventory_service.has_stock(
+                item.product_id, item.quantity):
+                raise InsufficientStock(item.product_id)
+
+            order_items.append(
+                OrderItem(product.id, product.name,
+                         item.quantity, product.price)
+            )
+
+        # Step 2: Create order with validated items
+        order = Order(uuid4(), customer_id)
+        for order_item in order_items:
+            order.add_item(order_item)
+
+        # Step 3: Calculate totals using pricing service
+        pricing = self.pricing_service.calculate_order_pricing(order)
+
+        if pricing.total < MINIMUM_ORDER_AMOUNT:
+            raise OrderBelowMinimumAmount(pricing.total)
+
+        order.apply_pricing(pricing)  # Ensures valid pricing structure
+
+        # Step 4: Confirm order (invariants guaranteed by this point)
+        order.confirm()
+
+        # Step 5: Return - guaranteed valid
+        return order
+
+    def create_draft_order(self, customer_id: str,
+                          items: List[CreateOrderItem]) -> Order:
+        """Create a draft order for shopping carts.
+
+        Less validation—customer can still edit before confirming.
+        """
+        # Similar validation but fewer constraints
+        order = Order(uuid4(), customer_id)
+
+        for item in items:
+            product = self.product_repo.get_by_id(item.product_id)
+            if not product:
+                continue  # Skip unavailable items in draft
+
+            order.add_item(OrderItem(
+                product.id, product.name, item.quantity, product.price
+            ))
+
+        order.set_status(OrderStatus.DRAFT)
+        return order
+
+    def create_order_from_template(self, customer_id: str,
+                                   template_id: str) -> Order:
+        """Create order from customer's saved template.
+
+        Reuses items from previous order, applies current pricing.
+        """
+        template = self.order_repo.get_template(template_id)
+        if not template:
+            raise TemplateNotFound(template_id)
+
+        items = []
+        for template_item in template.items:
+            product = self.product_repo.get_by_id(template_item.product_id)
+            items.append(CreateOrderItem(
+                product.id, template_item.quantity
+            ))
+
+        return self.create_confirmed_order(customer_id, items)
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use / Not Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Use Factories",
+    points: [
+      "Aggregate creation involves multiple validation steps",
+      "Several ways to construct similar objects exist",
+      "Creation logic is complex and domain-significant",
+      "You need to enforce business rules during construction",
+      "Client code would be cluttered with construction details",
+      "The factory provides a clearer, more expressive API"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Don't Use Factories",
+    points: [
+      "Simple objects with straightforward constructors",
+      "Value objects that are trivial to instantiate",
+      "When a constructor is perfectly clear without a factory",
+      "For every object in your domain—be selective",
+      "Just to wrap a single constructor call",
+      "When dependency injection container already handles creation"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  title="Patterns and Pitfalls"
+  sections={[
+    {
+      label: "Pitfall: Factories for Everything",
+      body: "Creating a factory for every single object, even trivial ones like a simple Address value object. This adds unnecessary indirection without meaningful encapsulation.\n\n**Fix**: Only use factories when creation complexity is significant. A simple constructor that directly assigns fields doesn't justify a factory."
+    },
+    {
+      label: "Pitfall: Anemic Factories",
+      body: "A factory that just wraps a constructor call without adding any logic. Example: `OrderFactory.create()` that simply returns `new Order(id, customerId)`.\n\n**Fix**: Factories must encapsulate meaningful logic. If there's no logic to encapsulate, use the constructor directly."
+    },
+    {
+      label: "Pattern: Multiple Creation Methods",
+      body: "A single factory with multiple methods reflecting different creation scenarios: `create_confirmed_order()`, `create_draft_order()`, `create_from_template()`. Each method expresses a different business path using domain language.\n\n**How to Use**: Name methods to describe the business scenario. This self-documents your code and makes intent explicit."
+    },
+    {
+      label: "Pattern: Factory with Dependencies",
+      body: "Factories depend on repositories, services, and other domain infrastructure to perform validation and calculation during creation. This keeps these dependencies out of aggregate constructors.\n\n**How to Use**: Inject only what's needed for creation validation. Keep aggregates dependency-light."
+    },
+    {
+      label: "Pitfall: Factories That Do Too Much",
+      body: "A factory that orchestrates operations beyond creation—calling external APIs, sending emails, updating analytics. Creation should be focused.\n\n**Fix**: Let the factory create and validate. Let application services handle post-creation orchestration."
+    ,
+      body: "A factory that orchestrates operations beyond creation—calling external APIs, sending emails, updating analytics. Creation should be focused.\n\n**Fix**: Let the factory create and validate. Let application services handle post-creation orchestration."
+    ,
+    highlightTone: "positive"
+  },
+    {
+      label: "Pattern: Factory Interface",
+      body: "Define a factory interface to allow different implementations. Useful for different creation strategies or testing different scenarios.\n\n**How to Use**: `IOrderFactory` with implementations for different business contexts or test scenarios."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is the factory creating an aggregate or just wrapping a constructor?",
+  "Does the factory encapsulate meaningful business logic?",
+  "Are factory method names expressed in domain language?",
+  "Does the factory guarantee the returned aggregate is valid?",
+  "Are dependencies minimal and only what's needed for creation?",
+  "Could client code use the aggregate constructor directly, or does factory add value?",
+  "Are invariants enforced before the aggregate is returned?",
+  "Can the factory be tested without hitting the database?",
+  "Does the factory handle all error conditions with meaningful exceptions?",
+  "Is factory complexity proportional to aggregate complexity?"
+]} />
+
+## Self-Check
+
+1. **When do you need a factory vs. a constructor?**
+   Use a factory when creation involves multiple steps, validation, or complex initialization. Use a constructor when creation is simple and direct.
+
+2. **Where should the factory live in the codebase?**
+   In the domain layer, typically in the same package as the aggregate it creates. It's part of the aggregate's public API.
+
+3. **Can client code bypass the factory and create aggregates directly?**
+   Ideally, factories should be the primary way to create complex aggregates. For simple cases, direct construction is fine. Consider marking constructors as internal if factory creation is mandatory.
+
+4. **How do you test factories without external dependencies?**
+   Factories should depend on abstractions (repositories, services). Mock these in tests. Test the factory in isolation from persistence layers.
+
+<Callout type="info">
+**One Takeaway**: Factories are valuable when creation is complex enough to deserve its own responsibility. They encode business rules, ensure invariants, and express intent through domain language. Use them judiciously—not every object needs a factory.
+</Callout>
+
+## Next Steps
+
+1. **Aggregates**: Learn the aggregate pattern that factories create
+2. **Value Objects**: Understand when value objects are easier to construct
+3. **Domain Events**: See how factories interact with event publishing
+4. **Anti-Corruption Layers**: Understand factories in legacy integration scenarios
+
+## References
+
+- Evans, E. (2003). *Domain-Driven Design*. Addison-Wesley.
+- Vernon, V. (2013). *Implementing Domain-Driven Design*. Addison-Wesley.

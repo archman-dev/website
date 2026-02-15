@@ -1,0 +1,451 @@
+---
+title: "Dependency and Supply Chain Security (SBOM, Signing)"
+sidebar_position: 4
+label: "Dependency and Supply Chain Security: SBOM and Signing"
+body: "Managing software bill of materials, verifying artifact integrity, and securing your dependency supply chain against tampering and vulnerabilities."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, security-lead, devops]
+keywords: [supply-chain, sbom, dependency-management, artifact-signing, integrity, verification, provenance, vulnerable-dependencies, software-composition-analysis, package-management]
+image: /img/archman-social-card.webp
+tags: [security, supply-chain, sbom, signing, artifact-integrity, provenance, vulnerable-dependencies, software-composition-analysis, package-management, open-source]
+hide_title: true
+---
+
+<Hero title="Dependency and Supply Chain Security" subtitle="SBOM, Signing, and Artifact Integrity" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Supply chain attacks target the weakest link: dependencies. Mitigate risk through three mechanisms: (1) comprehensive inventory using Software Bill of Materials (SBOM), (2) artifact signing and verification to ensure integrity and provenance, (3) continuous vulnerability scanning and controlled updates. A single compromised dependency can compromise entire applications; treat supply chain security as a critical control.
+
+## Learning Objectives
+
+- Understand supply chain attack vectors and real-world incidents
+- Create and maintain accurate SBOMs for compliance and risk visibility
+- Implement cryptographic signing and verification for build artifacts
+- Establish processes for detecting and responding to vulnerable dependencies
+- Design governance for third-party code and open-source risks
+
+## Motivating Scenario
+
+In 2020, the SolarWinds attack compromised over 18,000 organizations. The attacker gained access to SolarWinds' build system and inserted malicious code into updates distributed to millions of customers. The victims weren't vulnerable due to misconfiguration—they were using the software exactly as intended. The attack succeeded because:
+
+1. **No visibility into components**: Organizations didn't know what code was in SolarWinds binaries
+2. **No integrity verification**: Updates weren't cryptographically signed; no way to detect tampering
+3. **Blind trust**: Software from trusted vendors was assumed safe without verification
+
+Modern supply chain security requires explicit verification at every stage:
+- Knowing what's in your software (SBOM)
+- Verifying artifacts haven't been modified (signing)
+- Detecting when dependencies become vulnerable (scanning)
+
+## Core Concepts
+
+### The Supply Chain Attack Surface
+
+**Dependencies introduce risk across multiple vectors**:
+
+```
+┌─────────────────────────────────────┐
+│   Your Application                  │
+├─────────────────────────────────────┤
+│ Direct Dependencies (explicit)      │
+├─────────────────────────────────────┤
+│ Transitive Dependencies (implicit)  │
+├─────────────────────────────────────┤
+│ Package Repository (PyPI, npm)      │
+├─────────────────────────────────────┤
+│ Maintainer's Development Environment│
+├─────────────────────────────────────┤
+│ Maintainer's Build System           │
+└─────────────────────────────────────┘
+```
+
+Each layer can be compromised:
+- **Typosquatting**: `lessts` instead of `lodash`
+- **Abandoned packages**: Transferred to malicious maintainer
+- **Compromised credentials**: Attacker gains publishing rights
+- **Build system compromise**: Malicious code injected during build
+- **Transitive dependencies**: Vulnerable version required by indirect dependency
+
+### Software Bill of Materials (SBOM)
+
+**Definition**: An SBOM is a formal, machine-readable inventory of all components, libraries, and dependencies in an application, including versions and known vulnerabilities.
+
+**SBOM Formats**:
+
+| Format | Standard | Use Case | Machine Readable |
+|--------|----------|----------|---|
+| **SPDX** | Linux Foundation | Comprehensive, standardized | Yes (JSON, RDF, XML) |
+| **CycloneDX** | OWASP | Vulnerability-focused, lightweight | Yes (JSON, XML) |
+| **Package URL (purl)** | Industry standard | Universal package identification | Yes |
+| **Custom JSON** | Proprietary | Quick internal use | Yes |
+
+**Example SBOM Entry** (CycloneDX format):
+```json
+{
+  "components": [
+    {
+      "type": "library",
+      "name": "lodash",
+      "version": "4.17.20",
+      "purl": "pkg:npm/lodash@4.17.20",
+      "vulnerabilities": [
+        {
+          "ref": "CVE-2021-23337",
+          "severity": "high"
+        }
+    }
+}
+```
+
+### Artifact Signing and Verification
+
+**Definition**: Cryptographic signing proves an artifact's authenticity and integrity. Only the entity with the private key can create valid signatures; anyone can verify using the public key.
+
+**Signing Workflow**:
+```
+1. Developer creates artifact (binary, container image, package)
+2. Sign with private key → Creates cryptographic signature
+3. Distribute artifact + signature
+4. Recipient verifies signature using public key
+5. If valid: Artifact hasn't been modified and is from known source
+6. If invalid: Artifact is untrusted, reject it
+```
+
+**What Gets Signed**:
+- Container images (cosign, Notary)
+- Package releases (npm, PyPI, Maven)
+- Binary executables (Windows code signing)
+- Commit history (git GPG signatures)
+- Build artifacts
+
+### Provenance and Attestations
+
+**Definition**: Provenance is the complete history of where software came from—who built it, when, with what inputs, and what was the build configuration.
+
+**In-toto Framework** creates attestations:
+```
+Build Attestation:
+- Input: source code commit hash
+- Builder identity and timestamp
+- Build command invoked
+- Output: artifact hash
+- Signature from builder
+```
+
+Consumers verify the entire chain: source → build → artifact.
+
+## Practical Example
+
+### Creating and Scanning an SBOM
+
+<Tabs>
+<TabItem value="generate" label="Generate SBOM">
+
+```bash
+# Using Syft (multi-language)
+syft scan <image-or-directory> -o json > sbom.json
+
+# Using CycloneDX for Maven projects
+mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
+
+# Using pip-audit for Python
+pip install pip-audit
+pip-audit --desc > sbom.txt
+
+# Using npm for Node.js
+npm install -g npm-check-updates
+npm audit --json > sbom.json
+```
+
+Generated SBOM output:
+```json
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "components": [
+    {
+      "type": "library",
+      "name": "express",
+      "version": "4.18.1",
+      "purl": "pkg:npm/express@4.18.1",
+      "licenses": [{"license": {"name": "MIT"}}]
+    }
+}
+```
+
+</TabItem>
+<TabItem value="verify" label="Verify and Scan">
+
+```bash
+# Scan SBOM for known vulnerabilities using Grype
+grype sbom:sbom.json --output json > vulnerabilities.json
+
+# Check for specific CVE
+grype sbom:sbom.json --only-fixed
+
+# Generate supply chain attestation with cosign
+cosign sign-blob --key cosign.key sbom.json > sbom.json.sig
+
+# Verify attestation
+cosign verify-blob --key cosign.pub --signature sbom.json.sig sbom.json
+```
+
+Output showing vulnerabilities:
+```json
+{
+  "matches": [
+    {
+      "vulnerability": {
+        "id": "CVE-2021-23337",
+        "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337",
+        "severity": "high",
+        "description": "..."
+      },
+      "artifact": {
+        "name": "lodash",
+        "version": "4.17.20"
+      }
+    }
+}
+```
+
+</TabItem>
+<TabItem value="ci-cd" label="CI/CD Integration">
+
+```yaml
+# GitHub Actions example
+name: Security Scan
+on: [push, pull_request]
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # Generate SBOM
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.json
+
+      # Scan for vulnerabilities
+      - name: Scan SBOM
+        uses: anchore/grype-action@v0
+        with:
+          sbom: sbom.json
+          fail-on: high
+
+      # Sign artifact
+      - name: Sign SBOM
+        run: |
+          cosign sign-blob \
+            --key ${{ secrets.COSIGN_KEY }} \
+            sbom.json > sbom.json.sig
+
+      # Upload for compliance
+      - name: Upload to artifact store
+        run: |
+          gsutil cp sbom.json gs://artifacts/${{ github.sha }}/
+          gsutil cp sbom.json.sig gs://artifacts/${{ github.sha }}/
+```
+
+</TabItem>
+</Tabs>
+
+## Defenses and Governance
+
+### Dependency Pinning and Lock Files
+
+Prevent unexpected updates that might contain vulnerabilities:
+
+```json
+// package-lock.json (npm)
+{
+  "name": "my-app",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "node_modules/express": {
+      "version": "4.18.1",
+      "resolved": "https://registry.npmjs.org/express/-/express-4.18.1.tgz",
+      "integrity": "sha512-...",
+      "requires": {
+        "body-parser": "1.20.0"
+      }
+    }
+  }
+}
+```
+
+Lock files provide:
+- Exact version reproducibility across environments
+- Integrity hashes preventing tampering
+- Transitive dependency tracking
+
+### Vulnerability Scanning in CI/CD
+
+Automatically detect vulnerable dependencies before they reach production:
+
+```bash
+# Every commit triggers scanning
+npm audit --audit-level=moderate
+pip install safety && safety check
+cargo audit
+go list -json -m all | nancy sleuth
+```
+
+### Private Package Repositories
+
+Control and audit all dependencies:
+
+```bash
+# Artifactory, Nexus, or GitHub Package Registry
+npm config set registry https://artifacts.company.com/npm/
+pip config --user set index-url https://artifacts.company.com/pypi/
+```
+
+Benefits:
+- Mirror external repositories with caching
+- Scan packages before making available
+- Block vulnerable or unlicensed packages
+- Audit all access
+
+### License Compliance
+
+Track licenses to avoid legal liability:
+
+```bash
+# SPDX license compliance check
+fossology scan my-project/
+# or use FOSSA, Black Duck, WhiteSource
+```
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Supply Chain Security Best Practices",
+    points: [
+      "Generate SBOMs for every release and deployment",
+      "Sign all artifacts with keys held in secure vaults",
+      "Require signature verification before using artifacts",
+      "Scan dependencies on every commit automatically",
+      "Pin exact versions in lock files (reproducibility)",
+      "Use private package repositories with scanning",
+      "Maintain approved vendor lists",
+      "Audit and approve major version updates"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Common Mistakes",
+    points: [
+      "Manual dependency tracking (error-prone at scale)",
+      "Trusting package repositories without verification",
+      "No version pinning (unpredictable updates)",
+      "Scanning only at release time (late detection)",
+      "Ignoring transitive dependencies",
+      "Using unvetted community packages",
+      "No attestation or provenance tracking",
+      "Update everything immediately without testing"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase>
+  <div>
+    <h3>🎯 Secure Pattern: Automated Scanning</h3>
+    <p>Run vulnerability scanners on every commit, gate PRs on high-severity findings, track trends over time.</p>
+  </div>
+  <div>
+    <h3>⚠️ Pitfall: Manual Reviews</h3>
+    <p>Attempting to manually review each dependency for vulnerabilities is ineffective at scale and easily missed.</p>
+  </div>
+  <div>
+    <h3>🎯 Secure Pattern: Cryptographic Verification</h3>
+    <p>All distributed artifacts signed and verified before use. Prevents tampering anywhere in supply chain.</p>
+  </div>
+  <div>
+    <h3>⚠️ Pitfall: Trust on First Use</h3>
+    <p>Downloading and running code without verification assumes no compromise has occurred (SolarWinds case study).</p>
+  </div>
+  <div>
+    <h3>🎯 Secure Pattern: Lock Files</h3>
+    <p>Commit lock files to source control. Ensures reproducible builds and easy detection of unexpected changes.</p>
+  </div>
+  <div>
+    <h3>⚠️ Pitfall: Floating Versions</h3>
+    <p>Using version ranges (^1.0.0) means different builds get different code. Prevents reproducibility and debugging.</p>
+  </div>
+</Showcase>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "SBOM generated for every application and release?",
+  "SBOMs in machine-readable format (CycloneDX, SPDX)?",
+  "Transitive dependencies included in SBOM?",
+  "License information captured for compliance?",
+  "Version and source information complete?",
+  "Automated scanning on every commit?",
+  "Severity thresholds configured (gate high/critical)?",
+  "Vulnerability data sources current (NVD, GitHub, etc.)?",
+  "Process documented for responding to new vulnerabilities?",
+  "Update testing required before deployment?",
+  "All release artifacts signed with private keys?",
+  "Signing keys stored in secure vault (not in repo)?",
+  "Public keys securely distributed and rotated?",
+  "Signature verification enforced before use?",
+  "Build provenance tracked and attestable?",
+  "Approved list of vendors or package sources?",
+  "License compliance checks performed?",
+  "Private package repository with scanning?",
+  "Lock files committed to source control?",
+  "Removal process for abandoned dependencies?",
+  "SBOM generation automated in pipeline?",
+  "Vulnerability scanner runs on every commit?",
+  "Artifact signing integrated into release process?",
+  "Build attestations created and verified?",
+  "Scanning results visible to developers?"
+]} />
+
+## Self-Check
+
+- Do you know every library and version in your application right now?
+- Can you detect when a dependency becomes vulnerable within hours?
+- How would you know if a downloaded artifact had been tampered with?
+- What would you do if a critical transitive dependency had a vulnerability?
+
+:::info One Takeaway
+
+Supply chain security isn't about preventing all risk—it's about visibility and verification. Know what code is in your application, verify it hasn't been modified, and detect vulnerabilities promptly. These three controls address 90% of supply chain attacks.
+
+:::
+
+## Next Steps
+
+1. **Inventory Your Dependencies**: Generate SBOMs for all applications using Syft or CycloneDX
+2. **Set Up Scanning**: Integrate automated vulnerability scanning in your CI/CD pipeline
+3. **Implement Signing**: Start signing release artifacts and container images
+4. **Establish Governance**: Define approved package sources and update policies
+5. **Monitor Advisories**: Subscribe to vulnerability feeds for your dependencies
+
+## References
+
+- [SBOM Specification (SPDX)](https://spdx.dev/)
+- [CycloneDX Standard](https://cyclonedx.org/)
+- [NTIA Minimum Elements for SBOM](https://www.ntia.gov/files/ntia/publications/ntia_sbom_minimum_elements_report.pdf)
+- [Supply Chain Levels for Software Artifacts (SLSA)](https://slsa.dev/)
+- [In-toto Provenance Framework](https://in-toto.io/)
+- [Syft SBOM Generator](https://github.com/anchore/syft)
+- [Grype Vulnerability Scanner](https://github.com/anchore/grype)
+- [Cosign Binary Signing](https://github.com/sigstore/cosign)

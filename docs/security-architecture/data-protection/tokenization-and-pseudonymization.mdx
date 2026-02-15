@@ -1,0 +1,359 @@
+---
+sidebar_position: 5
+title: "Tokenization & Pseudonymization"
+description: "Replace sensitive data with tokens or pseudonyms for privacy and compliance"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 10
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [tokenization, pseudonymization, PII masking, data anonymization, format-preserving encryption]
+image: /img/archman-social-card.webp
+tags: [tokenization, pseudonymization, privacy, GDPR, security-architecture]
+hide_title: true
+---
+
+<Hero title="Tokenization & Pseudonymization" subtitle="Mask sensitive data while retaining usability" imageAlt="tokenization illustration" size="large" />
+
+## TL;DR
+
+**Tokenization**: Replace sensitive data (credit card 4111111111111111) with token (tok_8f3n2k9). Original data stored securely elsewhere; token useless to attacker. **Pseudonymization**: Replace identifiers with pseudonyms (user_id 5 → user_abc123). Enables analytics without revealing identity. Use when full encryption overkill but privacy critical. Compliance: GDPR treats pseudonymized data as PII; tokenized data may not.
+
+## Learning Objectives
+
+- Understand tokenization and pseudonymization differences
+- Design tokenization for payment data
+- Implement pseudonymization for analytics
+- Balance privacy with data utility
+- Meet compliance requirements (GDPR, PCI)
+
+## Motivating Scenario
+
+Scenario 1: Payment Processing
+- Credit card processor receives card numbers during transactions
+- Storing raw card numbers in application database? PCI DSS violation, liability, breach risk
+- Solution: Tokenize card numbers. Application stores only tokens (useless to attackers). Card numbers stay in secure vault. Payment processor handles detokenization.
+
+Scenario 2: Analytics on Sensitive Data
+- Analytics team needs to analyze user behavior (which features used, session length, error patterns)
+- But can't access PII (names, emails, IDs) due to privacy regulations (GDPR, CCPA)
+- Solution: Pseudonymize user IDs. Replace user_id=5 with pseudonym=user_a3f2e1d6b5c9 (deterministic hash). Analytics can correlate behavior across sessions without knowing who the user is. Data scientist never sees actual identities.
+
+## Core Concepts
+
+### Tokenization vs Pseudonymization
+
+<Vs highlight={[1]} items={[
+{
+    label: "Tokenization",
+    points: [
+      "Replace data with random token",
+      "Original stored in vault (one-way)",
+      "Token ≠ original data",
+      "Example: CC 4111 → tok_abc123",
+      "Reversible (only vault can detokenize)",
+      "Use: payment data, secrets"
+    ]
+  },
+{
+    label: "Pseudonymization",
+    points: [
+      "Replace identifier with consistent pseudonym",
+      "Derived from original (deterministic)",
+      "Same input = same pseudonym",
+      "Example: user_id 5 → user_abc123 (always)",
+      "Reversible (only with original salt)",
+      "Use: PII, analytics, research"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+### Implementation Patterns
+
+**Format-Preserving Encryption (FPE)**: Encrypt while preserving format.
+- Input: credit card 4111111111111111
+- Output: 5923847362912456 (still looks like CC, but encrypted)
+- Advantage: No schema changes, reversible
+
+**Tokenization with Vault**:
+- Input: SSN 123-45-6789
+- Vault stores: 123-45-6789 → token_xyz
+- Output: token_xyz (completely different format)
+- Database has only tokens, original in vault
+
+**Hashing for Pseudonymization**:
+- Input: email john@example.com, salt: "secret_key"
+- Pseudonym: hash(john@example.com + secret_key) = abc123
+- Output: abc123 (looks like ID, but actually hash)
+- Deterministic (same input always produces same hash)
+
+## Practical Examples
+
+<Tabs>
+<TabItem value="tokenization" label="Tokenization Example">
+
+```javascript
+// Tokenization: replace sensitive data with random token
+const crypto = require('crypto');
+
+class TokenVault {
+  constructor() {
+    this.store = new Map(); // In production: secure database
+  }
+
+  async tokenize(sensitiveData) {
+    // Generate random token (not reversible from original)
+    const token = crypto.randomBytes(16).toString('hex');
+    const key = `token_${token}`;
+
+    // Store mapping in vault (not in application)
+    this.store.set(key, {
+      data: sensitiveData,
+      createdAt: new Date(),
+      lastAccessed: new Date()
+    });
+
+    // Return only token to application
+    return token;
+  }
+
+  async detokenize(token) {
+    // Only authorized service can retrieve original
+    const key = `token_${token}`;
+    const record = this.store.get(key);
+
+    if (!record) {
+      throw new Error('Token not found');
+    }
+
+    // Update last accessed time (for audit)
+    record.lastAccessed = new Date();
+    return record.data;
+  }
+}
+
+// Usage: Payment Processing
+async function processPayment(creditCard) {
+  const vault = new TokenVault();
+
+  // 1. Tokenize card (only happens once, at payment gateway)
+  const token = await vault.tokenize(creditCard.number);
+  // vault.store has: token_abc123 → 4111111111111111
+
+  // 2. Application stores only token (safe)
+  const payment = {
+    amount: 99.99,
+    currency: 'USD',
+    cardToken: token  // Not the actual card number!
+  };
+
+  // 3. Later: payment processor detokenizes
+  const actualCard = await vault.detokenize(token);
+  // Only payment processor can retrieve
+}
+
+// Real-world flow:
+// User inputs card → Browser sends to payment gateway (Stripe, Square)
+// Payment gateway tokenizes → Application gets token
+// Application stores token (safe for PCI compliance)
+// Processor keeps vault (high security, limited access)
+```
+
+</TabItem>
+<TabItem value="pseudonymization" label="Pseudonymization Example">
+
+```javascript
+// Pseudonymization: deterministic hash for consistent identifiers
+const crypto = require('crypto');
+
+class PseudonymBuilder {
+  constructor(salt) {
+    // Salt must be secret and consistent
+    this.salt = salt;
+  }
+
+  pseudonymize(identifier) {
+    // Deterministic: same input always produces same output
+    const hash = crypto.createHash('sha256')
+      .update(identifier.toString() + this.salt)
+      .digest('hex');
+
+    // Return human-readable pseudonym
+    return `pseudonym_${hash.slice(0, 12)}`;
+  }
+}
+
+// Usage: Analytics on user data
+const pb = new PseudonymBuilder(process.env.PSEUDONYM_SALT);
+
+// Original data (what we want to protect):
+const userData = [
+  { user_id: 5, name: 'Alice Johnson', email: 'alice@example.com', feature_used: 'reports' },
+  { user_id: 7, name: 'Bob Smith', email: 'bob@example.com', feature_used: 'analytics' },
+  { user_id: 5, name: 'Alice Johnson', email: 'alice@example.com', feature_used: 'dashboard' }
+];
+
+// Pseudonymized data (safe for analytics):
+const safeData = userData.map(record => ({
+  user_pseudonym: pb.pseudonymize(record.user_id),  // user_a3f2e1d6b5c9
+  feature_used: record.feature_used
+  // name and email removed!
+}));
+
+// Result:
+// [
+//   { user_pseudonym: 'pseudonym_a3f2e1d6b5', feature_used: 'reports' },
+//   { user_pseudonym: 'pseudonym_c7d4e2f1a9', feature_used: 'analytics' },
+//   { user_pseudonym: 'pseudonym_a3f2e1d6b5', feature_used: 'dashboard' }
+// ]
+
+// Benefits:
+// - Data scientist can't see actual user identities
+// - Can still correlate records (same pseudonym = same user)
+// - Analytics questions answerable: "which features do users combine?"
+// - Complies with GDPR (treated as PII, but practical)
+
+// Key properties:
+// - Deterministic: user_id=5 always → same pseudonym
+// - Same-input-same-output enables table joins
+// - Can't reverse (can't get user_id from pseudonym without salt)
+```
+
+</TabItem>
+<TabItem value="fpe" label="Format-Preserving Encryption">
+
+```javascript
+// Format-Preserving Encryption: encrypt while preserving format
+// Credit card remains 16 digits, SSN remains 9 digits, etc.
+
+class FPEEncryption {
+  constructor(key) {
+    this.key = key;
+  }
+
+  encryptCC(plaintext) {
+    // Input:  4111111111111111
+    // Output: 5923847362912456 (still looks like CC, but encrypted)
+    // Advantage: no schema changes, looks normal
+
+    // Note: Real FPE is complex (format type, constraints)
+    // Libraries: node-ffx, libff
+    // This is simplified example
+    const encrypted = this.encrypt(plaintext);
+    return encrypted.padStart(16, '0');
+  }
+
+  decryptCC(ciphertext) {
+    // Decrypt back to original
+    return this.decrypt(ciphertext);
+  }
+
+  encrypt(plaintext) {
+    // Use actual FPE library in production
+    const crypto = require('crypto');
+    const cipher = crypto.createCipher('aes-256-cbc', this.key);
+    return cipher.update(plaintext, 'utf8', 'hex');
+  }
+
+  decrypt(ciphertext) {
+    const crypto = require('crypto');
+    const decipher = crypto.createDecipher('aes-256-cbc', this.key);
+    return decipher.update(ciphertext, 'hex', 'utf8');
+  }
+}
+
+// Usage:
+const fpe = new FPEEncryption(process.env.FPE_KEY);
+
+const originalCC = '4111111111111111';
+const encrypted = fpe.encryptCC(originalCC);  // 5923847362912456
+const decrypted = fpe.decryptCC(encrypted);    // 4111111111111111
+
+// FPE vs Tokenization:
+// FPE: Reversible, format preserved, slower, good for analytics
+// Tokenization: One-way, random format, faster, good for payment systems
+```
+
+</TabItem>
+</Tabs>
+
+## Patterns and Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Vault Placement Pitfall",
+    body: "Tokenize data but store token→original mapping in same database as tokens. If database breached, attacker can detokenize."
+  },
+  {
+    label: "Vault Isolation Pattern",
+    body: "Store mapping in separate, hardened vault with different access controls. Only authorized services can detokenize. Different teams, different networks."
+  },
+  {
+    label: "Weak Pseudonym Pitfall",
+    body: "Use predictable pseudonyms (sequential IDs, weak salt, or MD5). Attackers reverse-engineer original identifiers."
+  ,
+    body: "Use predictable pseudonyms (sequential IDs, weak salt, or MD5). Attackers reverse-engineer original identifiers."
+  ,
+    highlightTone: "positive"
+  },
+  {
+    label: "Strong Pseudonym Pattern",
+    body: "Use strong salt (random, long), strong hash (SHA-256+), ensure salt isn't compromised. Test for reversibility."
+  ,
+    body: "Use strong salt (random, long), strong hash (SHA-256+), ensure salt isn't compromised. Test for reversibility."
+  ,
+    highlightTone: "positive"
+  },
+  {
+    label: "False Anonymization Pitfall",
+    body: "Pseudonymize user IDs, but leave other identifying fields (email, phone). Quasi-identifiers expose identity."
+  },
+  {
+    label: "True Anonymization Pattern",
+    body: "Pseudonymization + encryption + aggregation + field removal. Multiple layers. Test with re-identification attacks."
+  }
+]} />
+
+## Self-Check
+
+- What's the difference between tokenization and pseudonymization?
+- Can you reverse a pseudonym if you have the salt?
+- Why is vault placement important for tokenization?
+- Can you use Format-Preserving Encryption instead of tokenization?
+- How does pseudonymization differ from anonymization?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Sensitive data types identified (CC, SSN, health records, emails)?",
+  "Tokenization used for payment/vault data?",
+  "Pseudonymization used for analytics/research?",
+  "Vault separate from application database?",
+  "Vault access controls minimal and audited?",
+  "Mapping data encrypted (not plaintext)?",
+  "Salt unique per organization, stored securely?",
+  "Hashing algorithm strong (SHA-256+, not MD5)?",
+  "Reversibility documented and restricted?",
+  "Compliance requirements mapped (PCI, GDPR, HIPAA)?",
+  "Data retention policies defined?",
+  "Audit trails for all detokenization?",
+  "Tests verify pseudonym determinism?",
+  "Key rotation schedule defined?"
+]} />
+
+## Next Steps
+
+1. **Identify sensitive data** — Catalog all PII, payment data, health records
+2. **Choose strategy** — Tokenization (payment), pseudonymization (analytics), encryption (general)
+3. **Design vault** — Separate system, restricted access, audit logging
+4. **Implement deterministically** — Ensure consistency, enable joins
+5. **Test thoroughly** — Try to reverse pseudonyms, verify vault security
+6. **Audit and maintain** — Monitor access, rotate keys, update policies
+
+## References
+
+- <a href="https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-188.pdf" target="_blank" rel="nofollow noopener noreferrer">NIST SP 800-188: De-identification and Anonymization ↗</a>
+- <a href="https://www.pcisecuritystandards.org/" target="_blank" rel="nofollow noopener noreferrer">PCI DSS Standards ↗</a>
+- <a href="https://gdpr-info.eu/art-32-gdpr/" target="_blank" rel="nofollow noopener noreferrer">GDPR Article 32: Pseudonymization ↗</a>
+- <a href="https://www.stripe.com/docs/payments/accept-a-payment/tokenization" target="_blank" rel="nofollow noopener noreferrer">Stripe: Payment Tokenization ↗</a>

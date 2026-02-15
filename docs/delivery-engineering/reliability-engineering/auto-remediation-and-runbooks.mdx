@@ -1,0 +1,378 @@
+---
+sidebar_position: 3
+title: "Auto-Remediation and Runbooks"
+description: "Fix common incidents automatically; guide complex incidents with runbooks."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [auto-remediation, runbooks, incident-response, automation, self-healing, operations]
+image: /img/archman-social-card.webp
+tags: [auto-remediation, runbooks, automation, incident-response, self-healing, operations, best-practices]
+hide_title: true
+---
+
+<Hero title="Auto-Remediation and Runbooks" subtitle="Fix common incidents automatically; guide complex incidents with runbooks." imageAlt="Remediation illustration" size="large" />
+
+## TL;DR
+
+Auto-remediation automatically fixes common incidents: disk full? Auto-delete old logs. Service down? Auto-restart. CPU spike? Auto-scale. Response time drops from 30 minutes to 30 seconds, reducing MTTR significantly.
+
+Runbooks guide humans through complex incidents with conditional logic: "if X, try Y. If Y fails, try Z. If Z fails, escalate." Junior engineers execute runbooks while seniors focus on design. Update after every incident to keep them current.
+
+## Learning Objectives
+
+- Identify safe candidates for auto-remediation
+- Implement auto-remediation with safety guardrails
+- Write step-by-step runbooks for complex incidents
+- Measure remediation impact on MTTR
+- Establish runbook update processes post-incident
+
+## Motivating Scenario
+
+Your ecommerce platform experiences a disk-full incident at 2 AM. On-call engineer receives alert at 2:03 AM, wakes up, reads logs, manually deletes old transaction files, and service recovers at 2:35 AM. Total downtime: 32 minutes. 33,000 lost transactions.
+
+With auto-remediation, the system detects disk usage >90% at 2:00 AM, automatically archives old logs to cold storage, and service continues uninterrupted. Downtime: 0 minutes. Lost transactions: 0.
+
+With a runbook, the engineer would have clear steps within 60 seconds: "check disk usage → review log retention policy → escalate if unknown files → archive or delete selectively → verify service health."
+
+## Core Concepts
+
+### Auto-Remediation Architecture
+
+<Figure>
+  {`flowchart TB
+    Alert["Alert Triggered<br/>High Resource Usage"] --> Evaluate{"Meets Remediation<br/>Criteria?"}
+    Evaluate -->|No| Escalate["Escalate to<br/>On-Call Engineer"]
+    Evaluate -->|Yes| CheckLocks{"Safeguard Checks<br/>Passed?"}
+    CheckLocks -->|No| Escalate
+    CheckLocks -->|Yes| Execute["Execute<br/>Remediation Action"]
+    Execute --> Verify{"Action<br/>Successful?"}
+    Verify -->|Yes| Resolved["Incident Resolved<br/>Log Event"]
+    Verify -->|No| Escalate
+    Escalate --> Manual["Human Reviews<br/>Runbook"]
+    Manual --> Resolved`}
+</Figure>
+
+### Good Candidates for Auto-Remediation
+
+Auto-remediation works best for **idempotent, low-risk, frequent incidents** with clear symptoms:
+
+- **Disk full**: Archive/delete old logs, rotate files, cleanup temp directories
+- **Memory leaks**: Restart service gracefully, swap in backup instance
+- **Connection pool exhaustion**: Force reconnection, cycle connections
+- **Cache expiration**: Trigger cache refresh, reload configuration
+- **Disk I/O throttling**: Rebalance workload across disks, circuit breaker
+
+### Risky Auto-Remediation (Avoid)
+
+These incidents require human judgment and risk approval:
+
+- **Data deletion**: Could lose permanent data despite safeguards
+- **Database failover**: Might promote stale replica, causing data loss
+- **Transaction rollback**: Could break consistency or cascade failures
+- **Network reconfiguration**: Could isolate systems or create asymmetric partitions
+- **Authentication token rotation**: Could break dependent services unexpectedly
+
+### Runbook Structure
+
+Effective runbooks follow decision trees with escalation paths:
+
+```
+SYMPTOM: Service returning 500 errors
+
+IMMEDIATE CHECKS:
+1. Is service responding? (curl health endpoint)
+2. Check logs for panic/crash messages
+3. Verify CPU/memory not maxed
+4. Check database connectivity
+
+IF healthy → restart service
+  - Backend: systemctl restart myservice
+  - Result: healthy? → RESOLVED
+  - Not healthy? → escalate to on-call lead
+
+IF CPU maxed → check processes
+  - Runaway process? → kill -9 <pid> → RESOLVED
+  - Expected load? → scale out or escalate
+
+IF database down → check connection
+  - Connection timeout? → check firewall rules
+  - Auth failure? → verify credentials → escalate
+
+ESCALATE TO: On-call Lead (slack #incidents)
+TIME LIMIT: 5 minutes to escalate or resolve
+```
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="prometheus" label="Prometheus Auto-Remediation" default>
+    ```yaml
+    # prometheus-rules.yml
+    groups:
+      - name: auto_remediation
+        interval: 30s
+        rules:
+          - alert: DiskUsageHigh
+            expr: node_filesystem_avail_bytes / node_filesystem_size_bytes < 0.1
+            for: 2m
+            annotations:
+              action: "auto_remediate_disk"
+
+          - alert: ServiceDown
+            expr: up{job="api"} == 0
+            for: 1m
+            annotations:
+              action: "auto_restart_service"
+
+    # alert-webhook.py - receives Prometheus alerts
+    @app.route('/webhook', methods=['POST'])
+    def handle_alert():
+        data = request.json
+        alert = data['alerts'][0]
+        action = alert['annotations']['action']
+
+        if action == 'auto_remediate_disk':
+            # Only run if safeguard checks pass
+            if is_staging() and disk_usage() > 90:
+                archive_old_logs(days=30)
+                return {"status": "remediated"}
+
+        if action == 'auto_restart_service':
+            if not is_production() or get_error_budget() > 0:
+                restart_service()
+                return {"status": "restarted"}
+
+        # Otherwise escalate
+        notify_oncall(f"Manual intervention needed: {action}")
+        return {"status": "escalated"}
+    ```
+  </TabItem>
+
+  <TabItem value="runbook" label="Incident Runbook Format">
+    ```markdown
+    # Runbook: API Service Degradation
+
+    ## ALERT: api_response_time_p99 > 1000ms
+
+    **Severity:** High | **Escalation:** 10 min
+    **Owner:** Backend team | **Slack:** #incidents
+
+    ### STEP 1: Assess Scope (2 min)
+    - Command: `kubectl get pod -l app=api -o wide`
+    - What to look for: Pod restarts, pending pods, uneven distribution
+    - Healthy: All running, no recent restarts
+    - If unhealthy: Go to STEP 3
+
+    ### STEP 2: Check Dependencies (3 min)
+    - Database: `SELECT version();` (check response time)
+    - Cache: `redis-cli ping` (check latency)
+    - Queue: `aws sqs get-queue-attributes` (check lag)
+    - If latency detected: Note service name, Go to STEP 4
+    - If healthy: Go to STEP 5
+
+    ### STEP 3: Restart Pods
+    - Command: `kubectl rollout restart deployment/api`
+    - Wait: 2 minutes for pods to stabilize
+    - Verify: Check `api_response_time_p99` metric
+    - If resolved: Go to POST-INCIDENT
+    - If not: Go to STEP 4
+
+    ### STEP 4: Scale Horizontally
+    - Current replicas: `kubectl get deploy api -o jsonpath='{.spec.replicas}'`
+    - Command: `kubectl scale deploy api --replicas=6`
+    - Wait: 3 minutes
+    - Verify: Metric improves?
+    - If yes: Go to POST-INCIDENT
+    - If no: **ESCALATE** to oncall-lead
+
+    ### STEP 5: Deep Dive (if no clear issue)
+    - Grab logs: `kubectl logs -l app=api --tail=100 | grep ERROR`
+    - Profile: Enable pprof endpoint
+    - Snapshot: Save metrics for later analysis
+    - **ESCALATE** to backend-lead
+
+    ### POST-INCIDENT
+    - [ ] Create incident summary doc
+    - [ ] Link to this runbook version
+    - [ ] Note any runbook improvements needed
+    - [ ] Assign follow-up action if needed
+    ```
+  </TabItem>
+
+  <TabItem value="golang" label="Go Auto-Remediation SDK">
+    ```go
+    package remediation
+
+    import (
+      "context"
+      "log"
+      "time"
+    )
+
+    // RemediationRule defines auto-remediation logic
+    type RemediationRule struct {
+      Name      string
+      Condition func() bool           // Should we remediate?
+      Action    func() error           // What to do
+      Safeguard func() bool           // Is it safe to execute?
+      Timeout   time.Duration
+      MaxRetries int
+    }
+
+    // Manager orchestrates auto-remediation
+    type Manager struct {
+      rules []RemediationRule
+    }
+
+    // RegisterRule adds a new remediation rule
+    func (m *Manager) RegisterRule(r RemediationRule) {
+      m.rules = append(m.rules, r)
+    }
+
+    // Execute runs remediation checks and actions
+    func (m *Manager) Execute(ctx context.Context) {
+      for _, rule := range m.rules {
+        if !rule.Condition() {
+          continue
+        }
+
+        if !rule.Safeguard() {
+          log.Printf("Safeguard failed for %s, escalating", rule.Name)
+          notifyOncall(rule.Name)
+          continue
+        }
+
+        ctxWithTimeout, cancel := context.WithTimeout(ctx, rule.Timeout)
+        defer cancel()
+
+        var err error
+        for attempt := 0; attempt < rule.MaxRetries; attempt++ {
+          err = rule.Action()
+          if err == nil {
+            log.Printf("Remediation succeeded: %s", rule.Name)
+            recordMetric("remediation_success", rule.Name)
+            break
+          }
+          time.Sleep(5 * time.Second)
+        }
+
+        if err != nil {
+          log.Printf("Remediation failed: %s - %v", rule.Name, err)
+          recordMetric("remediation_failure", rule.Name)
+          notifyOncall(rule.Name)
+        }
+      }
+    }
+
+    // Example: Register disk cleanup remediation
+    func registerDiskCleanup(m *Manager) {
+      m.RegisterRule(RemediationRule{
+        Name: "disk_cleanup",
+        Condition: func() bool {
+          usage, _ := getDiskUsagePercent()
+          return usage > 90
+        },
+        Safeguard: func() bool {
+          // Only in staging or if error budget available
+          return isStaging() || hasErrorBudget()
+        },
+        Action: func() error {
+          return archiveLogsOlderThan(30 * 24 * time.Hour)
+        },
+        Timeout: 2 * time.Minute,
+        MaxRetries: 2,
+      })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use Auto-Remediation vs Runbooks
+
+<Vs title="Auto-Remediation vs Runbooks" items={[
+{label: "Auto-Remediation", points: [
+      "Incident happens 10+ times/month",
+      "Fix is deterministic, low-risk",
+      "Problem is detected by monitoring",
+      "Safeguards can prevent bad outcomes",
+      "MTTR matters (financial impact)",
+      "Idempotent action (safe to retry)"
+    ]},
+{label: "Runbook", points: [
+      "Incident is rare or variable",
+      "Multiple paths to resolution",
+      "Requires human judgment",
+      "High-risk action (data, security)",
+      "Helps junior engineer learning",
+      "Non-deterministic conditions"
+    ]}
+]} highlight={[0, 1]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Graduated Remediation",
+      body: "Start with monitoring → logging → alerts → runbook escalation → auto-remediation. Example: CPU spike → log details → alert → try restart → if 3 restarts in 10 min, escalate."
+    },
+    {
+      label: "Pattern: Runbook-Driven Automation",
+      body: "Track which runbook steps are executed manually every incident. If one step is always taken, automate it. This converts runbooks into auto-remediation over time."
+    },
+    {
+      label: "Pitfall: Overly Aggressive Remediation",
+      body: "Auto-restart without checking if root cause is still present → infinite restart loop. Safeguard: only restart if service was running before, and success rate > 80%."
+    },
+    {
+      label: "Pitfall: Stale Runbooks",
+      body: "Runbooks describing old architecture or removed commands. Assign owner, version control, and test annually. Add 'last executed' date to every runbook."
+    },
+    {
+      label: "Pitfall: No Audit Trail",
+      body: "Auto-remediation silently fixes issue, but no log of what happened. Always log: trigger alert, condition met, action taken, result. Include in incident review."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Identify top 10 recurring incidents and map to auto-remediation or runbook",
+    "Each critical alert has corresponding runbook or auto-remediation rule",
+    "Auto-remediation includes safeguard checks (error budget, environment, locked resources)",
+    "Auto-remediation actions are idempotent and have max-retry limits",
+    "Runbooks are tested at least annually with junior engineers",
+    "Runbooks have clear escalation path and timeout (5-10 min recommended)",
+    "Auto-remediation logs all actions with timestamp, trigger, and result",
+    "Runbooks are stored in version control and linked from alert annotations",
+    "Post-incident review includes 'did we update runbooks?' as agenda item",
+    "MTTR trending shows improvement after remediation implementation"
+  ]}
+/>
+
+## Self-Check
+
+- Can a junior engineer successfully execute your most critical runbook?
+- What incidents would benefit from auto-remediation but currently require manual steps?
+- When was your runbooks last tested? Last updated?
+- Do you track which auto-remediation rules fire most often?
+- Is there an audit trail showing what auto-remediation actions took?
+
+## Next Steps
+
+1. **Week 1**: Inventory top 10 recurring incidents. Categorize as auto-remediation or runbook.
+2. **Week 2**: Write runbooks for 3 critical alerts. Include escalation path and timeout.
+3. **Week 3**: Implement 1 auto-remediation rule with safeguard checks. Monitor MTTR.
+4. **Week 4**: Schedule annual runbook review. Assign owner. Add to incident checklist.
+5. **Ongoing**: After each incident, ask "could we have prevented this with auto-remediation?"
+
+## References
+
+1. Beyer, B., et al. (2016). Site Reliability Engineering. O'Reilly Media.
+2. Forsgren, N., et al. (2018). Accelerate. IT Revolution Press.
+3. Adaptive Capacity Labs. (2018). How Complex Systems Fail. <a href="https://how.complexsystems.fail/" target="_blank" rel="nofollow noopener noreferrer">how.complexsystems.fail ↗️</a>

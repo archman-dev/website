@@ -1,0 +1,337 @@
+---
+sidebar_position: 3
+title: "Session & Token Management: JWT, Opaque, Refresh & Rotation"
+description: "Manage session lifecycles, token strategies, and secure token rotation"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [session, token, JWT, opaque token, refresh token, token rotation, stateless, cookie]
+image: /img/archman-social-card.webp
+tags: [session-management, token, JWT, stateless, security-architecture, authentication]
+hide_title: true
+---
+
+<Hero title="Session & Token Management" subtitle="Implement stateless auth, token refresh, and secure rotation" imageAlt="token illustration" size="large" />
+
+## TL;DR
+
+**Sessions** track authenticated users. **Tokens** prove identity without querying a database. **JWT (JSON Web Token)**: Self-contained, stateless, verifiable via signature. **Opaque tokens**: Reference-based, server-side lookup required, more secure against tampering. **Refresh tokens** extend sessions securely. **Rotation** replaces tokens periodically to limit damage from compromise. Use short-lived access tokens + refresh tokens for balance of security and UX.
+
+## Learning Objectives
+
+- Understand session vs token models
+- Compare JWT and opaque token trade-offs
+- Implement secure refresh token flow
+- Design token rotation strategies
+- Prevent token-based attacks (XSS, CSRF, token theft)
+
+## Motivating Scenario
+
+**Problem**: API receives 10,000 requests/sec. Database can't handle session lookups on every request. Users want to stay logged in for weeks. Attacker steals a token; it's valid forever.
+
+**Solution**: Short-lived access token (15 min) validated via signature (no DB lookup). Refresh token (7 days, httpOnly cookie) reissues access tokens. Token expires in 15 min; attacker has narrow window. User refreshes every 15 min seamlessly.
+
+## Core Concepts
+
+### Session vs Token
+
+**Traditional Sessions**:
+```
+1. User logs in → Server creates session (sid=abc123, user_id=5)
+2. Session stored in database or cache
+3. User requests resource → Sends sid cookie
+4. Server looks up session → Verifies user_id → Allows request
+5. User logs out → Server deletes session
+```
+
+**Token-Based**:
+```
+1. User logs in → Server creates token (JWT or opaque reference)
+2. Token returned to client (browser stores as cookie or localStorage)
+3. User requests resource → Sends token
+4. Server validates token (via signature or lookup) → Allows request
+5. Token expires automatically; no logout needed
+```
+
+### JWT vs Opaque Tokens
+
+**JWT (JSON Web Token)**:
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+eyJzdWIiOiI1IiwiZXhwIjoxNjAxMDAwMDAwfQ.
+TJVA95OrM7E2cBab30RMHrHDcEfxjoYZgeFONFh7HgQ
+
+Decoded: { sub: "5", exp: 1601000000, email: "user@example.com" }
+```
+
+Signature verifies token hasn't been tampered with. Server doesn't need database lookup.
+
+**Opaque Token**:
+```
+srv_live_MjU3NTk4MzU2NjI4NTUzNjozOmV1LWNlbnRyYWw
+```
+
+Just a reference string. Server looks it up in Redis/DB to get user_id and claims.
+
+<Vs items={[
+{
+    label: "JWT",
+    points: [
+      "Self-contained, no DB lookup needed",
+      "Stateless, scales horizontally",
+      "Can't revoke immediately (expires eventually)",
+      "Payload visible (base64), don't put secrets",
+      "Larger tokens (size matters for cookies)"
+    ]
+  },
+{
+    label: "Opaque Token",
+    points: [
+      "Reference-based, DB lookup required",
+      "Stateful, requires token store",
+      "Can revoke immediately",
+      "Payload hidden from client",
+      "Smaller tokens"
+    ]
+  }
+]} />
+
+### Refresh Token Flow
+
+```
+1. User logs in with password
+   → Server issues: access_token (15 min), refresh_token (7 days)
+
+2. User makes API request
+   → Sends access_token
+   → Server validates via signature (fast, no DB)
+
+3. After 15 min, access_token expires
+   → Client auto-sends refresh_token to /refresh endpoint
+   → Server validates refresh_token (checks DB/revocation list)
+   → Server issues new access_token (and optionally new refresh_token)
+
+4. If refresh_token stolen, attacker can forge new access_tokens
+   → Mitigation: rotation (see below), revocation list
+
+5. User logs out
+   → Client discards tokens
+   → Server adds refresh_token to revocation list (optional)
+```
+
+### Token Rotation
+
+Every time a refresh token is used, issue a new refresh token and revoke the old one.
+
+```
+Initial: user has token_v1 (7 days)
+Day 1, minute 20: Refresh → Issue token_v2, revoke token_v1
+Day 2, minute 40: Refresh → Issue token_v3, revoke token_v2
+...
+Attacker steals token_v2 on day 1
+Day 3: Attacker tries to use token_v2 → Revoked, access denied
+       System detects reuse of old token → Breach alert
+```
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="jwt-auth" label="JWT Flow" default>
+    ```javascript
+    // Login: issue JWT
+    function login(email, password) {
+      const user = validateCredentials(email, password);
+      if (!user) return null;
+
+      const accessToken = jwt.sign(
+        { sub: user.id, email: user.email },
+        process.env.JWT_SECRET,
+        { expiresIn: '15m' }
+      );
+
+      const refreshToken = jwt.sign(
+        { sub: user.id, type: 'refresh' },
+        process.env.REFRESH_SECRET,
+        { expiresIn: '7d' }
+      );
+
+      return { accessToken, refreshToken };
+    }
+
+    // Request: validate JWT
+    function authorize(req) {
+      const token = req.headers.authorization?.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        return true;
+      } catch (e) {
+        return false; // Invalid or expired
+      }
+    }
+
+    // Refresh: issue new access_token
+    app.post('/refresh', (req, res) => {
+      const { refreshToken } = req.body;
+      try {
+        const decoded = jwt.verify(refreshToken, process.env.REFRESH_SECRET);
+        const newAccessToken = jwt.sign(
+          { sub: decoded.sub, email: getEmail(decoded.sub) },
+          process.env.JWT_SECRET,
+          { expiresIn: '15m' }
+        );
+        res.json({ accessToken: newAccessToken });
+      } catch (e) {
+        res.status(401).json({ error: 'Invalid refresh token' });
+      }
+    });
+    ```
+  </TabItem>
+
+  <TabItem value="rotation" label="Rotation Strategy">
+    ```javascript
+    // Rotation: each refresh issues new refresh token
+    app.post('/refresh', (req, res) => {
+      const { refreshToken } = req.body;
+
+      // Verify token not revoked
+      if (isRevoked(refreshToken)) {
+        res.status(401).json({ error: 'Token revoked (breach detected)' });
+        return;
+      }
+
+      try {
+        const decoded = jwt.verify(refreshToken, process.env.REFRESH_SECRET);
+
+        // Issue new tokens
+        const newAccessToken = jwt.sign(
+          { sub: decoded.sub },
+          process.env.JWT_SECRET,
+          { expiresIn: '15m' }
+        );
+        const newRefreshToken = jwt.sign(
+          { sub: decoded.sub, type: 'refresh', version: decoded.version + 1 },
+          process.env.REFRESH_SECRET,
+          { expiresIn: '7d' }
+        );
+
+        // Revoke old refresh token
+        revokeToken(refreshToken);
+        saveToken(newRefreshToken);
+
+        res.json({
+          accessToken: newAccessToken,
+          refreshToken: newRefreshToken
+        });
+      } catch (e) {
+        res.status(401).json({ error: 'Invalid refresh token' });
+      }
+    });
+    ```
+  </TabItem>
+
+  <TabItem value="cookie" label="Secure Cookie Storage">
+    ```javascript
+    // Recommended: httpOnly, Secure, SameSite cookies
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,        // JS can't access (prevents XSS theft)
+      secure: true,          // HTTPS only
+      sameSite: 'Strict',    // Not sent on cross-origin (prevents CSRF)
+      maxAge: 15 * 60 * 1000 // 15 min
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/api/refresh' // Only sent to refresh endpoint
+    });
+
+    // NOT RECOMMENDED: storing tokens in localStorage
+    // localStorage.setItem('token', accessToken); // Vulnerable to XSS
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use JWT When",
+    points: [
+      "Microservices (no shared session store)",
+      "Mobile apps (API-driven)",
+      "Stateless, scalable architecture",
+      "High request volume (no DB lookups)",
+      "Cross-domain requests (CORS)"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use Opaque Tokens When",
+    points: [
+      "Immediate revocation required",
+      "Session store available (Redis, DB)",
+      "Monolithic application",
+      "Sensitive data in token claims",
+      "Willing to pay DB lookup cost"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+**Pattern**: Store sensitive data (SSN, API key) in database, not JWT. JWT is visible (base64 decoded).
+
+**Pattern**: Short access token (5-15 min) + long refresh token (7-30 days). Balances security and UX.
+
+**Pitfall**: Refresh token in localStorage. XSS attack steals it. Use httpOnly cookies instead.
+
+**Pitfall**: No token rotation. If refresh token leaked, attacker has 7 days of access.
+
+**Pattern**: Revocation list for critical cases (user deleted, password changed). Check on each /refresh.
+
+**Pitfall**: Storing tokens in URL or query params. Logged in server logs and browser history. Use headers or cookies.
+
+## Design Review Checklist
+
+- [ ] Token type selected (JWT or opaque based on requirements)
+- [ ] Access token lifetime: 5-15 minutes
+- [ ] Refresh token lifetime: 7-30 days
+- [ ] Token rotation implemented (each refresh issues new token)
+- [ ] Tokens stored securely (httpOnly cookies, not localStorage)
+- [ ] Token signature verified (JWT) or revocation checked (opaque)
+- [ ] Logout invalidates refresh token (revocation list)
+- [ ] No sensitive data in JWT payload
+- [ ] HTTPS enforced (tokens vulnerable to interception)
+- [ ] CSRF protection enabled (SameSite cookies)
+- [ ] Refresh endpoint rate-limited (prevent brute force)
+- [ ] Audit log captures token lifecycle events
+
+## Self-Check
+
+- Why would you use short-lived access tokens with refresh tokens instead of one long-lived token?
+- What's the attack scenario if refresh tokens aren't rotated?
+- Why shouldn't you store tokens in localStorage?
+
+:::info One Takeaway
+Short access token + rotated refresh token = security that survives token theft with minimal impact.
+
+:::
+
+## Next Steps
+
+- Read **Secrets Management** for protecting API keys and refresh tokens
+- Study **CSRF & CORS** for preventing token-based attacks
+- Explore **Audit Logging** for tracking token lifecycle
+
+## References
+
+- JWT (RFC 7519)
+- OAuth 2.0 Bearer Token Usage (RFC 6750)
+- OWASP Session Management Cheat Sheet
+- Token Storage Security (OWASP)

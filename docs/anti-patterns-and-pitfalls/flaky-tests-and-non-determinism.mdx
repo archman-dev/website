@@ -1,0 +1,370 @@
+---
+sidebar_position: 14
+title: "Flaky Tests and Non-Determinism"
+description: "Tests that pass sometimes, fail other times due to timing, randomness, or shared state."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 25
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, qa]
+keywords: [anti-pattern, flaky-tests, non-determinism, test-reliability, testing-practices]
+image: /img/archman-social-card.webp
+tags: [anti-pattern, flaky-tests, testing, non-determinism, reliability]
+hide_title: true
+---
+
+<Hero
+  title="Flaky Tests and Non-Determinism"
+  subtitle="Tests that pass sometimes, fail other times. Destroys confidence in CI/CD. Fix the root cause."
+  imageAlt="Flaky Tests and Non-Determinism illustration"
+  size="large"
+/>
+
+## TL;DR
+
+**Flaky tests** pass sometimes, fail other times. Destroys trust in CI. Root causes: timing (async not awaited), shared state (tests affect each other), randomness (uncontrolled), external systems (network timeouts). Fix: isolate data (each test owns its data), determinism (seed RNG, mock time), async handling (wait/poll not sleep). Run tests repeatedly, in different orders, in parallel. If a test fails intermittently, fix it immediately—don't ignore it. Flaky tests are worse than no tests.
+
+## Root Causes
+
+<Tabs>
+  <TabItem value="timing" label="Timing Issues">
+
+**Problem:** Tests depend on specific timing. Thread sleeps, async operations, race conditions.
+
+```python
+# BAD: Depends on timing
+def test_async_operation():
+    result = async_operation()
+    time.sleep(1)  # Hope operation completes in 1 second
+    assert result == expected
+    # Sometimes: operation takes 1.1 seconds, test fails
+
+# GOOD: Wait for condition
+def test_async_operation():
+    result = async_operation()
+    wait_until(lambda: result_is_ready(), timeout=5)  # Poll until ready
+    assert result == expected
+
+# GOOD: Use async/await
+async def test_async_operation():
+    result = await async_operation()
+    assert result == expected  # Automatically waits
+```
+
+  </TabItem>
+
+  <TabItem value="shared-state" label="Shared State">
+
+**Problem:** Tests modify shared state. Test A creates user "Alice". Test B modifies Alice. Test A expects unmodified Alice, fails.
+
+```python
+# BAD: Shared test database
+class TestUser:
+    def test_create_user(self):
+        User.create(name="Alice")
+        users = User.all()
+        assert len(users) == 1  # Fails if other tests left data
+
+    def test_delete_user(self):
+        user = User.all()[0]  # Assumes previous test created exactly 1
+        user.delete()
+        # Fails if test_create_user didn't run first
+
+# GOOD: Each test isolated
+class TestUser:
+    def setup_method(self):
+        db.create_all()  # Fresh database
+
+    def teardown_method(self):
+        db.drop_all()  # Clean up
+
+    def test_create_user(self):
+        User.create(name="Alice")
+        users = User.all()
+        assert len(users) == 1  # Always passes
+
+    def test_delete_user(self):
+        User.create(name="Bob")
+        users = User.all()
+        assert len(users) == 1
+        users[0].delete()
+        users = User.all()
+        assert len(users) == 0  # Always passes
+```
+
+  </TabItem>
+
+  <TabItem value="randomness" label="Randomness">
+
+**Problem:** Tests use random data, don't seed RNG. Same test fails randomly.
+
+```python
+# BAD: Uncontrolled randomness
+def test_shuffle():
+    data = [1, 2, 3, 4, 5]
+    shuffled = shuffle(data)  # Random every time
+    assert shuffled != data
+    # Sometimes passes, sometimes fails (if shuffle returns original)
+
+# GOOD: Seed RNG
+def test_shuffle():
+    random.seed(42)  # Same seed = same result
+    data = [1, 2, 3, 4, 5]
+    shuffled = shuffle(data)
+    assert shuffled == [3, 1, 4, 5, 2]  # Deterministic
+
+# GOOD: Use factory with seed
+def test_user_factory():
+    Faker.seed(42)  # Deterministic fake data
+    user1 = UserFactory()
+    assert user1.name == "John Doe"  # Same name every time
+
+    Faker.seed(42)  # Reset seed
+    user2 = UserFactory()
+    assert user2.name == user1.name  # Same
+```
+
+  </TabItem>
+
+  <TabItem value="external-systems" label="External Systems">
+
+**Problem:** Tests depend on network, database, API calls. External systems timeout or fail randomly.
+
+```python
+# BAD: Calls real API
+def test_payment():
+    response = requests.get('https://stripe.example.com/api')  # Real API
+    assert response.status_code == 200
+    # API timeout or network error = test fails
+
+# GOOD: Mock external API
+def test_payment(mock_stripe):
+    mock_stripe.return_value = {'status': 'success'}
+    response = call_payment_api()
+    assert response.status_code == 200  # Always passes
+
+# GOOD: Use containers for services
+# Integration tests: Docker container for PostgreSQL
+# Fast, reliable, isolated
+@pytest.fixture
+def postgres():
+    with testcontainers.PostgresContainer() as postgres:
+        yield postgres
+
+def test_database_query(postgres):
+    # Fresh database, no shared state, reliable
+    db = connect(postgres.get_connection_url())
+    db.execute("INSERT INTO users VALUES (1, 'Alice')")
+    result = db.execute("SELECT * FROM users")
+    assert len(result) == 1
+```
+
+  </TabItem>
+
+  <TabItem value="clock-dependency" label="Clock Dependencies">
+
+**Problem:** Tests assume specific time. "Create user, check creation_date == today".
+
+```python
+# BAD: Depends on current time
+def test_user_creation_date():
+    user = User.create(name="Alice")
+    assert user.created_at.date() == datetime.now().date()  # Flaky at midnight!
+    # If test runs at 23:59:59 and completes after midnight, fails
+
+# GOOD: Mock time
+from unittest.mock import patch
+
+def test_user_creation_date():
+    with patch('datetime.datetime') as mock_datetime:
+        mock_datetime.now.return_value = datetime(2025, 2, 14, 10, 0, 0)
+        user = User.create(name="Alice")
+        assert user.created_at == datetime(2025, 2, 14, 10, 0, 0)  # Always passes
+
+# GOOD: Use fixed time in test
+def test_user_creation_date():
+    test_time = datetime(2025, 2, 14, 10, 0, 0)
+    user = User.create(name="Alice", created_at=test_time)
+    assert user.created_at == test_time
+```
+
+  </TabItem>
+</Tabs>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: Flaky Test Ignored",
+    body: "Test fails randomly. Team ignores it ('It's just flaky, we all know'). Bugs hide in the noise.",
+  },
+  {
+    label: "Anti-Pattern: Tests Share Database",
+    body: "All tests use same database. Test A creates data. Test B sees it. Order-dependent tests. Parallel run fails.",
+  },
+  {
+    label: "Anti-Pattern: Sleep Instead of Wait",
+    body: "test.sleep(5) to wait for async operation. Sometimes operation takes 5.1s. Test fails.",
+  },
+  {
+    label: "Anti-Pattern: Test Order Dependent",
+    body: "Tests must run in specific order. Run out of order = failures. Can't parallelize.",
+  },
+  {
+    label: "Pattern: Isolated Test Data",
+    body: "Each test creates own data, cleans up after. Order-independent. Can parallelize.",
+  },
+  {
+    label: "Pattern: Deterministic Tests",
+    body: "Same seed for RNG, mocked time, mocked external calls. Same test = same result.",
+  },
+  {
+    label: "Pattern: Async/Await, Not Sleep",
+    body: "Tests properly await async operations. No guessing about timing.",
+  },
+  {
+    label: "Pattern: Fix Flaky Tests Immediately",
+    body: "Flaky test discovered? Stop. Fix it now. Don't ignore it. Flaky test = broken trust.",
+  },
+]} />
+
+## Root Cause Fixes
+
+### Isolation
+
+Each test creates own data, no shared state:
+
+```python
+@pytest.fixture(autouse=True)
+def isolate_database():
+    """Isolate each test in its own transaction."""
+    db.begin()
+    yield
+    db.rollback()  # Undo all changes
+
+# Or: in-memory database
+@pytest.fixture
+def db():
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE users (id INT, name TEXT)")
+    yield db
+    db.close()  # Destroyed after test
+```
+
+### Determinism
+
+No randomness, controlled time:
+
+```python
+# Seed RNG
+random.seed(42)
+Faker.seed(42)
+
+# Mock time
+@patch('datetime.datetime.now')
+def test_with_mocked_time(mock_now):
+    mock_now.return_value = datetime(2025, 2, 14, 10, 0, 0)
+    # Test runs with fixed time
+
+# Mock random
+@patch('random.choice')
+def test_with_mocked_random(mock_choice):
+    mock_choice.return_value = 'A'
+    # Test gets deterministic random behavior
+```
+
+### Async Handling
+
+Properly await or poll:
+
+```python
+# Good: async/await
+async def test_async():
+    result = await operation()  # Waits automatically
+    assert result == expected
+
+# Good: polling with timeout
+def test_async_with_poll():
+    operation()  # Start async
+    for _ in range(50):  # Poll 50 times
+        if check_result():
+            assert True
+            return
+        time.sleep(0.1)  # 100ms between checks
+    assert False, "Operation never completed"
+
+# Good: Event/condition variable
+def test_async_with_event():
+    event = threading.Event()
+    def callback():
+        event.set()
+    operation(callback)
+    assert event.wait(timeout=5)  # Wait up to 5s
+```
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Do any tests use hardcoded sleep() instead of wait/poll?",
+  "Are tests isolated (each has own data, no shared state)?",
+  "Do tests control randomness (seeded RNG)?",
+  "Do tests mock external systems (API, database)?",
+  "Are tests properly awaiting async operations?",
+  "Do tests mock or control time (not depend on current time)?",
+  "Can tests run in parallel without interference?",
+  "Can tests run in any order (not order-dependent)?",
+  "Are flaky tests fixed immediately (not ignored)?",
+  "Do tests run multiple times to detect flakiness?",
+  "Are fixtures cleanup properly (even on failure)?",
+  "Are environment variables controlled (not assumed)?",
+  "Are thread timing dependencies eliminated?",
+  "Are tests fast (< 1 second for unit tests)?",
+  "Are test failures reproducible (same failure every time)?",
+]} />
+
+## Detection & Fix Process
+
+1. **Detect:** Run tests 100 times. Any intermittent failures = flaky.
+2. **Isolate:** Run flaky test alone. Does it fail? If yes, test is broken. If no, it's order-dependent.
+3. **Investigate:** Review test code for: sleep(), shared state, randomness, external calls, time assumptions.
+4. **Fix:** Apply pattern from above (isolation, determinism, async handling).
+5. **Verify:** Run test 100 times in random order. All pass? Done.
+
+```bash
+#!/bin/bash
+# Detect flaky tests
+
+for i in {1..100}; do
+    pytest test_file.py::test_flaky --tb=short
+    if [ $? -ne 0 ]; then
+        echo "FAILED on run $i"
+        exit 1
+    fi
+done
+echo "Test passed 100 times - reliable"
+```
+
+## Self-Check
+
+1. **Have you ever seen a test pass, then fail, then pass?** If yes, you have a flaky test.
+2. **Do you ignore intermittent test failures?** If yes, fix them. Flaky = broken.
+3. **Do your tests depend on order?** If yes, they're fragile.
+4. **Do tests use sleep()?** If yes, replace with wait/poll.
+5. **Can you parallelize your tests?** If no, you have shared state.
+
+## Next Steps
+
+1. **Audit test suite** — Run tests 10 times. Detect any failures.
+2. **Isolate failing tests** — Which tests are flaky?
+3. **Fix root cause** — Use patterns above (isolation, determinism, async).
+4. **Test multiple ways** — Random order, parallel, repeated runs.
+5. **Monitor in CI** — Flag flaky tests, don't merge until fixed.
+6. **Document** — Add comment explaining fix.
+
+## References
+
+1. <a href="https://martinfowler.com/articles/testing-strategies.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Testing Strategies ↗️</a>
+2. <a href="https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings" target="_blank" rel="nofollow noopener noreferrer">Google Python Style Guide: Testing ↗️</a>
+3. <a href="https://docs.pytest.org/en/stable/fixture.html" target="_blank" rel="nofollow noopener noreferrer">Pytest: Fixtures ↗️</a>
+4. <a href="https://realpython.com/python-mock-library/" target="_blank" rel="nofollow noopener noreferrer">Real Python: Mocking ↗️</a>
+---

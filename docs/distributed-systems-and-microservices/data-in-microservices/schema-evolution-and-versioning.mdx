@@ -1,0 +1,482 @@
+---
+sidebar_position: 7
+title: "Schema Evolution and Versioning"
+description: "Evolve data schemas safely without breaking clients as systems change over time."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [schema-evolution, versioning, backward-compatibility, forward-compatibility, data-migration, contract-evolution, api-versioning]
+image: /img/archman-social-card.webp
+tags: [microservices, data-management, compatibility, evolution, deployment, best-practices, operational-excellence, architecture, system-design, patterns]
+hide_title: true
+---
+
+<Hero title="Schema Evolution and Versioning" subtitle="Evolve data schemas safely without breaking clients as systems change over time." imageAlt="Schema evolution illustration" size="large" />
+
+## TL;DR
+
+Systems evolve: fields are added, removed, renamed. With monoliths, you deploy code and schema together. With microservices, different services update at different times—old versions coexist with new versions. Design schemas for backward compatibility: accept new fields you don't recognize, provide defaults for missing optional fields. Version your APIs/events explicitly. Use feature flags to roll out schema changes gradually. Treat schema evolution as a deployment process: add new fields/columns first (all services ignore unknowns), then deploy code that uses them, then remove deprecated fields only after all clients are upgraded. This requires coordination but ensures zero-downtime deployments.
+
+## Learning Objectives
+
+- Design schemas that evolve without breaking clients
+- Implement backward and forward compatibility
+- Version APIs and events to manage compatibility
+- Deploy schema changes safely with feature flags
+- Handle field removal and renaming
+- Plan gradual deprecation of schema elements
+
+## Motivating Scenario
+
+A service adds a required field "region" to orders. The schema changes: orders now require a region. But existing code doesn't provide regions. Old clients reading orders without region fail parsing. You need zero-downtime deployment: new code handles both with-and-without-region cases. How do you manage this across distributed services?
+
+## Core Concepts
+
+### Backward Compatibility
+
+New code must understand old data. When you add a field, make it optional with a default. When you read old events without the field, use the default. This lets new code handle data created by old code.
+
+### Forward Compatibility
+
+Old code must handle data from new code. When old code reads a message from new code with unknown fields, it should ignore them rather than crash. This lets old code tolerate upgrades.
+
+### Schema Versioning
+
+Explicitly version schemas: message v1, v2, etc. Receivers check the version and handle accordingly. This is clearer than implicit compatibility assumptions.
+
+### Gradual Rollout
+
+Don't deploy schema changes all at once. Add fields first (backward compatible), deploy new code that uses them, mark old fields deprecated, wait for clients to upgrade, then remove deprecated fields. This takes time but ensures safety.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Breaking schema change
+# Old schema
+class Order:
+    def __init__(self, order_id, user_id, items):
+        self.order_id = order_id
+        self.user_id = user_id
+        self.items = items
+
+# New schema adds required field
+class Order:
+    def __init__(self, order_id, user_id, items, region):  # region is required
+        self.order_id = order_id
+        self.user_id = user_id
+        self.items = items
+        self.region = region
+
+# Old code creating orders without region breaks
+# Old data in database doesn't have region field
+
+# ✅ EXCELLENT - Backward compatible schema evolution
+from dataclasses import dataclass, field
+from typing import Optional
+
+@dataclass
+class OrderV2:
+    order_id: str
+    user_id: str
+    items: list
+    region: Optional[str] = None  # Optional with default
+    schema_version: int = 2
+
+    @classmethod
+    def from_dict(cls, data):
+        """Parse from dict, handling both old and new formats"""
+        return cls(
+            order_id=data['order_id'],
+            user_id=data['user_id'],
+            items=data['items'],
+            region=data.get('region'),  # Default to None if missing
+            schema_version=data.get('schema_version', 1)
+        )
+
+    def to_dict(self):
+        """Serialize with version"""
+        return {
+            'order_id': self.order_id,
+            'user_id': self.user_id,
+            'items': self.items,
+            'region': self.region,
+            'schema_version': self.schema_version
+        }
+
+# Gradual rollout process
+def handle_order_creation(order_data):
+    """Accept both old and new formats"""
+    # Version 1: without region
+    if 'region' not in order_data:
+        order_data['region'] = None  # Default value
+
+    # Version 2: with region
+    order = OrderV2.from_dict(order_data)
+
+    # Use region if provided, otherwise use user's default region
+    region = order.region or get_default_region(order.user_id)
+
+    db.insert('orders', {
+        **order.to_dict(),
+        'region': region
+    })
+
+# Event versioning
+@dataclass
+class OrderCreatedEvent:
+    event_type: str = "OrderCreated"
+    schema_version: int = 2
+    order_id: str = ""
+    user_id: str = ""
+    items: list = field(default_factory=list)
+    region: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data):
+        """Handle both v1 and v2 events"""
+        version = data.get('schema_version', 1)
+
+        if version == 1:
+            # Upcasting: v1 to v2
+            return cls(
+                order_id=data['order_id'],
+                user_id=data['user_id'],
+                items=data['items'],
+                region=None,  # v1 doesn't have region
+                schema_version=2
+            )
+        else:
+            return cls(
+                order_id=data['order_id'],
+                user_id=data['user_id'],
+                items=data['items'],
+                region=data.get('region'),
+                schema_version=2
+            )
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Breaking changes
+type OrderV1 struct {
+    OrderID string `json:"order_id"`
+    UserID  string `json:"user_id"`
+    Items   []Item `json:"items"`
+}
+
+// New version makes region required
+type OrderV2 struct {
+    OrderID string `json:"order_id"`
+    UserID  string `json:"user_id"`
+    Items   []Item `json:"items"`
+    Region  string `json:"region"`  // Required!
+}
+
+// V1 clients creating orders break. V1 data in DB missing region.
+
+// ✅ EXCELLENT - Backward compatible evolution
+type OrderV2 struct {
+    OrderID       string   `json:"order_id"`
+    UserID        string   `json:"user_id"`
+    Items         []Item   `json:"items"`
+    Region        *string  `json:"region,omitempty"`  // Optional
+    SchemaVersion int      `json:"schema_version"`
+}
+
+func (o *OrderV2) UnmarshalJSON(data []byte) error {
+    type Raw struct {
+        OrderID       string   `json:"order_id"`
+        UserID        string   `json:"user_id"`
+        Items         []Item   `json:"items"`
+        Region        *string  `json:"region"`
+        SchemaVersion *int     `json:"schema_version"`
+    }
+
+    var raw Raw
+    if err := json.Unmarshal(data, &raw); err != nil {
+        return err
+    }
+
+    o.OrderID = raw.OrderID
+    o.UserID = raw.UserID
+    o.Items = raw.Items
+    o.Region = raw.Region
+
+    // Default schema version to 1 for old clients
+    if raw.SchemaVersion == nil {
+        o.SchemaVersion = 1
+    } else {
+        o.SchemaVersion = *raw.SchemaVersion
+    }
+
+    return nil
+}
+
+func HandleOrderCreation(orderData *OrderV2) error {
+    // If region not provided, use default
+    if orderData.Region == nil {
+        defaultRegion := GetDefaultRegion(orderData.UserID)
+        orderData.Region = &defaultRegion
+    }
+
+    // Ensure schema version for new records
+    orderData.SchemaVersion = 2
+
+    return db.Insert(context.Background(), orderData)
+}
+
+// Event versioning
+type OrderCreatedEvent struct {
+    EventType     string   `json:"event_type"`
+    OrderID       string   `json:"order_id"`
+    UserID        string   `json:"user_id"`
+    Items         []Item   `json:"items"`
+    Region        *string  `json:"region,omitempty"`
+    SchemaVersion int      `json:"schema_version"`
+}
+
+func UpcstEvent(data []byte) (*OrderCreatedEvent, error) {
+    // Parse as generic map to check version
+    var raw map[string]interface{}
+    if err := json.Unmarshal(data, &raw); err != nil {
+        return nil, err
+    }
+
+    version := 1
+    if v, exists := raw["schema_version"]; exists {
+        if vf, ok := v.(float64); ok {
+            version = int(vf)
+        }
+    }
+
+    // Handle V1 format (no region)
+    if version == 1 {
+        var v1 struct {
+            OrderID string `json:"order_id"`
+            UserID  string `json:"user_id"`
+            Items   []Item `json:"items"`
+        }
+        json.Unmarshal(data, &v1)
+
+        return &OrderCreatedEvent{
+            OrderID:       v1.OrderID,
+            UserID:        v1.UserID,
+            Items:         v1.Items,
+            Region:        nil,
+            SchemaVersion: 2,
+        }, nil
+    }
+
+    // Handle V2 format
+    var v2 OrderCreatedEvent
+    if err := json.Unmarshal(data, &v2); err != nil {
+        return nil, err
+    }
+    v2.SchemaVersion = 2
+
+    return &v2, nil
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Breaking schema changes
+class Order {
+    constructor(orderId, userId, items, region) {
+        this.orderId = orderId;
+        this.userId = userId;
+        this.items = items;
+        this.region = region;  // Required in new version!
+    }
+}
+
+// Old code creating orders without region breaks
+// Old data in DB missing region field
+
+// ✅ EXCELLENT - Backward compatible evolution
+class OrderV2 {
+    constructor(orderId, userId, items, region = null, schemaVersion = 2) {
+        this.orderId = orderId;
+        this.userId = userId;
+        this.items = items;
+        this.region = region;  // Optional with default
+        this.schemaVersion = schemaVersion;
+    }
+
+    static fromJSON(data) {
+        // Handle both old (v1) and new (v2) formats
+        return new OrderV2(
+            data.orderId,
+            data.userId,
+            data.items,
+            data.region || null,  // Default to null
+            data.schemaVersion || 1  // Default to v1 for old clients
+        );
+    }
+
+    toJSON() {
+        return {
+            orderId: this.orderId,
+            userId: this.userId,
+            items: this.items,
+            region: this.region,
+            schemaVersion: this.schemaVersion
+        };
+    }
+}
+
+class OrderService {
+    async createOrder(orderData) {
+        const order = OrderV2.fromJSON(orderData);
+
+        // If region not provided, use user's default region
+        if (!order.region) {
+            order.region = await this.getDefaultRegion(order.userId);
+        }
+
+        // Store with version for future evolution
+        order.schemaVersion = 2;
+        return await db.insert('orders', order.toJSON());
+    }
+}
+
+// Event versioning with upcasting
+class OrderCreatedEvent {
+    constructor(orderId, userId, items, region = null, schemaVersion = 2) {
+        this.eventType = 'OrderCreated';
+        this.orderId = orderId;
+        this.userId = userId;
+        this.items = items;
+        this.region = region;
+        this.schemaVersion = schemaVersion;
+    }
+
+    static fromJSON(data) {
+        const version = data.schemaVersion || 1;
+
+        // V1: no region field
+        if (version === 1) {
+            return new OrderCreatedEvent(
+                data.orderId,
+                data.userId,
+                data.items,
+                null,  // V1 doesn't have region
+                2      // Upcast to V2
+            );
+        }
+
+        // V2: has region
+        return new OrderCreatedEvent(
+            data.orderId,
+            data.userId,
+            data.items,
+            data.region || null,
+            2
+        );
+    }
+}
+
+// Gradual migration with feature flags
+class FeatureFlags {
+    static async requireRegion() {
+        // Initially false: accept orders without region
+        // Later: true: require region
+        return await configService.getFlag('orders:require-region');
+    }
+}
+
+async function handleOrderCreation(orderData) {
+    const requireRegion = await FeatureFlags.requireRegion();
+
+    if (requireRegion && !orderData.region) {
+        throw new Error('Region is required');
+    }
+
+    const order = OrderV2.fromJSON(orderData);
+    await db.insert('orders', order.toJSON());
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs items={[
+{
+    label: "When to Prioritize Compatibility",
+    points: ["Large distributed systems with many independent services", "APIs consumed by external clients (can", ",", ",", ","]
+  },
+{
+    label: "When Strict Evolution Can Be Relaxed",
+    points: ["Monolithic applications (single deployment)", "Internal systems where all services upgrade together", "Green-field projects with full control over clients", "Systems with scheduled maintenance windows", "When backward compatibility has prohibitive costs"]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Implicit Compatibility Assumptions",
+      description: "Don't assume clients ignore unknown fields. Test compatibility explicitly. Version messages and events.",
+      icon: "⚠️"
+    }, {
+      title: "Slow Deprecation",
+      description: "Removing fields too early breaks old clients. Plan deprecation: announce, give notice period, mark as deprecated, then remove.",
+      icon: "⚠️"
+    }, {
+      title: "Explicit Versioning",
+      description: "Include schema version in all messages. Use it for upcasting old messages to new versions.",
+      icon: "✓"
+    }, {
+      title: "Feature Flag Gradual Rollout",
+      description: "Use feature flags to roll out schema changes gradually. Control which clients see new fields.",
+      icon: "✓"
+    }, {
+      title: "Testing Compatibility",
+      description: "Test that new code handles old data. Test that old code handles new data. Make it part of CI.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "New optional fields have sensible defaults",
+    "Code gracefully ignores unknown fields in messages",
+    "All messages include explicit schema version",
+    "Upcasting logic exists for handling older message versions",
+    "Deprecated fields are marked with timeline for removal",
+    "Feature flags control rollout of schema changes",
+    "Compatibility testing is part of CI/CD pipeline"
+  ]}
+/>
+
+## Self-Check
+
+- How would you add a required field to an existing message in a distributed system?
+- What does forward compatibility mean and why is it important?
+- How do you handle field renaming without breaking clients?
+
+:::info One Takeaway
+Schema evolution is an operational challenge in distributed systems. Design for compatibility first: make fields optional, version explicitly, and roll out changes gradually. This is slower but safer.
+
+:::
+
+## Next Steps
+
+- Add schema versioning to all APIs and events
+- Implement upcasting for evolving message formats
+- Set up feature flags for gradual rollout of schema changes
+- Build compatibility testing into CI/CD
+
+## References
+
+- Martin Kleppmann, *Designing Data-Intensive Applications* (O'Reilly)
+- Mike Amundsen, Designing Hypermedia APIs
+- Avro, Protocol Buffers, and JSON Schema documentation

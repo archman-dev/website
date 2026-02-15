@@ -1,0 +1,875 @@
+---
+sidebar_position: 4
+title: "SLO, SLI, SLA, and Error Budgets"
+description: "Define and track reliability targets using service-level objectives."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, sre, product]
+keywords: [SLO, SLI, SLA, error budget, reliability, availability]
+image: /img/archman-social-card.webp
+tags: [observability, reliability, operations]
+hide_title: true
+---
+
+<Hero title="SLO, SLI, SLA, and Error Budgets" subtitle="Define reliability targets and govern software delivery using error budgets." size="large" />
+
+## TL;DR
+
+SLI (Service Level Indicator): Metric that measures service behavior (uptime %, latency, error rate). SLO (Service Level Objective): Target for the SLI (99.9% uptime). SLA (Service Level Agreement): Legal contract; breach has consequences (refund, credits). Error budget: Allowable downtime/errors. If SLO is 99.9% uptime (0.1% downtime), monthly error budget is 43 minutes. When error budget is exhausted, freeze features; focus on stability. Error budget enforcement prevents teams from prioritizing velocity over reliability.
+
+## Learning Objectives
+
+- Define meaningful SLIs for your service
+- Set realistic SLOs using SLI data
+- Calculate error budgets
+- Use error budgets to govern deployment and feature development
+- Implement SLI monitoring and alerting
+- Establish SLAs with customers
+- Avoid SLO mistakes (too strict, unmeasurable)
+- Scale SLOs to multi-service systems
+
+## Motivating Scenario
+
+Product wants to ship 10 features this quarter. Engineering says: "We need a day to stabilize after each feature." They ship 7 features, stability tank downtime, SLA breach imminent. With error budgets: Product knows the error budget monthly is 43 minutes. Current spend: 12 minutes. Room for 31 minutes more. Feature 8-10 are risky; shipping them uses up budget. Product decides: ship 8, focus on stability for the rest of the quarter. Everyone understands the tradeoff; no friction.
+
+## Core Concepts
+
+### Definitions
+
+| Term | Definition | Example |
+|------|-----------|---------|
+| **SLI** | Measured indicator of service behavior | 99.5% of requests succeed |
+| **SLO** | Target for the SLI | We aim for 99.9% success rate |
+| **SLA** | Legal contract; penalty if breached | 99.5% uptime guaranteed; refund if breach |
+| **Error Budget** | Allowed failures before SLO breach | If SLO is 99%, budget is 1% failures |
+
+### Error Budget Calculation
+
+SLO Target: 99.9% uptime
+
+```
+Downtime Budget = (100% - SLO%) × Time Period
+Monthly: (100% - 99.9%) × 30 days × 24 hours × 60 min = 43.2 minutes
+Quarterly: (100% - 99.9%) × 90 days × 24 hours × 60 min = 129.6 minutes
+Annual: (100% - 99.9%) × 365 days × 24 hours × 60 min = 525.6 minutes
+```
+
+### SLI Types
+
+| Type | Example | How to Measure |
+|------|---------|----------------|
+| **Availability** | HTTP requests returning success | (Successful requests / Total requests) |
+| **Latency** | Requests completing within 100ms | (Requests < 100ms / Total requests) |
+| **Error Rate** | Requests not returning 5xx errors | (Non-5xx responses / Total requests) |
+| **Durability** | Data not lost | (Successful writes and reads / Total) |
+| **Freshness** | Data current within 5 minutes | (Queries returning fresh data / Total) |
+
+### SLO Targets (Common)
+
+| Service | SLO | Error Budget |
+|---------|-----|--------------|
+| Basic SaaS | 99% (2 nines) | 7.2 hours/month |
+| Standard SaaS | 99.9% (3 nines) | 43 minutes/month |
+| Critical Infra | 99.99% (4 nines) | 4.3 minutes/month |
+| Tier-1 Critical | 99.999% (5 nines) | 26 seconds/month |
+
+## SLI Implementation
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from prometheus_client import Counter, Histogram, Gauge
+import time
+from datetime import datetime, timedelta
+
+# SLI: Success Rate
+requests_total = Counter(
+    'requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+
+requests_success = Counter(
+    'requests_success',
+    'Successful HTTP requests',
+    ['method', 'endpoint']
+)
+
+# SLI: Latency
+request_duration = Histogram(
+    'request_duration_seconds',
+    'HTTP request duration',
+    ['method', 'endpoint'],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+)
+
+# SLI: Error Rate
+errors_total = Counter(
+    'errors_total',
+    'Total errors',
+    ['type', 'service']
+)
+
+def handle_request(method, endpoint, handler):
+    """Middleware to record SLIs"""
+    start = time.time()
+    
+    try:
+        result = handler()
+        requests_total.labels(method=method, endpoint=endpoint, status=200).inc()
+        requests_success.labels(method=method, endpoint=endpoint).inc()
+        
+        duration = time.time() - start
+        request_duration.labels(method=method, endpoint=endpoint).observe(duration)
+        
+        return result
+    
+    except Exception as e:
+        requests_total.labels(method=method, endpoint=endpoint, status=500).inc()
+        errors_total.labels(type=type(e).__name__, service='checkout').inc()
+        
+        duration = time.time() - start
+        request_duration.labels(method=method, endpoint=endpoint).observe(duration)
+        
+        raise
+
+# SLI Calculator
+class SLICalculator:
+    def __init__(self, prometheus_client):
+        self.prom = prometheus_client
+    
+    def calculate_success_rate(self, endpoint, window_minutes=5):
+        """Calculate success rate for endpoint"""
+        query = f'''
+        sum(rate(requests_success{{endpoint="{endpoint}"}}[{window_minutes}m]))
+        /
+        sum(rate(requests_total{{endpoint="{endpoint}"}}[{window_minutes}m]))
+        '''
+        return self.prom.query(query)
+    
+    def calculate_latency_percentile(self, endpoint, percentile=99, window_minutes=5):
+        """Calculate latency at percentile"""
+        query = f'''
+        histogram_quantile({percentile / 100},
+            sum(rate(request_duration_seconds_bucket{{endpoint="{endpoint}"}}[{window_minutes}m]))
+        )
+        '''
+        return self.prom.query(query)
+    
+    def calculate_error_rate(self, service, window_minutes=5):
+        """Calculate error rate"""
+        query = f'''
+        sum(rate(errors_total{{service="{service}"}}[{window_minutes}m]))
+        /
+        sum(rate(requests_total{{service="{service}"}}[{window_minutes}m]))
+        '''
+        return self.prom.query(query)
+
+# SLO Monitoring
+class SLOMonitor:
+    def __init__(self, slo_target_percent=99.9):
+        self.slo_target = slo_target_percent / 100
+        self.current_sli = None
+        self.error_budget = None
+    
+    def update_sli(self, measured_sli):
+        """Update current SLI measurement"""
+        self.current_sli = measured_sli
+        self.recalculate_error_budget()
+    
+    def recalculate_error_budget(self):
+        """Calculate remaining error budget"""
+        if not self.current_sli:
+            return
+        
+        monthly_window = 30 * 24 * 60  # minutes
+        
+        # How much error budget we used
+        error_used = (1 - self.current_sli) * monthly_window
+        
+        # Total budget allowed
+        total_budget = (1 - self.slo_target) * monthly_window
+        
+        # Remaining budget
+        remaining = total_budget - error_used
+        
+        self.error_budget = {
+            'total_minutes': total_budget,
+            'used_minutes': error_used,
+            'remaining_minutes': remaining,
+            'percent_used': (error_used / total_budget * 100) if total_budget > 0 else 0
+        }
+    
+    def is_budget_exhausted(self):
+        """Check if error budget is exhausted"""
+        if not self.error_budget:
+            return False
+        return self.error_budget['remaining_minutes'] <= 0
+    
+    def get_budget_status(self):
+        """Return budget status for monitoring"""
+        return {
+            'slo_target': f"{self.slo_target * 100}%",
+            'current_sli': f"{self.current_sli * 100:.2f}%",
+            'error_budget': self.error_budget,
+            'budget_exhausted': self.is_budget_exhausted()
+        }
+
+# SLO Alerting
+class SLOAlerter:
+    def __init__(self, monitor):
+        self.monitor = monitor
+    
+    def check_slo_breach(self):
+        """Alert if SLO breached"""
+        if not self.monitor.current_sli:
+            return None
+        
+        if self.monitor.current_sli < self.monitor.slo_target:
+            return {
+                'alert': 'SLO_BREACHED',
+                'slo_target': self.monitor.slo_target,
+                'current_sli': self.monitor.current_sli,
+                'message': f"SLO breached! Target: {self.monitor.slo_target * 100}%, Current: {self.monitor.current_sli * 100:.2f}%"
+            }
+        
+        return None
+    
+    def check_budget_warning(self):
+        """Alert if budget almost exhausted"""
+        if not self.monitor.error_budget:
+            return None
+        
+        percent_used = self.monitor.error_budget['percent_used']
+        
+        if percent_used > 80:
+            return {
+                'alert': 'ERROR_BUDGET_WARNING',
+                'percent_used': percent_used,
+                'remaining_minutes': self.monitor.error_budget['remaining_minutes'],
+                'message': f"Error budget {percent_used:.1f}% exhausted. {self.monitor.error_budget['remaining_minutes']:.1f} minutes remaining."
+            }
+        
+        return None
+
+# Example Usage
+monitor = SLOMonitor(slo_target_percent=99.9)
+
+# Simulate SLI measurements
+measurements = [0.9991, 0.9992, 0.9989, 0.9993, 0.9988]  # 99.88% to 99.93%
+average_sli = sum(measurements) / len(measurements)
+monitor.update_sli(average_sli)
+
+print(f"SLO Status: {monitor.get_budget_status()}")
+
+alerter = SLOAlerter(monitor)
+slo_alert = alerter.check_slo_breach()
+budget_alert = alerter.check_budget_warning()
+
+if slo_alert:
+    print(f"Alert: {slo_alert['message']}")
+if budget_alert:
+    print(f"Warning: {budget_alert['message']}")
+
+# Multi-SLI Service
+class MultiSLIService:
+    def __init__(self):
+        self.slis = {
+            'availability': SLOMonitor(slo_target_percent=99.9),
+            'latency_p99': SLOMonitor(slo_target_percent=99.9),
+            'error_rate': SLOMonitor(slo_target_percent=99.9),
+        }
+    
+    def update_slis(self, measurements):
+        """Update all SLIs"""
+        for sli_name, measured_value in measurements.items():
+            if sli_name in self.slis:
+                self.slis[sli_name].update_sli(measured_value)
+    
+    def get_overall_status(self):
+        """Overall service status"""
+        all_within_slo = all(
+            not monitor.is_budget_exhausted()
+            for monitor in self.slis.values()
+        )
+        
+        return {
+            'all_slos_met': all_within_slo,
+            'slis': {
+                name: monitor.get_budget_status()
+                for name, monitor in self.slis.items()
+            }
+        }
+
+service = MultiSLIService()
+service.update_slis({
+    'availability': 0.9991,
+    'latency_p99': 0.9989,
+    'error_rate': 0.9992,
+})
+print(f"Service Status: {service.get_overall_status()}")
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// SLI Metrics
+var (
+	requestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "requests_total",
+			Help: "Total HTTP requests",
+		},
+		[]string{"method", "endpoint", "status"},
+	)
+
+	requestsSuccess = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "requests_success",
+			Help: "Successful HTTP requests",
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	requestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "request_duration_seconds",
+			Help:    "HTTP request duration",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1.0, 5.0},
+		},
+		[]string{"method", "endpoint"},
+	)
+
+	errorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "errors_total",
+			Help: "Total errors",
+		},
+		[]string{"type", "service"},
+	)
+)
+
+// SLI Monitor
+type SLIMonitor struct {
+	sloTarget      float64
+	currentSLI     float64
+	errorBudget    ErrorBudget
+}
+
+type ErrorBudget struct {
+	TotalMinutes     float64
+	UsedMinutes      float64
+	RemainingMinutes float64
+	PercentUsed      float64
+}
+
+func NewSLIMonitor(sloTargetPercent float64) *SLIMonitor {
+	return &SLIMonitor{
+		sloTarget: sloTargetPercent / 100,
+	}
+}
+
+func (m *SLIMonitor) UpdateSLI(measuredSLI float64) {
+	m.currentSLI = measuredSLI
+	m.recalculateErrorBudget()
+}
+
+func (m *SLIMonitor) recalculateErrorBudget() {
+	monthlyWindow := 30 * 24 * 60.0 // minutes
+	
+	errorUsed := (1 - m.currentSLI) * monthlyWindow
+	totalBudget := (1 - m.sloTarget) * monthlyWindow
+	remaining := totalBudget - errorUsed
+	percentUsed := (errorUsed / totalBudget) * 100
+	
+	m.errorBudget = ErrorBudget{
+		TotalMinutes:     totalBudget,
+		UsedMinutes:      errorUsed,
+		RemainingMinutes: remaining,
+		PercentUsed:      percentUsed,
+	}
+}
+
+func (m *SLIMonitor) IsBudgetExhausted() bool {
+	return m.errorBudget.RemainingMinutes <= 0
+}
+
+func (m *SLIMonitor) GetStatus() map[string]interface{} {
+	return map[string]interface{}{
+		"slo_target":          fmt.Sprintf("%.1f%%", m.sloTarget*100),
+		"current_sli":         fmt.Sprintf("%.2f%%", m.currentSLI*100),
+		"total_budget":        m.errorBudget.TotalMinutes,
+		"used_budget":         m.errorBudget.UsedMinutes,
+		"remaining_budget":    m.errorBudget.RemainingMinutes,
+		"percent_used":        m.errorBudget.PercentUsed,
+		"budget_exhausted":    m.IsBudgetExhausted(),
+	}
+}
+
+// SLO Alerter
+type SLOAlerter struct {
+	monitor *SLIMonitor
+}
+
+func NewSLOAlerter(monitor *SLIMonitor) *SLOAlerter {
+	return &SLOAlerter{monitor: monitor}
+}
+
+func (a *SLOAlerter) CheckSLOBreach() *Alert {
+	if a.monitor.currentSLI < a.monitor.sloTarget {
+		return &Alert{
+			Type:       "SLO_BREACHED",
+			Message:    fmt.Sprintf("SLO breached! Target: %.1f%%, Current: %.2f%%", a.monitor.sloTarget*100, a.monitor.currentSLI*100),
+			Severity:   "critical",
+		}
+	}
+	return nil
+}
+
+func (a *SLOAlerter) CheckBudgetWarning() *Alert {
+	percentUsed := a.monitor.errorBudget.PercentUsed
+	if percentUsed > 80 {
+		return &Alert{
+			Type:       "ERROR_BUDGET_WARNING",
+			Message:    fmt.Sprintf("Error budget %.1f%% exhausted. %.1f minutes remaining.", percentUsed, a.monitor.errorBudget.RemainingMinutes),
+			Severity:   "warning",
+		}
+	}
+	return nil
+}
+
+type Alert struct {
+	Type     string
+	Message  string
+	Severity string
+}
+
+// Multi-SLI Service
+type MultiSLIService struct {
+	slis map[string]*SLIMonitor
+}
+
+func NewMultiSLIService() *MultiSLIService {
+	return &MultiSLIService{
+		slis: map[string]*SLIMonitor{
+			"availability":    NewSLIMonitor(99.9),
+			"latency_p99":     NewSLIMonitor(99.9),
+			"error_rate":      NewSLIMonitor(99.9),
+		},
+	}
+}
+
+func (s *MultiSLIService) UpdateSLIs(measurements map[string]float64) {
+	for name, value := range measurements {
+		if monitor, ok := s.slis[name]; ok {
+			monitor.UpdateSLI(value)
+		}
+	}
+}
+
+func (s *MultiSLIService) GetOverallStatus() map[string]interface{} {
+	allWithinSLO := true
+	sliStatuses := make(map[string]interface{})
+	
+	for name, monitor := range s.slis {
+		if monitor.IsBudgetExhausted() {
+			allWithinSLO = false
+		}
+		sliStatuses[name] = monitor.GetStatus()
+	}
+	
+	return map[string]interface{}{
+		"all_slos_met": allWithinSLO,
+		"slis":         sliStatuses,
+	}
+}
+
+func main() {
+	// Example usage
+	monitor := NewSLIMonitor(99.9)
+	monitor.UpdateSLI(0.9990)
+	
+	fmt.Println("SLO Status:", monitor.GetStatus())
+	
+	alerter := NewSLOAlerter(monitor)
+	if alert := alerter.CheckBudgetWarning(); alert != nil {
+		fmt.Printf("Alert: %s\n", alert.Message)
+	}
+	
+	// Multi-SLI service
+	service := NewMultiSLIService()
+	service.UpdateSLIs(map[string]float64{
+		"availability": 0.9991,
+		"latency_p99":  0.9989,
+		"error_rate":   0.9992,
+	})
+	
+	fmt.Println("Service Status:", service.GetOverallStatus())
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// SLI Metrics using Prometheus client
+const prometheus = require('prom-client');
+
+const requestsTotal = new prometheus.Counter({
+  name: 'requests_total',
+  help: 'Total HTTP requests',
+  labelNames: ['method', 'endpoint', 'status'],
+});
+
+const requestsSuccess = new prometheus.Counter({
+  name: 'requests_success',
+  help: 'Successful HTTP requests',
+  labelNames: ['method', 'endpoint'],
+});
+
+const requestDuration = new prometheus.Histogram({
+  name: 'request_duration_seconds',
+  help: 'HTTP request duration',
+  labelNames: ['method', 'endpoint'],
+  buckets: [0.01, 0.05, 0.1, 0.5, 1.0, 5.0],
+});
+
+const errorsTotal = new prometheus.Counter({
+  name: 'errors_total',
+  help: 'Total errors',
+  labelNames: ['type', 'service'],
+});
+
+// SLI Monitor
+class SLIMonitor {
+  constructor(sloTargetPercent) {
+    this.sloTarget = sloTargetPercent / 100;
+    this.currentSLI = null;
+    this.errorBudget = null;
+  }
+
+  updateSLI(measuredSLI) {
+    this.currentSLI = measuredSLI;
+    this.recalculateErrorBudget();
+  }
+
+  recalculateErrorBudget() {
+    const monthlyWindow = 30 * 24 * 60; // minutes
+
+    const errorUsed = (1 - this.currentSLI) * monthlyWindow;
+    const totalBudget = (1 - this.sloTarget) * monthlyWindow;
+    const remaining = totalBudget - errorUsed;
+    const percentUsed = (errorUsed / totalBudget) * 100;
+
+    this.errorBudget = {
+      totalMinutes: totalBudget,
+      usedMinutes: errorUsed,
+      remainingMinutes: remaining,
+      percentUsed: percentUsed,
+    };
+  }
+
+  isBudgetExhausted() {
+    return this.errorBudget && this.errorBudget.remainingMinutes <= 0;
+  }
+
+  getStatus() {
+    return {
+      sloTarget: `${(this.sloTarget * 100).toFixed(1)}%`,
+      currentSLI: this.currentSLI ? `${(this.currentSLI * 100).toFixed(2)}%` : 'N/A',
+      errorBudget: this.errorBudget,
+      budgetExhausted: this.isBudgetExhausted(),
+    };
+  }
+}
+
+// SLO Alerter
+class SLOAlerter {
+  constructor(monitor) {
+    this.monitor = monitor;
+  }
+
+  checkSLOBreach() {
+    if (!this.monitor.currentSLI) return null;
+
+    if (this.monitor.currentSLI < this.monitor.sloTarget) {
+      return {
+        alert: 'SLO_BREACHED',
+        sloTarget: this.monitor.sloTarget,
+        currentSLI: this.monitor.currentSLI,
+        message: `SLO breached! Target: ${(this.monitor.sloTarget * 100).toFixed(1)}%, Current: ${(this.monitor.currentSLI * 100).toFixed(2)}%`,
+        severity: 'critical',
+      };
+    }
+
+    return null;
+  }
+
+  checkBudgetWarning() {
+    if (!this.monitor.errorBudget) return null;
+
+    const percentUsed = this.monitor.errorBudget.percentUsed;
+
+    if (percentUsed > 80) {
+      return {
+        alert: 'ERROR_BUDGET_WARNING',
+        percentUsed: percentUsed.toFixed(1),
+        remainingMinutes: this.monitor.errorBudget.remainingMinutes.toFixed(1),
+        message: `Error budget ${percentUsed.toFixed(1)}% exhausted. ${this.monitor.errorBudget.remainingMinutes.toFixed(1)} minutes remaining.`,
+        severity: 'warning',
+      };
+    }
+
+    return null;
+  }
+}
+
+// Multi-SLI Service
+class MultiSLIService {
+  constructor() {
+    this.slis = {
+      availability: new SLIMonitor(99.9),
+      latencyP99: new SLIMonitor(99.9),
+      errorRate: new SLIMonitor(99.9),
+    };
+  }
+
+  updateSLIs(measurements) {
+    Object.entries(measurements).forEach(([name, value]) => {
+      if (this.slis[name]) {
+        this.slis[name].updateSLI(value);
+      }
+    });
+  }
+
+  getOverallStatus() {
+    const allWithinSLO = Object.values(this.slis).every(
+      (monitor) => !monitor.isBudgetExhausted()
+    );
+
+    const sliStatuses = {};
+    Object.entries(this.slis).forEach(([name, monitor]) => {
+      sliStatuses[name] = monitor.getStatus();
+    });
+
+    return {
+      allSLOsMet: allWithinSLO,
+      slis: sliStatuses,
+    };
+  }
+}
+
+// Request handler with SLI recording
+function withSLIRecording(endpoint, handler) {
+  return async (req, res) => {
+    const start = Date.now();
+
+    try {
+      const result = await handler(req, res);
+
+      requestsTotal.labels('GET', endpoint, '200').inc();
+      requestsSuccess.labels('GET', endpoint).inc();
+
+      const duration = (Date.now() - start) / 1000;
+      requestDuration.labels('GET', endpoint).observe(duration);
+
+      return result;
+    } catch (error) {
+      requestsTotal.labels('GET', endpoint, '500').inc();
+      errorsTotal.labels(error.constructor.name, 'checkout').inc();
+
+      const duration = (Date.now() - start) / 1000;
+      requestDuration.labels('GET', endpoint).observe(duration);
+
+      throw error;
+    }
+  };
+}
+
+// Example usage
+const monitor = new SLIMonitor(99.9);
+monitor.updateSLI(0.9990);
+
+console.log('SLO Status:', monitor.getStatus());
+
+const alerter = new SLOAlerter(monitor);
+const sloAlert = alerter.checkSLOBreach();
+const budgetAlert = alerter.checkBudgetWarning();
+
+if (sloAlert) {
+  console.log(`Alert: ${sloAlert.message}`);
+}
+if (budgetAlert) {
+  console.log(`Warning: ${budgetAlert.message}`);
+}
+
+// Multi-SLI service
+const service = new MultiSLIService();
+service.updateSLIs({
+  availability: 0.9991,
+  latencyP99: 0.9989,
+  errorRate: 0.9992,
+});
+
+console.log('Service Status:', service.getOverallStatus());
+
+module.exports = { SLIMonitor, SLOAlerter, MultiSLIService };
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples & Patterns
+
+### E-Commerce Checkout SLO
+
+- **Availability SLI**: (Successful checkouts / Total checkouts) × 100
+- **SLO**: 99.95% (99 minutes error budget/month)
+- **Latency SLI**: (Checkouts < 5 seconds / Total) × 100
+- **SLO**: 99% (p99 latency < 2 seconds)
+
+When error budget exhausted: Freeze new checkout features; focus on stability.
+
+### API Service SLO
+
+- **Success Rate SLI**: (2xx + 3xx responses / Total) × 100
+- **SLO**: 99.9%
+- **Latency SLI**: (Requests < 100ms / Total) × 100
+- **SLO**: 99% for p99
+- **Error Rate SLI**: (Non-5xx / Total) × 100
+- **SLO**: 99.99%
+
+### SLA Examples
+
+- Basic SaaS: 95% uptime, 5% service credit
+- Standard SaaS: 99.5% uptime, 25% service credit per 0.5%
+- Enterprise: 99.99% uptime, 100% service credit if missed
+
+## Common Mistakes and Pitfalls
+
+### Mistake 1: SLO Too Strict
+
+```
+❌ WRONG: "We'll do 99.999% uptime"
+- Requires 5-nines infrastructure (very expensive)
+- Single datacenter can't meet this
+- Unrealistic, customers don't care
+
+✅ CORRECT: "99.9% meets customer needs"
+- Realistic, achievable with decent infrastructure
+- 43 minutes monthly downtime acceptable
+- Balance cost and reliability
+```
+
+### Mistake 2: Unmeasurable SLI
+
+```
+❌ WRONG: "Service should be fast"
+- No measurement, no tracking
+- Can't know if met
+
+✅ CORRECT: "95% of requests < 100ms"
+- Concrete, measurable
+- Easy to track and alert
+```
+
+### Mistake 3: Ignoring Error Budget
+
+```
+❌ WRONG: SLO exists but no enforcement
+- Teams ship regardless
+- Error budget unused
+- Reliability issues accumulate
+
+✅ CORRECT: Error budget governs deployment
+- Error budget exhausted = no new features
+- Prevents reliability debt
+- Everyone understands tradeoff
+```
+
+## Production Considerations
+
+### SLO Setting Process
+
+1. **Measure current**: How reliable is service today?
+2. **Define targets**: What do customers need?
+3. **Validate**: Can we meet targets?
+4. **Implement monitoring**: Track SLI continuously
+5. **Enforce budget**: Gate deployments on budget
+
+### Multi-Service SLOs
+
+For microservices, total SLO is the product:
+
+```
+Service A: 99.9%
+Service B: 99.9%
+Service C: 99.9%
+
+Overall: 99.9% × 99.9% × 99.9% = 99.7%
+```
+
+Workaround: Make internal service SLOs higher, or use fallbacks (caching, degradation).
+
+### Error Budget Allocation
+
+- Feature development: 70% of budget
+- Infrastructure improvements: 20%
+- Operational overhead: 10%
+
+When budget exhausted, shift: 0% features, 100% stability.
+
+## Self-Check
+
+- What's the difference between SLO and SLA?
+- How do you calculate error budget?
+- What does it mean to exhaust error budget?
+- How should you respond to SLO breach?
+- What SLI is most important for your service?
+
+## Design Review Checklist
+
+<Checklist items={[
+  "SLI defined and measurable?",
+  "SLO targets realistic?",
+  "Error budget calculated?",
+  "SLI monitoring configured?",
+  "Alerts set for breaches?",
+  "Alerts set for budget warnings?",
+  "Error budget enforcement process?",
+  "Multiple SLIs per service?",
+  "Customer expectations aligned?",
+  "SLA defined (if applicable)?",
+  "Error budget tracked publicly?",
+  "Runbook for SLO breaches?"
+]} />
+
+## Next Steps
+
+1. Define SLIs for your service
+2. Set SLO targets based on customer needs
+3. Implement SLI monitoring
+4. Calculate error budget monthly
+5. Create alerts for breaches and warnings
+6. Enforce error budget gating for deployments
+7. Review SLOs quarterly
+
+## References
+
+- <a href="https://sre.google/sre-book/service-level-objectives/" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book: SLOs ↗</a>
+- <a href="https://landing.google.com/sre/books/" target="_blank" rel="nofollow noopener noreferrer">Site Reliability Engineering Books ↗</a>
+- <a href="https://www.prometheus.io/" target="_blank" rel="nofollow noopener noreferrer">Prometheus Monitoring ↗</a>
+

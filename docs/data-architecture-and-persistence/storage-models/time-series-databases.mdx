@@ -1,0 +1,538 @@
+---
+sidebar_position: 6
+title: "Time-Series Databases"
+description: "Purpose-built for metrics, events, and temporal data with compression and downsampling"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [time-series databases, InfluxDB, Prometheus, TimescaleDB, metrics, events, monitoring, compression]
+image: /img/archman-social-card.webp
+tags: [databases, time-series, InfluxDB, Prometheus, metrics, monitoring, events, compression, downsampling]
+hide_title: true
+---
+
+<Hero title="Time-Series Databases" subtitle="Purpose-built for metrics, events, and temporal data with superior compression" size="large" />
+
+## TL;DR
+
+Time-series databases (TSDB) like InfluxDB and Prometheus optimize for append-only data with timestamps. Superior compression (10x-100x better than general DBs), downsampling for long-term storage, and query patterns optimized for ranges. Use for metrics, logs, events, and monitoring. Trade-off: optimized for time queries only, not suited for complex relational queries.
+
+## Learning Objectives
+
+- Understand time-series data characteristics and access patterns
+- Design retention and downsampling policies
+- Recognize compression strategies for temporal data
+- Choose appropriate cardinality for tags/labels
+
+## Motivating Scenario
+
+Infrastructure monitoring: 10K servers, 100 metrics each, 60-second intervals = 166K points/second. One year of data = 5.2 trillion points. RDBMS would need petabytes. TSDB with compression: terabytes. Downsampling old data: hundreds of GB.
+
+## Core Concepts
+
+<Figure
+  title="Time-Series Data Characteristics"
+  description="Append-only with consistent cardinality and retention patterns"
+  diagram={`
+graph TB
+    subgraph Vol["High Volume & Velocity"]
+      P1["Metric 1<br/>100K pts/sec"]
+      P2["Metric 2<br/>100K pts/sec"]
+    end
+    
+    subgraph Ret["Retention & Downsampling"]
+      R1["1min: 30 days"]
+      R2["1hr: 1 year"]
+      R3["1day: 5 years"]
+    end
+    
+    Vol -->|Compression<br/>10-100x| Ret
+    
+    style P1 fill:#0066cc
+    style P2 fill:#0066cc
+  `}
+/>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="prometheus" label="Prometheus (Scraping)">
+
+```yaml
+# prometheus.yml - Configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+  
+  - job_name: 'nodejs-app'
+    static_configs:
+      - targets: ['localhost:3000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  - job_name: 'kubernetes'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: my-app
+```
+
+```python
+# Python client - Expose metrics
+from prometheus_client import Counter, Histogram, Gauge, start_http_server
+import time
+
+# Counter: only increases
+request_count = Counter(
+    'requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+
+# Gauge: can go up or down
+memory_usage = Gauge(
+    'memory_usage_bytes',
+    'Memory usage in bytes',
+    ['process_name']
+)
+
+# Histogram: distribution of values
+request_latency = Histogram(
+    'request_latency_seconds',
+    'Request latency',
+    ['endpoint'],
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0)
+)
+
+# Start metrics server
+start_http_server(8000)
+
+# Use metrics in application
+def handle_request(method, endpoint):
+    request_count.labels(method=method, endpoint=endpoint, status=200).inc()
+    
+    with request_latency.labels(endpoint=endpoint).time():
+        # Your code here
+        time.sleep(0.5)
+
+# Gauge example
+import psutil
+memory_usage.labels(process_name='api_server').set(psutil.Process().memory_info().rss)
+```
+
+```
+# PromQL queries
+# Current CPU usage
+node_cpu_seconds_total
+
+# CPU usage over last 5 minutes
+rate(node_cpu_seconds_total[5m])
+
+# Average request latency by endpoint
+avg(rate(request_latency_seconds_sum[5m])) / avg(rate(request_latency_seconds_count[5m])) by (endpoint)
+
+# 95th percentile latency
+histogram_quantile(0.95, rate(request_latency_seconds_bucket[5m]))
+
+# Requests per second
+rate(requests_total[1m])
+
+# Memory usage with threshold alert
+node_memory_MemAvailable_bytes < 1000000000
+```
+
+</TabItem>
+<TabItem value="influx" label="InfluxDB (Writing)">
+
+```python
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+from datetime import datetime
+
+# Connect
+client = InfluxDBClient(url="http://localhost:8086", token="token", org="myorg")
+write_api = client.write_api(write_options=SYNCHRONOUS)
+
+# Write single point
+point = (
+    Point("cpu_usage")
+    .tag("host", "server-1")
+    .tag("region", "us-west")
+    .field("value", 45.5)
+    .time(datetime.utcnow(), write_precision="ns")
+)
+write_api.write(bucket="metrics", record=point)
+
+# Batch write
+points = []
+for i in range(100):
+    points.append(
+        Point("memory_usage")
+        .tag("host", f"server-{i}")
+        .tag("datacenter", "dc1")
+        .field("value", 60 + i % 30)
+        .field("threshold", 80)
+        .time(datetime.utcnow())
+    )
+write_api.write(bucket="metrics", records=points)
+
+# Query
+query_api = client.query_api()
+
+flux_query = '''
+from(bucket: "metrics")
+  |> range(start: -24h)
+  |> filter(fn: (r) => r._measurement == "cpu_usage")
+  |> filter(fn: (r) => r.host == "server-1")
+  |> aggregateWindow(every: 1m, fn: mean)
+'''
+
+result = query_api.query(query=flux_query)
+
+for table in result:
+    for record in table.records:
+        print(f"{record.time}: {record.value}")
+
+# Downsampling task
+downsampling_task = '''
+from(bucket: "metrics")
+  |> range(start: -30d)
+  |> filter(fn: (r) => r._measurement == "cpu_usage")
+  |> aggregateWindow(every: 1h, fn: mean)
+  |> to(bucket: "metrics_downsampled")
+'''
+```
+
+</TabItem>
+<TabItem value="node" label="Node.js + InfluxDB">
+
+```javascript
+const { InfluxDB, Point } = require('@influxdata/influxdb-client');
+const { url, token, org, bucket } = require('./config');
+
+const influxDB = new InfluxDB({ url, token });
+const writeApi = influxDB.getWriteApi(org, bucket, 'ns');
+
+// Write single metric
+writeApi.writePoint(
+  new Point('memory_usage')
+    .tag('host', 'server-1')
+    .tag('region', 'us-west')
+    .floatField('value', 65.5)
+    .timestamp(new Date())
+);
+
+// Batch write metrics
+const metrics = [];
+for (let i = 1; i <= 1000; i++) {
+  metrics.push(
+    new Point('cpu_usage')
+      .tag('host', `server-${i}`)
+      .tag('datacenter', 'dc1')
+      .floatField('value', 20 + Math.random() * 60)
+      .timestamp(new Date())
+  );
+}
+writeApi.writePoints(metrics);
+
+// Flush writes
+writeApi.flush().then(() => {
+  console.log('Write successful');
+}).catch(error => {
+  console.error('Write failed:', error);
+});
+
+// Query with Flux
+const queryApi = influxDB.getQueryApi(org);
+
+const fluxQuery = `from(bucket: "${bucket}")
+  |> range(start: -24h)
+  |> filter(fn: (r) => r._measurement == "cpu_usage")
+  |> filter(fn: (r) => r.host == "server-1")
+  |> aggregateWindow(every: 1h, fn: mean)`;
+
+queryApi.queryRows(fluxQuery, {
+  next(row, tableMeta) {
+    const o = tableMeta.toObject(row);
+    console.log(`${o._time} ${o._field}=${o._value}`);
+  },
+  error(error) {
+    console.error('Query error:', error);
+  },
+  complete() {
+    console.log('Query complete');
+  }
+});
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use TSDB / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use TSDB When",
+    points: ["Primary access is time-range queries", "High write volume (>10K points/sec)", "Long-term retention with downsampling", "Metrics, logs, events, monitoring", "Append-only data (rarely updated)"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use RDBMS When",
+    points: ["Complex multi-table queries", "Data frequently updated/deleted", "Random access by non-time keys", "Transactions across entities", "Complex reporting and BI"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Cardinality Explosion",
+      description: "Too many unique tag values kills performance. Avoid unbounded tags (user_id, request_id)",
+      tags: ["design", "performance"]
+    }, {
+      title: "Downsampling Strategy",
+      description: "Plan retention: raw data 30d, hourly 1yr, daily 5yr. Store in separate buckets",
+      tags: ["retention", "storage"]
+    }, {
+      title: "Batch Writes",
+      description: "Write batches instead of individual points. Compress and batch 1000+ points",
+      tags: ["performance", "efficiency"]
+    }, {
+      title: "Retention Policies",
+      description: "Automatic deletion of old data. Balance storage cost and query history needs",
+      tags: ["storage", "operations"]
+    }, {
+      title: "Aggregation Pushdown",
+      description: "Aggregate at TSDB level (not in application). Reduce network and processing",
+      tags: ["performance", "optimization"]
+    }, {
+      title: "Time Skew",
+      description: "Handle late-arriving data. Set appropriate tolerances for backfill"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Tag cardinality is bounded (&lt;1M unique combinations)",
+    "High-cardinality fields stored as field values, not tags",
+    "Retention policies defined for different time ranges",
+    "Downsampling tasks scheduled for long-term data",
+    "Write batching configured (>1K points per batch)",
+    "Storage capacity planned for growth",
+    "Compression verified and monitored",
+    "Query patterns optimized (not full table scans)",
+    "Backup and recovery procedures documented",
+    "Alerting rules defined for anomalies"
+  ]}
+/>
+
+## Self-Check
+
+- What's tag cardinality and why does it matter?
+- How would you handle 1M metrics from 100K servers?
+- What's the difference between tags and fields in InfluxDB?
+- How do you design downsampling for 5-year retention?
+
+:::info
+Time-series databases are purpose-built for append-only temporal data with excellent compression and time-range query performance. Use them for metrics and monitoring; they're not suitable for complex relational or random-access queries.
+:::
+
+## Advanced TSDB Patterns
+
+### Efficient Data Ingestion at Scale
+
+```python
+# Batch writes for efficiency (10x-100x better throughput)
+from influxdb_client import InfluxDBClient, Point
+import time
+from datetime import datetime
+
+class MetricsBuffer:
+    def __init__(self, client, bucket, flush_interval=10, batch_size=1000):
+        self.client = client
+        self.bucket = bucket
+        self.buffer = []
+        self.flush_interval = flush_interval
+        self.batch_size = batch_size
+        self.last_flush = time.time()
+
+    def add_metric(self, measurement, tags, fields):
+        """Add metric to buffer"""
+        point = (
+            Point(measurement)
+            .time(datetime.utcnow(), write_precision="ns")
+        )
+        for k, v in tags.items():
+            point.tag(k, v)
+        for k, v in fields.items():
+            point.field(k, v)
+
+        self.buffer.append(point)
+
+        # Auto-flush on batch size or interval
+        if len(self.buffer) >= self.batch_size or \
+           time.time() - self.last_flush > self.flush_interval:
+            self.flush()
+
+    def flush(self):
+        """Write buffered points in batch"""
+        if not self.buffer:
+            return
+
+        write_api = self.client.write_api()
+        write_api.write(self.bucket, records=self.buffer)
+        self.buffer.clear()
+        self.last_flush = time.time()
+
+# Usage
+buffer = MetricsBuffer(client, bucket="metrics")
+for i in range(100000):
+    buffer.add_metric(
+        "cpu_usage",
+        tags={"host": f"server-{i % 100}", "region": "us-west"},
+        fields={"value": 50 + i % 50}
+    )
+# Auto-flushes every 10 seconds or 1000 points
+```
+
+### Downsampling for Long-Term Storage
+
+```yaml
+# Downsampling strategy to manage storage growth
+retention_and_downsampling:
+  hot_data:
+    period: "30 days"
+    resolution: "1 minute"
+    storage: "SSD (fast queries)"
+    size: "~100 GB per metric"
+    use_case: "Real-time dashboards, recent alerts"
+
+  warm_data:
+    period: "1 year"
+    resolution: "1 hour"
+    storage: "HDD (slower queries ok)"
+    size: "~500 MB per metric"
+    use_case: "Weekly trends, anomaly detection"
+    downsampling_task: |
+      from(bucket: "metrics")
+        |> range(start: -30d)
+        |> filter(fn: (r) => r._measurement == "cpu_usage")
+        |> aggregateWindow(every: 1h, fn: mean, timeSrc: "_start")
+        |> to(bucket: "metrics_1h")
+
+  cold_data:
+    period: "5 years"
+    resolution: "1 day"
+    storage: "Archive (rarely accessed)"
+    size: "~50 MB per metric"
+    use_case: "Compliance, long-term trends, investigations"
+    downsampling_task: |
+      from(bucket: "metrics_1h")
+        |> range(start: -1y)
+        |> aggregateWindow(every: 1d, fn: mean)
+        |> to(bucket: "metrics_1d")
+```
+
+### Multi-Tenancy and Data Isolation
+
+```python
+# Tagging strategy for multi-tenant TSDB
+class MultiTenantMetrics:
+    def __init__(self, client):
+        self.client = client
+
+    def record_metric(self, tenant_id, measurement, value, tags=None):
+        """Record metric with tenant isolation via tags"""
+        tags = tags or {}
+        # Always include tenant_id to ensure isolation
+        tags['tenant_id'] = tenant_id
+
+        point = (
+            Point(measurement)
+            .tag("tenant_id", tenant_id)
+        )
+        for k, v in tags.items():
+            point.tag(k, v)
+        point.field("value", value)
+
+        self.client.write_api().write("metrics", records=[point])
+
+    def query_tenant_metrics(self, tenant_id, measurement, time_range):
+        """Query only metrics for specific tenant"""
+        query_api = self.client.query_api()
+
+        flux_query = f'''
+        from(bucket: "metrics")
+          |> range(start: {time_range})
+          |> filter(fn: (r) => r._measurement == "{measurement}")
+          |> filter(fn: (r) => r.tenant_id == "{tenant_id}")
+        '''
+
+        return query_api.query(query=flux_query)
+
+    def enforce_quota(self, tenant_id, metrics_per_second_limit):
+        """Enforce per-tenant ingestion quotas"""
+        current_rate = self._get_ingestion_rate(tenant_id)
+        if current_rate > metrics_per_second_limit:
+            raise QuotaExceededError(
+                f"Tenant {tenant_id} exceeds quota: "
+                f"{current_rate} > {metrics_per_second_limit}"
+            )
+```
+
+## Comparison: Prometheus vs InfluxDB vs TimescaleDB
+
+```
+Prometheus:
+- Pull-based (scrapes endpoints)
+- Good for: Kubernetes, modern cloud infrastructure
+- Strength: Simple deployment, excellent alerting
+- Weakness: Limited retention, single-node
+
+InfluxDB:
+- Push-based (clients send metrics)
+- Good for: Applications emitting custom metrics
+- Strength: High write throughput, downsampling built-in
+- Weakness: More operational overhead
+
+TimescaleDB:
+- PostgreSQL extension
+- Good for: Already using PostgreSQL
+- Strength: SQL querying, full database features
+- Weakness: Less specialized than Prometheus/InfluxDB
+
+Choice depends on:
+- Data source: Pull (Prometheus) vs Push (InfluxDB, TimescaleDB)
+- Scale: Small (<100K points/sec) vs Large (>1M points/sec)
+- Query complexity: Simple ranges (Prometheus) vs Complex (TimescaleDB)
+- Operational burden: Minimal (Prometheus) vs Moderate (InfluxDB, TimescaleDB)
+```
+
+## Next Steps
+
+- Explore **Performance Optimization** for TSDB queries
+- Learn **Materialized Views** for pre-aggregated metrics
+- Study **Retention and Archival** strategies
+- Dive into **Monitoring and Observability** patterns
+- Design **Multi-Tenancy** for SaaS applications
+- Implement **Capacity Planning** for metric growth
+
+## References
+
+- Prometheus Official Documentation (prometheus.io)
+- InfluxDB Documentation (influxdata.com)
+- Timescale PostgreSQL Extension (timescale.com)
+- "Designing Data-Intensive Applications" by Martin Kleppmann
+- Brendan Gregg: "The Four Golden Signals of Monitoring"

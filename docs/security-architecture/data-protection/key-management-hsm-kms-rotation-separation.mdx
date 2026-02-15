@@ -1,0 +1,550 @@
+---
+sidebar_position: 3
+title: "Key Management: HSM, KMS, Rotation & Separation"
+description: "Manage encryption keys securely with HSM/KMS, implement rotation, and separate keys by purpose"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [key management, HSM, KMS, key rotation, key separation, NIST SP 800-57, key lifecycle]
+image: /img/archman-social-card.webp
+tags: [key-management, HSM, KMS, rotation, security-architecture]
+hide_title: true
+---
+
+<Hero title="Key Management" subtitle="Secure key lifecycle with HSM/KMS, rotation, and separation" imageAlt="key management illustration" size="large" />
+
+## TL;DR
+
+**Key Management** controls encryption key lifecycle: generation, storage, use, rotation, retirement. **HSM (Hardware Security Module)**: physical device, holds keys, never exports them. **KMS (Key Management Service)**: cloud service (AWS, GCP, Azure) that encrypts/decrypts data without app accessing raw keys. **Rotation**: periodically replace keys (90 days typical). **Separation**: different keys for different purposes (signing vs encryption, prod vs dev). Never hardcode keys; always use HSM/KMS.
+
+## Learning Objectives
+
+- Distinguish HSM from KMS and when to use each
+- Design key rotation without service downtime
+- Implement key separation by purpose and environment
+- Manage key lifecycle (creation, use, retirement)
+- Audit key access and usage
+
+## Motivating Scenario
+
+**Problem**: Encryption key hardcoded in config file. Developer checks it into GitHub. Attacker finds key, decrypts all sensitive data. Compromise spans months before detection.
+
+**Solution**: Key stored in HSM/KMS. Code never touches raw key. HSM/KMS provides APIs: "encrypt this data," "decrypt this data." Code doesn't hold key. If HSM/KMS compromised, detection immediate. Keys rotated every 90 days; old key compromise limited to 90 days of data.
+
+## Core Concepts
+
+### HSM vs KMS
+
+<Vs items={[
+{
+    label: "HSM (Hardware Security Module)",
+    points: [
+      "Physical device, tamper-resistant",
+      "Keys never leave HSM",
+      "On-premises or cloud (AWS CloudHSM)",
+      "High throughput, low latency",
+      "Expensive, complex to operate",
+      "FIPS 140-2 certified (high security)"
+    ]
+  },
+{
+    label: "KMS (Key Management Service)",
+    points: [
+      "Cloud service (AWS, GCP, Azure)",
+      "Keys managed for you",
+      "API-driven: encrypt/decrypt/sign",
+      "Pay-per-use, simple operations",
+      "Slightly higher latency",
+      "Audit trails built-in",
+      "Good for most applications"
+    ]
+  }
+]} />
+
+### Key Lifecycle
+
+```
+1. Generation: Create key in HSM/KMS (new entropy)
+   Status: Active
+
+2. Use: Applications request encrypt/decrypt
+   Status: Active
+   Duration: 30-90 days
+
+3. Rotation: Create new key (same purpose)
+   Status: Active (new), Pending Retirement (old)
+   Both keys usable for decryption; new used for encryption
+
+4. Pending Retirement: Key can decrypt old data
+   Status: Pending Retirement
+   Duration: 90 days (ensure all old data decrypted)
+
+5. Retirement: Key archived, never used
+   Status: Retired
+   Kept for compliance (HIPAA: 6 years, PCI: 3 years)
+```
+
+### Key Separation Strategy
+
+```
+Purpose:
+- Signing key: Digital signatures (TLS cert)
+- Encryption key: Data at rest (database)
+- MAC key: Message authentication (API responses)
+- Transport key: TLS handshake
+
+Environment:
+- dev_db_key: Dev database (rotate monthly)
+- staging_db_key: Staging database (rotate 60 days)
+- prod_db_key: Production database (rotate 30 days, strict access)
+
+Data Classification:
+- public_data_key: Logs, non-sensitive data
+- internal_data_key: Internal docs, configs
+- confidential_data_key: PII, payment data (HSM required)
+- restricted_data_key: Health data, legal (HSM + audit trail)
+```
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="aws-kms" label="AWS KMS" default>
+    ```bash
+    # Create a master key in AWS KMS
+    aws kms create-key \
+      --description "Production database encryption key" \
+      --origin AWS_KMS \
+      --key-policy file://key-policy.json
+
+    # Key policy example (who can use the key)
+    {
+      "Sid": "Allow app role to use key",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789:role/AppRole"
+      },
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    }
+
+    # Encrypt data
+    aws kms encrypt \
+      --key-id arn:aws:kms:us-east-1:123456789:key/12345 \
+      --plaintext "sensitive data" \
+      --query 'CiphertextBlob' \
+      --output text | base64
+
+    # Decrypt data
+    aws kms decrypt \
+      --ciphertext-blob fileb://encrypted_data \
+      --query 'Plaintext' \
+      --output text | base64 -d
+    ```
+  </TabItem>
+
+  <TabItem value="rotation" label="Key Rotation Strategy">
+    ```javascript
+    // Implement key rotation without service downtime
+    async function rotateKeyDaily() {
+      const today = new Date().toISOString().split('T')[0];
+      const keyAlias = `alias/prod-db-key-${today}`;
+
+      // Check if key exists for today
+      try {
+        const key = await kms.describeKey({
+          KeyId: keyAlias
+        }).promise();
+        return key.KeyMetadata.KeyId;
+      } catch (e) {
+        // Key doesn't exist, create it
+      }
+
+      // Create new key
+      const newKey = await kms.createKey({
+        Description: `Production DB key - ${today}`,
+        Origin: 'AWS_KMS'
+      }).promise();
+
+      const keyId = newKey.KeyMetadata.KeyId;
+
+      // Create alias
+      await kms.createAlias({
+        AliasName: keyAlias,
+        TargetKeyId: keyId
+      }).promise();
+
+      console.log(`New key created: ${keyId}`);
+      return keyId;
+    }
+
+    // Use key for encryption (automatically uses latest alias)
+    async function encryptData(data, keyAlias) {
+      const result = await kms.encrypt({
+        KeyId: keyAlias,
+        Plaintext: data
+      }).promise();
+      return result.CiphertextBlob.toString('base64');
+    }
+
+    // Decryption works with any version (KMS tracks key ID in ciphertext)
+    async function decryptData(ciphertext) {
+      const result = await kms.decrypt({
+        CiphertextBlob: Buffer.from(ciphertext, 'base64')
+      }).promise();
+      return result.Plaintext.toString();
+    }
+    ```
+  </TabItem>
+
+  <TabItem value="separation" label="Key Separation">
+    ```javascript
+    // Separate keys by purpose and environment
+    const keyConfig = {
+      encryption: {
+        prod: {
+          kms_key_id: 'arn:aws:kms:us-east-1:acc:key/prod-encrypt',
+          rotation_days: 30,
+          data_classification: 'confidential',
+          uses: ['data-at-rest-production']
+        },
+        staging: {
+          kms_key_id: 'arn:aws:kms:us-east-1:acc:key/staging-encrypt',
+          rotation_days: 60,
+          data_classification: 'internal'
+        }
+      },
+      signing: {
+        prod: {
+          kms_key_id: 'arn:aws:kms:us-east-1:acc:key/prod-sign',
+          rotation_days: 90,
+          uses: ['jwt-signing', 'api-signing']
+        }
+      }
+    };
+
+    async function getAppropriateKey(purpose, env, dataClass) {
+      // Select key based on purpose, environment, and data classification
+      if (dataClass === 'confidential') {
+        // Must use production key with HSM backing
+        if (purpose === 'encrypt') {
+          return keyConfig.encryption.prod;
+        }
+      }
+      return keyConfig[purpose]?.[env];
+    }
+    ```
+  </TabItem>
+
+  <TabItem value="hsm" label="CloudHSM Setup">
+    ```bash
+    # AWS CloudHSM (hardware security module)
+
+    # Create HSM cluster
+    aws cloudhsm create-cluster \
+      --hsm-type hsm1.medium \
+      --availability-zone us-east-1a \
+      --subnet-ids subnet-12345
+
+    # Initialize HSM (set PIN)
+    # (CloudHSM CLI tool required)
+
+    # Upload keys to HSM
+    # (Keys never leave HSM in plaintext)
+
+    # Benefits over software KMS:
+    # - FIPS 140-2 Level 3 certification
+    # - Keys in hardware, tamper-resistant
+    # - Only you control access
+    # - Audit all key operations
+
+    # Use case: regulated industries, high-security requirements
+    ```
+  </TabItem>
+</Tabs>
+
+## Patterns and Pitfalls
+
+**Pitfall**: Storing key next to ciphertext in code/config.
+
+**Pattern**: Keys in vault/KMS, code has token to access KMS. KMS returns decrypted data, never raw key.
+
+**Pitfall**: One key for everything. Rotated every 5 years.
+
+**Pattern**: Short rotation cycles (30-90 days), separate keys by purpose/environment. Compromise limited to one key's scope.
+
+**Pitfall**: Manual key rotation. Easy to miss keys, inconsistent.
+
+**Pattern**: Automated rotation via CloudFormation, Terraform, or cron job. Rotation logged and alerted.
+
+**Pitfall**: No audit trail. Can't prove who used keys or when.
+
+**Pattern**: Enable audit logging in KMS. Every key operation logged (CloudTrail, CloudWatch).
+
+## Design Review Checklist
+
+- [ ] Key storage: HSM or KMS (never in code/config)
+- [ ] Keys separated by purpose (signing, encryption, MAC)
+- [ ] Keys separated by environment (prod, staging, dev)
+- [ ] Key rotation automated (30-90 days cycle)
+- [ ] Old keys retained for decryption (backward compatibility)
+- [ ] Key versioning/tagging enabled
+- [ ] Access control: Only authorized services can use keys
+- [ ] Audit logging enabled (all key operations logged)
+- [ ] Key compromise procedure defined and tested
+- [ ] Key retirement process documented
+- [ ] Compliance requirements met (NIST SP 800-57)
+
+## Advanced Key Management Scenarios
+
+### Scenario 1: Multi-Region Key Management
+
+Complying with data residency requirements while enabling disaster recovery:
+
+```yaml
+Primary Region (us-east-1):
+  - KMS key for production database
+  - Encryption at rest: primary region
+  - Copies of database in secondary region (encrypted with secondary key)
+
+Secondary Region (us-west-2):
+  - KMS key for backup/disaster recovery
+  - Same policy: only application can decrypt
+  - Replicated from primary (every write goes to both)
+
+Partition Scenario (if regions disconnect):
+  - Primary region: continues as authoritative
+  - Secondary region: serves reads, queues writes
+  - On partition heal: secondary syncs writes from primary
+---
+
+Regulatory: EU data must stay in EU
+Solution:
+  - Maintain separate keys per region
+  - KMS instance in each region
+  - Application logic: encrypt in home region, never export plaintext across regions
+```
+
+### Scenario 2: Key Compromise Response
+
+When key suspected compromised (exposure log, third-party incident, etc):
+
+```javascript
+// Detect compromise
+kms.generateAuditLog('prodDbKey').then(events => {
+  const unexpectedUsers = events.filter(e => !authorizedUsers.includes(e.principal));
+  if (unexpectedUsers.length > 0) {
+    console.log("ALERT: Key compromised!");
+  }
+});
+
+// Response plan
+async function respondToKeyCompromise(keyId) {
+  // 1. Disable key immediately (prevent new encryption/decryption)
+  await kms.disableKey(keyId);
+
+  // 2. Notify application team
+  sendAlert("KeyCompromisedAlarm", {
+    keyId,
+    compromisedAt: new Date().toISOString(),
+    estimatedExposure: "Data encrypted since last key rotation"
+  });
+
+  // 3. Create new key
+  const newKey = await kms.createKey({
+    Description: `Replacement for compromised key ${keyId}`,
+    Origin: 'AWS_KMS'
+  });
+
+  // 4. Rotate all data (re-encrypt with new key)
+  // This is expensive but necessary for security
+  const allSecrets = await database.getAllEncryptedData();
+  for (const secret of allSecrets) {
+    const plaintext = await kms.decrypt({
+      CiphertextBlob: secret.ciphertext,
+      KeyId: keyId  // Old key
+    });
+    const newCiphertext = await kms.encrypt({
+      CiphertextBlob: plaintext,
+      KeyId: newKey.KeyId  // New key
+    });
+    await database.update(secret.id, newCiphertext);
+  }
+
+  // 5. Decommission old key
+  await kms.scheduleKeyDeletion(keyId, { PendingWindowInDays: 30 });
+
+  // 6. Post-mortem: How was key exposed? Update processes.
+}
+```
+
+### Scenario 3: Cryptographic Agility (Algorithm Changes)
+
+What if AES-128 is weakened and you need to migrate to AES-256?
+
+```
+Envelop Envelope Pattern:
+  - Data is encrypted with data keys (AES-128 or AES-256)
+  - Data keys are encrypted with master keys (KMS manages)
+  - To rotate algorithm:
+    1. Decrypt data with old algorithm
+    2. Re-encrypt with new algorithm
+    3. Replace ciphertext
+    4. KMS manages master keys (algorithm-agnostic)
+```
+
+```javascript
+// Old: AES-128
+const encrypted128 = aes128.encrypt(plaintext, dataKey);
+
+// Migration: decrypt old, re-encrypt new
+for (const record of database.getAll()) {
+  const plaintext = aes128.decrypt(record.ciphertext, dataKey);
+  const encrypted256 = aes256.encrypt(plaintext, newDataKey);
+  database.update(record.id, encrypted256);
+}
+
+// New: AES-256
+const encrypted256 = aes256.encrypt(plaintext, newDataKey);
+```
+
+The KMS layer abstracts this—application doesn't change, keys are managed centrally.
+
+## Key Lifecycle States
+
+Extended view of key lifecycle:
+
+```
+1. PENDING_GENERATION
+   Status: Being created
+   Action: Wait for completion
+
+2. ACTIVE (Use Phase)
+   Status: Can encrypt/decrypt
+   Duration: 30-90 days
+   Action: Keys actively used for new encryptions
+
+3. ROTATION
+   Status: Old key retires, new key becomes active
+   Duration: 1 hour (concurrent operation)
+   Action: Old key switches to "Pending Retirement", new key becomes "Active"
+
+4. PENDING_RETIREMENT
+   Status: Can decrypt only (not encrypt)
+   Duration: 30-90 days after rotation
+   Action: Old data still decrypting, no new encryption
+   Purpose: Ensures all old data is re-encrypted before deletion
+
+5. RETIRED
+   Status: Not used by application
+   Action: Archived, kept for compliance (6 years for HIPAA, 3 for PCI)
+
+6. PENDING_DELETION
+   Status: Scheduled for deletion
+   Duration: 7-30 days
+   Action: Last chance to recover key if deletion was accidental
+
+7. DELETED
+   Status: Permanently removed
+   Action: None; key is gone
+```
+
+## Key Versioning and Management
+
+### Key Version States
+
+Every key should track versions and their states:
+
+```javascript
+{
+  key_id: 'prod-db-key',
+  versions: [
+    {
+      version: 1,
+      created_at: '2025-01-01T00:00:00Z',
+      status: 'retired',  // Old, no longer used
+      last_rotated: '2025-02-01T00:00:00Z'
+    },
+    {
+      version: 2,
+      created_at: '2025-02-01T00:00:00Z',
+      status: 'pending_retirement',  // New was created, but old still used for decryption
+      rotated_from: 1,
+      last_used: '2025-02-15T12:30:00Z'
+    },
+    {
+      version: 3,
+      created_at: '2025-02-15T12:00:00Z',
+      status: 'active',  // Current version used for new encryption
+      rotation_scheduled: '2025-03-15T12:00:00Z'  // Rotate every month
+    }
+  ]
+}
+```
+
+Version tracking enables:
+- Audit trail of key changes
+- Understanding which data was encrypted with which key
+- Gradual migration from old to new versions
+- Compliance reporting
+
+## Self-Check
+
+- When would you use HSM vs KMS?
+  * HSM: regulated industries (HIPAA, PCI), on-premises, air-gapped networks, needs physical tamper detection
+  * KMS: most applications, cloud-native, pay-per-use, managed by cloud provider
+
+- Why separate keys by purpose?
+  * Compromise of signing key doesn't compromise encryption key
+  * Rotation cycles: signing keys rotate less frequently; encryption keys more frequently
+  * Audit trails per key: easier to track who used which key for what
+  * Access control per key: different teams might need different keys
+
+- How does key rotation work without decryption failures?
+  * Old key remains usable for decryption (Pending Retirement state)
+  * New key used for new encryptions
+  * Existing encrypted data continues to decrypt with old key
+  * Graceful migration over rotation period (30-90 days)
+  * After rotation period, old key archived but kept for compliance
+
+- What's the fastest way to respond to key compromise?
+  * Detect: Monitor unusual key access, audit logs
+  * Disable: Immediately stop accepting new operations with compromised key
+  * Notify: Alert all dependent services and stakeholders
+  * Create new key: Generate replacement with different security properties
+  * Re-encrypt: Asynchronously re-encrypt all data with new key
+  * Retire: After data re-encrypted, archive old key (don't delete)
+
+- How do you prove compliance with key management policies?
+  * Audit logs: Every key operation logged (who, when, what, why)
+  * Rotation history: Dates and IDs of all rotations
+  * Access control: IAM policies controlling who can use each key
+  * Retention policies: How long keys/data are kept after compromise
+  * Third-party attestation: HSM FIPS 140-2 certifications, KMS audit reports
+
+:::info One Takeaway
+Keys in vault/HSM + separation by purpose + automated rotation + audit trails = compromise is limited in scope and detected quickly. The cost of key management infrastructure is far lower than the cost of a data breach.
+
+:::
+
+## Next Steps
+
+- Read **Encryption at Rest** for envelope encryption using these keys
+- Study **Encryption in Transit** for TLS key management
+- Explore **Secrets Management** for non-cryptographic secrets (API keys, passwords)
+- Learn **Compliance Frameworks** (HIPAA, PCI-DSS) for key management requirements
+- Implement **Key Rotation Automation** using Infrastructure-as-Code (Terraform)
+
+## References
+
+- NIST SP 800-57: Key Management (Parts 1, 2, 3)
+- AWS KMS Best Practices
+- AWS CloudHSM User Guide
+- OWASP Cryptographic Failures Cheat Sheet
+- PCI DSS Key Management Requirements
+- HIPAA Security Rule: Encryption and Decryption Standards

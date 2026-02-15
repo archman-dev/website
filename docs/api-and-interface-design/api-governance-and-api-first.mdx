@@ -1,0 +1,362 @@
+---
+sidebar_position: 8
+title: "API Governance and API-First"
+description: "Standardize API design across organizations with governance and API-first development"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [API governance, API-first, design-first, OpenAPI, linting, style guides, API registry, design reviews]
+image: /img/archman-social-card.webp
+tags: [API-governance, API-first, design-first, OpenAPI, style-guides, linting, standardization, API-registry, consistency, organizational-alignment]
+hide_title: true
+---
+
+<Hero title="API Governance and API-First" subtitle="Standardize API design across organizations" imageAlt="API Governance illustration" size="large" />
+
+## TL;DR
+
+**API Governance** establishes organizational standards: naming conventions, error formats, authentication schemes, versioning strategies. **API-First development** means design the API before implementation. Use OpenAPI specs as source of truth. Tools like Spectacle (linting) and Swagger UI enforce consistency. Register APIs in a central catalog. Design reviews ensure quality before code. This prevents chaos as organizations grow: every team using different conventions, incompatible auth, inconsistent error handling. Governance adds overhead initially but saves time and prevents costly mistakes later.
+
+## Learning Objectives
+
+- Establish API design standards and style guides
+- Implement API-first development workflows
+- Use OpenAPI/AsyncAPI as design contracts
+- Automate consistency checking (linting)
+- Build API registry for discovery
+- Conduct effective API design reviews
+
+## Motivating Scenario
+
+Your organization has grown to 50 teams building APIs independently. One team uses `/users`, another `/users/list`. Auth is OAuth 2.0 in team A, API keys in team B, basic auth in team C. Error responses are completely different: some return `{ error: "...", }`; others return `[{ "message": "...", "code": 123 }]`. Partners integrating with your ecosystem face a nightmare: each API has its own conventions. No API is inherently broken, but collectively, they're inconsistent and unmaintainable.
+
+API governance solves this by defining standards, enforcing them via linting and reviews, and building consistency organization-wide.
+
+## Core Concepts
+
+### API-First Development
+
+**Design-first**: Write OpenAPI spec before implementation. Spec becomes source of truth. Enables:
+- Client and server development in parallel
+- Mock servers for early testing
+- Documentation generation from spec
+- Server generation (Swagger Codegen)
+
+**Process**:
+1. Design API in OpenAPI
+2. Conduct design review
+3. Generate mock server
+4. Clients develop against mock
+5. Implement server when ready
+6. Integration tests verify spec compliance
+
+### Style Guide and Conventions
+
+Document decisions centrally:
+
+```yaml
+# Style Guide Example
+naming:
+  resources: plural-lowercase (users, orders, products)
+  fields: snake_case (user_id, created_at)
+  enums: UPPER_CASE (PENDING, COMPLETED)
+  operations: RESTful verbs (GET, POST, PUT, DELETE)
+
+versioning:
+  strategy: URI (/v1/, /v2/)
+  support_window: "Last 2 major versions"
+  deprecation: "6 months notice"
+
+errors:
+  format: RFC 7807 Problem Details
+  required_fields: [type, title, status, detail]
+
+authentication:
+  scheme: OAuth 2.0
+  scopes: [read:profile, write:profile, admin:users]
+
+pagination:
+  strategy: offset-limit
+  default_limit: 20
+  max_limit: 100
+```
+
+### Spectral and API Linting
+
+Spectral is a JSON/YAML linter for OpenAPI specs. Define custom rules to enforce your standards:
+
+```yaml
+# .spectral.yaml
+extends: spectral:oas
+rules:
+  operation-operationId-valid-in-url:
+    description: "operationId must contain the HTTP method and resource"
+    recommended: true
+
+  operation-singular-responseCode:
+    description: "All success responses should be 200 or 201"
+    severity: warn
+
+  oas3-api-servers:
+    description: "API must define servers (host, baseUrl)"
+    given: $
+    then:
+      field: servers
+      function: truthy
+
+  no-ambiguous-paths:
+    description: "Avoid paths that could be confused (singular vs plural)"
+    severity: error
+```
+
+Run `spectral lint openapi.yaml` before committing. Enforces consistency automatically.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="design" label="API-First Workflow">
+
+```yaml
+# 1. Design API in OpenAPI (shared with stakeholders)
+openapi: 3.0.0
+info:
+  title: Order Service
+  version: 1.0.0
+paths:
+  /orders:
+    post:
+      summary: Create order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        201:
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+  /orders/{orderId}:
+    get:
+      summary: Get order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+components:
+  schemas:
+    Order:
+      type: object
+      required: [id, customer_id, total, status, created_at]
+      properties:
+        id:
+          type: string
+        customer_id:
+          type: string
+        total:
+          type: number
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, SHIPPED, DELIVERED]
+        created_at:
+          type: string
+          format: date-time
+```
+
+</TabItem>
+<TabItem value="review" label="Design Review Checklist">
+
+```markdown
+# API Design Review Checklist
+
+## Naming & Conventions
+- [ ] Resource names plural and lowercase (/orders, not /order or /Order)
+- [ ] Field names snake_case (not camelCase)
+- [ ] HTTP methods RESTful (GET, POST, PUT, DELETE)
+- [ ] Enum values UPPER_CASE
+
+## Versioning
+- [ ] Versioning strategy clear (URI, header, or semantic)
+- [ ] Deprecation path documented if breaking changes
+
+## Errors
+- [ ] Error responses RFC 7807 format
+- [ ] Error codes documented
+- [ ] Validation errors include field details
+- [ ] No sensitive info in errors
+
+## Authentication & Authorization
+- [ ] Authentication required on protected endpoints
+- [ ] OAuth 2.0 scopes defined and documented
+- [ ] Authorization enforced (who can do what)
+
+## Pagination & Filtering
+- [ ] Collection endpoints support pagination
+- [ ] Default and max limits set
+- [ ] Filtering documented
+- [ ] Metadata included (total, has_more)
+
+## Documentation
+- [ ] All endpoints documented
+- [ ] Schema definitions clear
+- [ ] Example requests/responses provided
+- [ ] Error scenarios documented
+
+## Performance
+- [ ] N+1 queries avoided (GraphQL batching, REST eager loading)
+- [ ] Large responses paginated
+- [ ] Caching headers set appropriately
+```
+
+</TabItem>
+<TabItem value="automation" label="Linting & Automation">
+
+```bash
+# Spectral linting
+$ spectral lint api/openapi.yaml
+error: paths./orders.post.responses.201.content.application/json.schema.$ref: Reference does not match a valid schema
+error: paths./orders.{orderId}.get.parameters.0.name: Parameter name must match path variable {orderId}
+warn: operation-singular-responseCode: POST should return 201, not 200
+
+# CI/CD integration
+# .github/workflows/lint-api.yaml
+name: Lint API
+on: [pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: npx spectral lint api/openapi.yaml
+      - run: npm test  # Integration tests
+      - run: npx jest  # Unit tests
+
+# Only merge if linting passes
+```
+
+</TabItem>
+<TabItem value="registry" label="API Registry">
+
+```json
+{
+  "apis": [
+    {
+      "name": "Order Service",
+      "version": "1.0.0",
+      "spec_url": "https://api.example.com/specs/order-service.yaml",
+      "documentation": "https://docs.example.com/order-service",
+      "owner_team": "Order Platform",
+      "status": "STABLE",
+      "auth_methods": ["oauth2"],
+      "maturity": "GA",
+      "sla": {
+        "availability": "99.9%",
+        "latency_p99_ms": 200
+      }
+    },
+    {
+      "name": "Payment Service",
+      "version": "2.1.0",
+      "spec_url": "https://api.example.com/specs/payment-service.yaml",
+      "documentation": "https://docs.example.com/payment-service",
+      "owner_team": "Payments",
+      "status": "STABLE",
+      "auth_methods": ["oauth2", "api-key"],
+      "maturity": "GA",
+      "deprecations": [
+        {
+          "version": "1.0.0",
+          "sunset_date": "2024-06-30",
+          "migration_guide": "https://docs.example.com/payment-v2-migration"
+        }
+    }
+}
+```
+
+Central registry helps teams discover, understand, and depend on APIs safely.
+
+</TabItem>
+</Tabs>
+
+## Governance Tiers
+
+**Self-Service (Low-Governance)**: Teams own their APIs, minimal standards. Suits small organizations, experimental services.
+
+**Managed (Medium-Governance)**: Design reviews required, style guide enforced, API registry. Suits growing organizations with 10-50 teams.
+
+**Federated (High-Governance)**: Central API team reviews, rates, controls release. Suits large organizations, high-risk domains. Risk: bottleneck and bureaucracy.
+
+## API Maturity Model
+
+Rate APIs by maturity to guide adoption:
+
+| Level | Characteristics |
+|-------|-----------------|
+| **Experimental** | Early-stage, may change radically, not in production |
+| **Alpha** | Limited availability, expect breaking changes, feedback welcome |
+| **Beta** | Stable enough for production, minor breaking changes possible |
+| **GA (Generally Available)** | Stable, long-term support, breaking changes rare |
+| **Deprecated** | Sunset date announced, use alternative API |
+
+## Patterns and Pitfalls
+
+**Pitfall**: Governance without automation. Manual review scales poorly.
+
+**Pitfall**: Overly strict governance. Stifles innovation and speeds. Allow experimental zones.
+
+**Pitfall**: No feedback loop. Teams follow rules without understanding why. Document rationale.
+
+**Pattern**: Start with essential standards (naming, errors, auth). Add more as organization scales.
+
+**Pattern**: Tool-assisted design reviews. Humans discuss trade-offs; tools catch obvious violations.
+
+## Design Review Checklist
+
+- [ ] Style guide created and published
+- [ ] OpenAPI spec used as design contract
+- [ ] Spectral or linting tool configured
+- [ ] Design reviews documented (who, when, criteria)
+- [ ] API registry or catalog available
+- [ ] Example APIs show best practices
+- [ ] Maturity levels defined and tracked
+- [ ] Deprecation policy clear
+- [ ] Training or onboarding for new teams
+- [ ] Regular audits of API quality
+
+## Self-Check
+
+- What's the difference between API-first and code-first development?
+- Why lint APIs with Spectral instead of manual review?
+- When should governance be light vs strict?
+
+:::info One Takeaway
+Governance scaled well with organization. Start with style guides and design reviews; automate with linting and registries as you grow.
+
+:::
+
+## Next Steps
+
+- Read other API design sections for standards to enforce
+- Study **Versioning Strategies** for deprecation policies
+- Explore **Documentation** for communicating standards
+
+## References
+
+- OpenAPI Specification (openapis.org)
+- Spectral Linting Tool (stoplight.io/spectral)
+- API Design Best Practices (Google, Stripe, GitHub)
+- API Governance Guide (Postman, Gartner)

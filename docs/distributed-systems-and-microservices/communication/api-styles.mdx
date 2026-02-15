@@ -1,0 +1,411 @@
+---
+sidebar_position: 1
+title: "API Styles"
+description: "Master REST, gRPC, GraphQL, WebSockets, and SSE. Choose the right API style for your service communication needs."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [REST, gRPC, GraphQL, WebSockets, SSE, API design, HTTP, protocol buffers, real-time communication]
+image: /img/archman-social-card.webp
+tags: [REST, gRPC, GraphQL, WebSocket, SSE, API-design, communication, HTTP, protocol-buffers, real-time]
+hide_title: true
+---
+
+<Hero title="API Styles" subtitle="Master REST, gRPC, GraphQL, and real-time protocols. Choose the right style for your communication needs." imageAlt="API styles illustration" size="large" />
+
+## TL;DR
+
+Choose your API style based on your needs: REST for simplicity and compatibility, gRPC for performance and strong typing, GraphQL for flexible client queries, WebSockets for bidirectional real-time communication, and SSE for server-to-client streaming. Most systems use REST externally and gRPC or GraphQL internally. Real-time applications use WebSockets or SSE.
+
+## Learning Objectives
+
+- Understand the characteristics of each API style
+- Recognize trade-offs between simplicity, performance, and flexibility
+- Apply the right style for your use case
+- Know when to combine multiple styles
+
+## Motivating Scenario
+
+Your mobile app needs to fetch user data, posts, and comments. With REST, that's three separate calls and three separate payloads with fields you don't need. With GraphQL, the client specifies exactly what it needs in one query. But your internal services communicate thousands of times per second, where REST's overhead matters. gRPC is better. Your real-time dashboard needs updates instantly. WebSockets or SSE work. REST wouldn't.
+
+## The API Styles Landscape
+
+<Figure
+  caption="API Styles Trade-off Matrix"
+  content={`
+graph TB
+    A["REST<br/>Simple, Universal<br/>HTTP"]
+    B["gRPC<br/>Fast, Typed<br/>Binary"]
+    C["GraphQL<br/>Flexible<br/>Client-driven"]
+    D["WebSocket<br/>Bidirectional<br/>Real-time"]
+    E["SSE<br/>Server push<br/>Simple"]
+
+    style A fill:#c8e6c9
+    style B fill:#ffe0b2
+    style C fill:#f3e5f5
+    style D fill:#ffccbc
+    style E fill:#e3f2fd
+  `}
+/>
+
+## REST: Simplicity and Universality
+
+**Definition:** Representational State Transfer. Resources are identified by URLs; operations use HTTP verbs (GET, POST, PUT, DELETE).
+
+**Characteristics:**
+- Text-based (JSON), human-readable
+- Stateless
+- Cacheable (GET requests)
+- Widely understood
+- Largest ecosystem
+- Works through firewalls/proxies
+
+**When to Use:**
+- Public APIs (customers integrate)
+- Browser-based clients
+- Heterogeneous systems that must interoperate
+- When simplicity matters more than performance
+
+**Trade-offs:**
+- Overhead (text serialization, HTTP headers)
+- Over-fetching (get more data than needed)
+- Under-fetching (need multiple requests)
+- No strong typing (contract is loose)
+
+<Tabs>
+<TabItem value="rest-example" label="REST Example">
+```javascript
+// Over-fetching: Gets all fields, only needs id and name
+GET /api/users/123
+Response: {
+  id: 123,
+  name: "Alice",
+  email: "alice@example.com",
+  phone: "+1-555-1234",
+  address: "...",
+  preferences: {...}
+}
+
+// Under-fetching: Need multiple requests
+GET /api/users/123           // User data
+GET /api/users/123/posts     // User's posts
+GET /api/posts/456/comments  // Post comments
+
+// Typical REST endpoint
+GET    /api/posts          // List posts
+POST   /api/posts          // Create post
+GET    /api/posts/:id      // Get one post
+PUT    /api/posts/:id      // Update post
+DELETE /api/posts/:id      // Delete post
+```
+</TabItem>
+</Tabs>
+
+## gRPC: Performance and Strong Typing
+
+**Definition:** Google RPC framework. Uses Protocol Buffers for schema and serialization. Built on HTTP/2 for multiplexing.
+
+**Characteristics:**
+- Binary serialization (fast, compact)
+- Strong typing (schema validation)
+- Streaming (bidirectional)
+- HTTP/2 multiplexing (efficient)
+- Language-independent (polyglot)
+- High throughput, low latency
+
+**When to Use:**
+- Internal service-to-service communication
+- High-frequency APIs (thousands of calls/sec)
+- Microservices architectures
+- When performance matters
+- Real-time streaming
+
+**Trade-offs:**
+- Steeper learning curve (Protocol Buffers)
+- Not browser-friendly (needs gateway)
+- Requires HTTP/2 proxy support
+- Less human-readable
+
+<Tabs>
+<TabItem value="grpc-example" label="gRPC Example">
+```protobuf
+// Schema (strongly typed)
+syntax = "proto3";
+
+message User {
+  int32 id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+service UserService {
+  rpc GetUser (UserId) returns (User);
+  rpc ListUsers (Empty) returns (stream User);  // Streaming!
+  rpc UpdateUser (User) returns (User);
+}
+```
+
+```javascript
+// Client code (strongly typed)
+const user = await userService.GetUser({ id: 123 });
+console.log(user.name);  // Compiler knows .name exists
+
+// Streaming
+const stream = userService.ListUsers({});
+stream.on('data', (user) => console.log(user));
+```
+</TabItem>
+</Tabs>
+
+## GraphQL: Flexible Client Queries
+
+**Definition:** Query language for APIs. Clients specify exactly what data they need in a single request.
+
+**Characteristics:**
+- Client specifies data shape
+- Single endpoint
+- Strongly typed schema
+- Introspection (self-documenting)
+- No over-fetching (get exactly what you ask for)
+- No under-fetching (one query, all data)
+
+**When to Use:**
+- Multiple client types with different needs (mobile, web, desktop)
+- Public APIs (clients can optimize for their needs)
+- Complex data relationships
+- When flexibility is more important than simplicity
+
+**Trade-offs:**
+- More complex on the server (must handle arbitrary queries)
+- Query planning overhead
+- Potential for expensive queries (N+1 problem)
+- Learning curve (query syntax)
+
+<Tabs>
+<TabItem value="graphql-example" label="GraphQL Example">
+```graphql
+# Client specifies exactly what it needs
+query GetUserWithPosts {
+  user(id: 123) {
+    id
+    name
+    email
+    posts {
+      id
+      title
+      createdAt
+      comments {
+        author
+        text
+      }
+    }
+  }
+}
+
+# Response matches the query shape
+{
+  "user": {
+    "id": 123,
+    "name": "Alice",
+    "email": "alice@example.com",
+    "posts": [
+      {
+        "id": 1,
+        "title": "GraphQL is great",
+        "createdAt": "2025-01-15",
+        "comments": [
+          {"author": "Bob", "text": "Agree!"}
+      }
+  }
+}
+```
+</TabItem>
+</Tabs>
+
+## WebSockets: Bidirectional Real-Time
+
+**Definition:** TCP-like connection over HTTP. Both client and server can send messages anytime.
+
+**Characteristics:**
+- Persistent connection
+- Low latency (no HTTP overhead per message)
+- Bidirectional (client sends, server sends)
+- Full-duplex (both directions simultaneously)
+- Good for real-time applications
+
+**When to Use:**
+- Real-time dashboards
+- Chat applications
+- Live notifications
+- Collaborative editing
+- Multiplayer games
+- Streaming data
+
+**Trade-offs:**
+- Connection management (stateful, must handle disconnections)
+- Server resource usage (keeping connections open)
+- Not cacheable
+- Proxies may not support
+
+<Tabs>
+<TabItem value="websocket-example" label="WebSocket Example">
+```javascript
+// Client
+const ws = new WebSocket('ws://api.example.com/chat');
+
+ws.onopen = () => {
+    ws.send(JSON.stringify({ message: 'Hello' }));
+};
+
+ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    console.log('Received:', message);
+};
+
+ws.onerror = () => {
+    // Handle disconnection, reconnect with backoff
+};
+
+// Server
+const wss = new WebSocketServer({ port: 8080 });
+
+wss.on('connection', (ws) => {
+    ws.on('message', (data) => {
+        // Broadcast to all clients
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(data);
+            }
+        });
+    });
+});
+```
+</TabItem>
+</Tabs>
+
+## SSE: Server-Sent Events
+
+**Definition:** HTTP standard. Server pushes updates to client over a single HTTP connection.
+
+**Characteristics:**
+- One-way (server → client)
+- Uses standard HTTP
+- Automatic reconnection
+- Works through proxies and firewalls
+- Simpler than WebSocket
+- Text-only (but can encode binary)
+
+**When to Use:**
+- Server notifications to client
+- Event streams (updates, alerts)
+- Live feeds
+- Streaming data where server initiates
+- When WebSocket complexity isn't needed
+
+**Trade-offs:**
+- One-way (can't send from client without separate HTTP)
+- Text-only
+- Old browser support requires polyfill
+
+<Tabs>
+<TabItem value="sse-example" label="SSE Example">
+```javascript
+// Client
+const eventSource = new EventSource('/api/notifications');
+
+eventSource.onopen = () => console.log('Connected');
+
+eventSource.onmessage = (event) => {
+    const notification = JSON.parse(event.data);
+    console.log('Notification:', notification);
+};
+
+eventSource.onerror = () => {
+    // Automatic reconnection by browser
+};
+
+// Server (Node.js/Express)
+app.get('/api/notifications', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Send initial comment (keeps connection alive)
+    res.write(': connected\n\n');
+
+    // Send events
+    const interval = setInterval(() => {
+        res.write(`data: ${JSON.stringify({ message: 'Update' })}\n\n`);
+    }, 5000);
+
+    req.on('close', () => clearInterval(interval));
+});
+```
+</TabItem>
+</Tabs>
+
+## Comparison Matrix
+
+| Feature | REST | gRPC | GraphQL | WebSocket | SSE |
+|---------|------|------|---------|-----------|-----|
+| **Simplicity** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Performance** | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Real-time** | ❌ | ✅ | ❌ | ✅ | ✅ |
+| **Browser-friendly** | ✅ | ⭐ (gateway) | ✅ | ✅ | ✅ |
+| **Caching** | ✅ | ❌ | Partial | ❌ | ❌ |
+| **Streaming** | ❌ | ✅ | ❌ | ✅ | ✅ |
+| **Flexibility** | Low | Low | High | Medium | Low |
+| **Type Safety** | Loose | ✅ Strong | ✅ Strong | None | None |
+
+## Hybrid Approaches
+
+Most systems use multiple styles:
+
+<Vs items={[
+{
+    label: "External Communication",
+    points: [
+      "REST for public APIs (simple, universal)",
+      "GraphQL for mobile apps (flexible, efficient)",
+      "WebSocket for real-time dashboards (live updates)"
+    ]
+  },
+{
+    label: "Internal Communication",
+    points: [
+      "gRPC for high-frequency calls (fast)",
+      "REST for human-friendly debugging",
+      "Messaging for event-driven patterns"
+    ]
+  }
+]} />
+
+## Self-Check
+
+For each scenario, which API style?
+1. Customer-facing public API?
+2. Real-time stock ticker?
+3. Internal payment service (1M calls/day)?
+4. Mobile app with offline support?
+5. Collaborative document editor?
+
+:::info One Takeaway
+REST is the default. Use gRPC internally for performance. Use GraphQL when flexibility matters. Use WebSockets or SSE only for true real-time needs.
+
+:::
+
+## Next Steps
+
+1. **Sync vs Async:** Read [Synchronous vs Asynchronous Communication](/docs/distributed-systems-and-microservices/communication/sync-vs-async)
+2. **Async Patterns:** Learn [Messaging](/docs/distributed-systems-and-microservices/communication/messaging)
+3. **Infrastructure:** Explore [API Gateway](/docs/distributed-systems-and-microservices/communication/api-gateway)
+
+## References
+
+- Fielding, R. T. (2000). "Architectural Styles and the Design of Network-based Software Architectures". PhD Thesis.
+- Google. (n.d.). "gRPC: A high-performance, open-source universal RPC framework". grpc.io.
+- GraphQL Foundation. (n.d.). "GraphQL: A query language for APIs". graphql.org.
+- Mozilla. (2024). "WebSocket API". Developer.mozilla.org.
+

@@ -1,0 +1,655 @@
+---
+sidebar_position: 9
+title: "Dashboards and KPIs"
+description: "Design dashboards and key performance indicators for operational visibility."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, sre, product]
+keywords: [dashboards, KPIs, metrics, monitoring, observability]
+image: /img/archman-social-card.webp
+tags: [observability, operations, metrics]
+hide_title: true
+---
+
+<Hero title="Dashboards and KPIs" subtitle="Visualize system health and business metrics in a single view." size="large" />
+
+## TL;DR
+
+Dashboard: Visual display of metrics and KPIs. KPI: Key Performance Indicator (business metric). Don't show 100 metrics (useless). Show 5-10 key metrics that matter. Red/green health indicator. Separate dashboards: executive (revenue, uptime), ops (latency, errors), business (conversion, retention). Update frequency: system metrics (every 10s), business metrics (daily). Actionable alerts: don't alert on every metric (fatigue). Alert on SLO breaches and incidents only.
+
+## Learning Objectives
+
+- Design effective dashboards
+- Identify meaningful KPIs
+- Distinguish executive vs. operational dashboards
+- Create alerting rules
+- Avoid alert fatigue
+- Measure business impact of technical metrics
+- Build self-service monitoring
+- Correlate metrics and incidents
+
+## Motivating Scenario
+
+10 dashboards, 200 metrics. On-call engineer doesn't know what's normal. 50 alerts daily, 80% false positives. Incident happens, no one notices (alert buried in noise). After redesign: 3 dashboards, 12 meaningful metrics, 2 alerts/week, 99% actionable. Response time cut from 30 min to 5 min.
+
+## Core Concepts
+
+### Dashboard Hierarchy
+
+```
+┌─────────────────────────────────────┐
+│  Executive Dashboard (CEO/CFO)      │
+│  - Uptime %, Revenue, Growth        │
+│  - Update: Daily                    │
+├─────────────────────────────────────┤
+│  Operational Dashboard (On-Call)    │
+│  - Latency, Errors, Throughput      │
+│  - Update: Real-time                │
+├─────────────────────────────────────┤
+│  Business Dashboard (Product/PM)    │
+│  - Conversion, Retention, DAU       │
+│  - Update: Hourly                   │
+├─────────────────────────────────────┤
+│  Infrastructure Dashboard (SRE)     │
+│  - CPU, Memory, Disk, Network       │
+│  - Update: Real-time                │
+└─────────────────────────────────────┘
+```
+
+### KPI Categories
+
+| Category | Examples | Target |
+|----------|----------|--------|
+| **Reliability** | Uptime %, Error Rate | 99.9%+ |
+| **Performance** | Latency p99, Response Time | < 100ms |
+| **Throughput** | Requests/sec, QPS | 1000+ req/s |
+| **Business** | Revenue, Conversion, DAU | Growth + 10% |
+| **Cost** | $ per transaction, Cost/user | Decrease |
+
+## Dashboard Design
+
+<Tabs>
+<TabItem value="design" label="Design Principles">
+
+**1. Primary Metric in Large Font**
+```
+┌──────────────────────────────┐
+│  Uptime: 99.97%              │
+│  ✓ Excellent                 │
+│                              │
+│  Details:                    │
+│  - Last incident: 2h ago     │
+│  - Duration: 5 minutes       │
+│  - Cause: DB failover        │
+└──────────────────────────────┘
+```
+
+**2. Status Color**
+```
+GREEN (> 99.9%):  Everything good
+YELLOW (99-99.9%): Degraded, watch
+RED (< 99%):       Incident
+GRAY:              No data
+```
+
+**3. Time-based Comparison**
+```
+This week: 99.97%
+Last week: 99.95%
+Trend: ↑ Improving
+```
+
+**4. Drill-down Links**
+```
+Main Dashboard
+  └── Click "Errors" 
+      └── Error Details Dashboard
+          └── Error logs for this time range
+```
+
+**5. Alert Status**
+```
+┌────────────────────┐
+│ Active Alerts: 2   │
+│ - High Latency     │
+│ - High Error Rate  │
+│ Click to view logs │
+└────────────────────┘
+```
+
+</TabItem>
+<TabItem value="grafana" label="Grafana Examples">
+
+```json
+{
+  "dashboard": {
+    "title": "Checkout Service - Operations",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])"
+          }
+        ],
+        "alert": {
+          "condition": "< 100 req/s",
+          "severity": "warning"
+        }
+      },
+      {
+        "title": "Error Rate",
+        "targets": [
+          {
+            "expr": "rate(http_requests_errors_total[5m]) / rate(http_requests_total[5m])"
+          }
+        ],
+        "alert": {
+          "condition": "> 1%",
+          "severity": "critical"
+        }
+      },
+      {
+        "title": "Latency (p99)",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, http_request_duration_seconds)"
+          }
+        ],
+        "alert": {
+          "condition": "> 500ms",
+          "severity": "warning"
+        }
+      },
+      {
+        "title": "SLO Status",
+        "targets": [
+          {
+            "expr": "(1 - (errors/requests)) * 100"
+          }
+        ]
+      },
+      {
+        "title": "Dependency Health",
+        "targets": [
+          {
+            "expr": "up{job=~'payment|fraud|inventory'}"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+</TabItem>
+<TabItem value="code" label="Dashboard as Code">
+
+```python
+# Prometheus AlertManager rules
+import yaml
+
+alert_rules = {
+    'groups': [
+        {
+            'name': 'checkout_alerts',
+            'rules': [
+                {
+                    'alert': 'HighErrorRate',
+                    'expr': 'rate(http_requests_errors_total[5m]) / rate(http_requests_total[5m]) > 0.01',
+                    'for': '5m',
+                    'annotations': {
+                        'summary': 'High error rate (> 1%)',
+                        'description': 'Error rate is {{ $value | humanizePercentage }} for {{ $labels.service }}'
+                    }
+                },
+                {
+                    'alert': 'HighLatency',
+                    'expr': 'histogram_quantile(0.99, http_request_duration_seconds) > 0.5',
+                    'for': '5m',
+                    'annotations': {
+                        'summary': 'High latency (p99 > 500ms)',
+                        'description': 'p99 latency is {{ $value | humanizeDuration }}'
+                    }
+                },
+                {
+                    'alert': 'ServiceDown',
+                    'expr': 'up{job="checkout"} == 0',
+                    'for': '1m',
+                    'annotations': {
+                        'summary': 'Checkout service down',
+                        'description': 'Service {{ $labels.instance }} has been down for 1 minute'
+                    }
+                },
+                {
+                    'alert': 'ErrorBudgetExhausted',
+                    'expr': 'error_budget_remaining < 0',
+                    'for': '1m',
+                    'annotations': {
+                        'summary': 'Error budget exhausted',
+                        'description': 'Monthly error budget is exhausted. Freeze new features.'
+                    }
+                }
+            ]
+        }
+    ]
+}
+
+# Output as YAML
+print(yaml.dump(alert_rules, default_flow_style=False))
+
+# Dashboard definition
+dashboard_config = {
+    'dashboard': {
+        'title': 'Checkout - Real-time Operations',
+        'timezone': 'UTC',
+        'refresh': '10s',  # Update every 10 seconds
+        'panels': [
+            {
+                'type': 'stat',
+                'title': 'Request Rate (req/s)',
+                'targets': [{
+                    'expr': 'rate(http_requests_total[1m])'
+                }],
+                'thresholds': {
+                    'mode': 'absolute',
+                    'steps': [
+                        {'color': 'green', 'value': None},
+                        {'color': 'red', 'value': 0}  # Red if 0
+                    ]
+                }
+            },
+            {
+                'type': 'graph',
+                'title': 'Error Rate Over Time',
+                'targets': [{
+                    'expr': 'rate(http_requests_errors_total[5m]) / rate(http_requests_total[5m])'
+                }],
+                'axes': {
+                    'y': {'format': 'percent'}
+                },
+                'alert': {
+                    'message': 'Error rate > 1%',
+                    'threshold': 0.01
+                }
+            },
+            {
+                'type': 'heatmap',
+                'title': 'Latency Distribution',
+                'targets': [{
+                    'expr': 'http_request_duration_seconds_bucket'
+                }]
+            },
+            {
+                'type': 'bargauge',
+                'title': 'SLO Status',
+                'targets': [{
+                    'expr': 'slo_current_value * 100'
+                }],
+                'max': 100
+            }
+        ]
+    }
+}
+
+# Business metrics dashboard
+business_dashboard = {
+    'dashboard': {
+        'title': 'Business Metrics',
+        'refresh': '1h',  # Update hourly
+        'panels': [
+            {
+                'title': 'Orders per Day',
+                'targets': [{
+                    'query': 'SELECT DATE(created_at), COUNT(*) FROM orders GROUP BY DATE(created_at)'
+                }]
+            },
+            {
+                'title': 'Conversion Rate (%)',
+                'targets': [{
+                    'query': 'SELECT COUNT(DISTINCT order_id) / COUNT(DISTINCT session_id) * 100 FROM sessions'
+                }]
+            },
+            {
+                'title': 'Average Order Value ($)',
+                'targets': [{
+                    'query': 'SELECT AVG(total) FROM orders WHERE created_at > NOW() - INTERVAL 30 DAY'
+                }]
+            },
+            {
+                'title': 'Customer Retention (%)',
+                'targets': [{
+                    'query': 'SELECT COUNT(DISTINCT customer_id) FROM orders WHERE DATE_SUB(NOW(), INTERVAL 30 DAY) < created_at'
+                }]
+            }
+        ]
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Scenario 1: SaaS Service
+
+Executive Dashboard:
+```
+┌─────────────────────────────┐
+│ Uptime: 99.97% (SLO: 99.9%) │
+│ Customers: 1,234 (↑ 5%)     │
+│ Revenue: $45K/day (↑ 10%)   │
+│ Incidents: 1 (48h ago)      │
+└─────────────────────────────┘
+```
+
+Operations Dashboard:
+```
+Latency (p99): 95ms (target: 100ms) ✓
+Error Rate: 0.2% (target: < 1%) ✓
+Memory: 2.4GB / 4GB (60%) ✓
+Active Alerts: 0
+```
+
+Business Dashboard:
+```
+DAU: 12,345 (↑ 8%)
+Conversion: 3.2% (target: 3.5%) ⚠
+Churn: 2.1% (target: 2%) ✓
+Feature Usage: 67% active
+```
+
+### Scenario 2: Microservices Platform
+
+Service Dashboard:
+```
+Service         Status  Latency  Errors  Instances
+─────────────────────────────────────────────────
+checkout        ✓       92ms     0.1%    3/3
+payment         ✓       145ms    0.05%   2/2
+fraud           ⚠       320ms    0.3%    2/2 (slow)
+inventory       ✓       67ms     0.2%    4/4
+shipping        ✓       200ms    0.15%   2/2
+```
+
+## Common Mistakes
+
+### Mistake 1: Metric Overload
+
+```
+❌ WRONG: 200 metrics on dashboard
+- No one knows what's important
+- Hard to spot problems
+- Alert fatigue
+
+✅ CORRECT: 5-10 key metrics
+- Clear health status
+- Easy to scan
+- High signal-to-noise
+```
+
+### Mistake 2: Misconfigured Alerts
+
+```
+❌ WRONG: Alert on every spike
+- 50+ alerts/day
+- 80% false positives
+- Ignored
+
+✅ CORRECT: Alert on SLO breach
+- 2-3 alerts/week
+- 99% actionable
+- Immediate response
+```
+
+### Mistake 3: No Historical Context
+
+```
+❌ WRONG: Just current value
+- Is 95% latency normal?
+- Good or bad?
+
+✅ CORRECT: Show trend + baseline
+- p99 latency: 95ms (↑ from 80ms avg)
+- Trend: Degrading over last 4h
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "5-10 key metrics per dashboard?",
+  "Color-coded health status?",
+  "Historical trend displayed?",
+  "Drill-down links to details?",
+  "Separate dashboards per audience?",
+  "Alert thresholds tuned (low false-positive)?",
+  "Real-time update for ops dashboard?",
+  "Business metrics on business dashboard?",
+  "Correlation between metrics shown?",
+  "On-call runbook linked?",
+  "Mobile-friendly layout?",
+  "Documented alert response process?"
+]} />
+
+## Next Steps
+
+1. Identify key metrics for each audience
+2. Define KPI targets
+3. Create dashboard hierarchy
+4. Setup alert rules
+5. Test alert conditions
+6. Document runbooks
+7. Schedule review cadence
+
+## References
+
+- <a href="https://grafana.com/" target="_blank" rel="nofollow noopener noreferrer">Grafana Dashboards ↗</a>
+- <a href="https://prometheus.io/" target="_blank" rel="nofollow noopener noreferrer">Prometheus Alerting ↗</a>
+- <a href="https://www.datadoghq.com/" target="_blank" rel="nofollow noopener noreferrer">Datadog Monitoring ↗</a>
+
+## Advanced Dashboard Design
+
+### Multi-Tenant Dashboard Architecture
+
+SaaS platform: customers want custom metrics
+
+Patterns:
+1. **Shared infrastructure, isolated views**: Single dashboard, filtered by tenant
+2. **Custom dashboards**: Each tenant designs their own
+3. **Hybrid**: Template dashboards + custom metrics
+
+### Real-Time vs. Historical
+
+Trade-offs:
+- Real-time (1-10s refresh): CPU intensive, but immediate visibility
+- 1-minute aggregation: Reasonable load, slight delay
+- 5-minute aggregation: Low cost, harder to see transient issues
+- 1-hour (historical): Archive old data
+
+Decision: Mix both. Real-time for ops, historical for analysis.
+
+### Alert Fatigue Management
+
+Problem: 50 alerts/day, 90% false positives
+
+Solutions:
+1. **Alert Quality**: Tune thresholds carefully
+2. **Deduplication**: Group related alerts
+3. **Suppression Windows**: Don't alert on known issues
+4. **Escalation**: Route by severity
+
+Example Escalation:
+```
+Warning (yellow): Log only
+Critical (red): Page on-call immediately
+Severe (dark red): Page on-call + manager
+```
+
+### Dashboard-Driven Development
+
+Use dashboards to:
+- Guide development priorities (what's slow?)
+- Measure feature impact (did new feature help?)
+- Identify performance regressions (before customers complain)
+- Validate scaling improvements
+
+Example: Feature rolled out, latency increased 20%. Dashboard shows bottleneck → fix shipped in 2 hours.
+
+## Correlation Techniques
+
+### Metric Correlation
+
+System is slow. Which metric explains it?
+
+1. **Temporal correlation**: Same time window
+2. **Causal correlation**: One causes the other
+
+Example:
+- High latency + high CPU = CPU bottleneck
+- High latency + low CPU = external dependency
+- High latency + high memory = GC pauses
+
+### Cross-Dashboard Analysis
+
+Link dashboards:
+- Service dashboard → Instance dashboard
+- Error dashboard → Logs dashboard
+- Performance dashboard → Trace dashboard
+
+### Anomaly Detection
+
+Automatic alerting on deviation:
+```
+Normal latency: 50-100ms
+Anomaly: 150ms+ (1.5x baseline)
+Alert: "Latency anomaly detected"
+```
+
+Tools: Prometheus, CloudWatch anomaly detection, Datadog
+
+## Dashboard as Code
+
+Infrastructure as Code: Dashboards as Code
+
+Benefits:
+- Version controlled
+- Reproducible
+- Testable
+- Shareable
+
+Examples:
+```python
+# Grafana dashboard as JSON
+{
+  "title": "Service Health",
+  "panels": [...]
+}
+
+# Prometheus alert rules
+alert: HighErrorRate
+expr: rate(errors[5m]) > 0.01
+```
+
+## Dashboard Examples
+
+### Service Health Dashboard Template
+
+Essential panels:
+1. Green/red health indicator (overall status)
+2. Request rate (req/sec)
+3. Error rate (%)
+4. Latency (p50, p95, p99)
+5. Downstream service status
+6. Active alerts (if any)
+7. Last deployment time
+8. CPU/memory utilization
+
+Update frequency: 10-30 seconds
+
+### Incident Response Dashboard
+
+When something is wrong:
+1. Error spike graph (last 4 hours)
+2. Error rate by endpoint
+3. Affected services
+4. Recent deployments
+5. Recent config changes
+6. Infrastructure metrics (CPU, memory, disk)
+7. Database metrics (slow queries, connections)
+8. Quick links to logs, traces, runbooks
+
+Purpose: Answer "what broke" quickly
+
+### Business Impact Dashboard
+
+Executive-facing:
+1. System uptime (%)
+2. Customer-facing incidents (count, duration)
+3. Feature adoption (%)
+4. Performance trends (latency month-over-month)
+5. Revenue impact of downtime (estimated)
+6. Cost per transaction
+
+Update: Daily
+
+## Anti-Patterns to Avoid
+
+**Mistake 1: Too many colors**
+- Use red/yellow/green only
+- Avoid rainbow effect (useless)
+
+**Mistake 2: No time context**
+- Always show time period (last hour, last 24h, etc.)
+- Include zoom controls
+
+**Mistake 3: Missing baselines**
+- What's normal vs. abnormal?
+- Show threshold lines
+
+**Mistake 4: No drill-down**
+- Dashboard shows "errors up"
+- But: Can't click to see which errors
+- Add links to detail views
+
+## KPI Deep Dives
+
+### Service Level Indicators (SLIs) as KPIs
+
+SLIs are measurable KPIs:
+
+**Availability SLI**
+- Definition: Successful requests / total requests
+- Target: 99.9%
+- Business impact: Each 0.1% downtime = $X revenue loss
+
+**Latency SLI**
+- Definition: Percentage of requests under threshold
+- Target: 95% of requests < 100ms
+- Business impact: 100ms slower = 1% fewer conversions
+
+**Error Rate SLI**
+- Definition: Non-error responses / total
+- Target: 99.5% (0.5% errors acceptable)
+- Business impact: Errors damage trust and retention
+
+Tie SLIs to business metrics (revenue, retention, acquisition cost).
+
+### Tracking KPI Trends
+
+Monthly KPI report:
+```
+Availability:  99.94% (target: 99.9%) ✓
+Latency p99:   85ms   (target: 100ms)  ✓
+Error rate:    0.3%   (target: 1.0%)   ✓
+Cost per user: $0.15  (target: $0.12)  ✗ (trend: increasing)
+```
+
+Track:
+- Current value
+- Target
+- Trend (improving, stable, degrading)
+- Root cause if off-target
+

@@ -1,0 +1,454 @@
+---
+title: "Firewalls, WAF, and API Gateways"
+sidebar_position: 2
+label: "Firewalls, WAF, and API Gateways: Perimeter and Application Defense"
+body: "Deploy firewalls, web application firewalls, and API gateways to defend network perimeter and application layer from attacks."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, security-lead, infrastructure]
+keywords: [firewall, waf, api-gateway, perimeter-defense, ddos-protection, rate-limiting, intrusion-detection, application-protection, traffic-filtering]
+image: /img/archman-social-card.webp
+tags: [security, firewall, waf, api-gateway, perimeter-security, ddos, rate-limiting, intrusion-detection, application-security]
+hide_title: true
+---
+
+<Hero title="Firewalls, WAF, and API Gateways" subtitle="Perimeter and Application-Layer Defense" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Firewalls control network traffic at network and transport layers. Web Application Firewalls (WAF) inspect application-layer traffic (HTTP/HTTPS) to block attacks like injection and XSS. API Gateways enforce authentication, rate limiting, schema validation, and routing policies. Together they create a comprehensive perimeter defense while allowing legitimate traffic to reach applications.
+
+## Learning Objectives
+
+- Understand firewall types and filtering strategies
+- Deploy and configure WAF rules for common attacks
+- Implement API gateways for traffic control and protection
+- Design rate limiting and DDoS protection
+- Monitor and tune security rules for false positives
+
+## Core Concepts
+
+### Firewall Types
+
+| Type | Layer | Filtering | Use Case |
+|------|-------|-----------|----------|
+| **Stateless** | Network (3) | Rules per packet | High throughput, simple rules |
+| **Stateful** | Transport (4) | Connection state | Most common, tracks sessions |
+| **Next-Gen (NGFW)** | Application (7) | Protocol inspection | Deep packet inspection, threat detection |
+| **Cloud** | Virtual | VPC integration | AWS Security Groups, Azure NSGs |
+
+### Web Application Firewall (WAF)
+
+**Purpose**: Inspect HTTP/HTTPS traffic for application-layer attacks
+
+**Protection Coverage**:
+- SQL Injection and Command Injection
+- Cross-Site Scripting (XSS) and CSRF
+- Buffer Overflows and Format Strings
+- Path Traversal and Local File Inclusion (LFI)
+- DDoS at application layer (HTTP floods)
+
+**Rule Types**:
+- **Signature-based**: Known attack patterns (vulnerable to zero-days)
+- **Behavior-based**: Anomalous patterns (user-agent, request rate, payload size)
+- **Machine learning**: Statistical models detect new attacks
+
+### API Gateways
+
+**Function**: Central entry point for all API traffic
+
+**Core Capabilities**:
+- Authentication and authorization (API keys, OAuth, mTLS)
+- Rate limiting and quota management
+- Request/response transformation
+- Request validation against OpenAPI/GraphQL schema
+- Logging and monitoring
+- Traffic routing to backend services
+
+## Practical Example
+
+### Deploying Security Controls
+
+<Tabs>
+<TabItem value="firewall" label="Firewall Rules">
+
+```yaml
+# AWS Network ACL example
+Ingress:
+  Rule 100:
+    Protocol: TCP
+    Port: 443
+    Source: 0.0.0.0/0
+    Action: ALLOW
+  Rule 110:
+    Protocol: TCP
+    Port: 80
+    Source: 0.0.0.0/0
+    Action: ALLOW
+  Rule 120:
+    Protocol: TCP
+    Port: 22
+    Source: 10.0.0.0/16  # Only from internal
+    Action: ALLOW
+  Rule 32767:
+    Protocol: All
+    Action: DENY  # Default deny
+
+Egress:
+  Rule 100:
+    Protocol: TCP
+    Port: 443
+    Destination: 0.0.0.0/0
+    Action: ALLOW
+  Rule 110:
+    Protocol: TCP
+    Port: 5432
+    Destination: 10.0.3.0/24  # Database
+    Action: ALLOW
+```
+
+</TabItem>
+<TabItem value="waf" label="WAF Rules">
+
+```yaml
+# AWS WAF configuration
+Rules:
+  - Name: RateLimitRule
+    Priority: 1
+    Action: BLOCK
+    Condition:
+      RateLimit: 2000 requests/5 minutes
+
+  - Name: SQLInjectionRule
+    Priority: 2
+    Action: BLOCK
+    Condition:
+      ManagedRuleGroup: AWSManagedRulesSQLiRuleSet
+
+  - Name: XSSRule
+    Priority: 3
+    Action: BLOCK
+    Condition:
+      ManagedRuleGroup: AWSManagedRulesCommonRuleSet
+      Rules:
+        - GenericXSS_Body
+        - GenericXSS_Cookie
+
+  - Name: GeoBlockingRule
+    Priority: 4
+    Action: BLOCK
+    Condition:
+      Country: [KP, IR]  # Block high-risk countries
+
+  - Name: BotControlRule
+    Priority: 5
+    Action: CHALLENGE
+    Condition:
+      BotControl: true
+```
+
+</TabItem>
+<TabItem value="api-gateway" label="API Gateway">
+
+```yaml
+# API Gateway with security policies
+apiVersion: v1
+kind: APIGateway
+metadata:
+  name: api-gateway
+spec:
+  routes:
+    - path: /api/v1/users
+      backend: user-service:8080
+      auth: OAUTH2
+      rateLimit: 100 req/min per user
+      schema: user-schema.yaml
+
+    - path: /api/v1/payments
+      backend: payment-service:8080
+      auth: mTLS + API_KEY
+      rateLimit: 10 req/min per account
+      schema: payment-schema.yaml
+      validation:
+        body: strict
+        headers: [Content-Type, Authorization]
+
+    - path: /health
+      backend: local
+      auth: NONE
+      rateLimit: 1000 req/min
+
+  security:
+    authentication:
+      oauth2:
+        provider: https://auth.company.com
+        scopes: [read, write, admin]
+      api_key:
+        header: X-API-Key
+        validation: vault lookup
+
+    rateLimit:
+      global: 10000 req/min
+      per_user: 100 req/min
+      per_ip: 50 req/min
+
+    cors:
+      allowed_origins: [https://app.company.com]
+      allowed_methods: [GET, POST, PUT]
+      max_age: 86400
+```
+
+</TabItem>
+</Tabs>
+
+## Defense Strategies
+
+### Strategy 1: Layered Defense
+- Network firewall blocks network-layer attacks
+- WAF blocks application-layer attacks
+- API Gateway enforces schema and authentication
+- Application validates all inputs
+
+### Strategy 2: Zero-Trust Inspection
+Inspect all traffic regardless of source:
+- Don't trust "internal only" networks
+- Decrypt and inspect encrypted traffic (with privacy controls)
+- Analyze patterns, not just signatures
+
+### Strategy 3: Fail Securely
+- Default deny: block unless explicitly allowed
+- Rate limit as defense against abuse and DDoS
+- Circuit breaker: stop sending traffic to failing backend
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Defense Best Practices",
+    points: [
+      "Default deny firewall rules",
+      "WAF with managed rule groups (AWS, ModSecurity)",
+      "API Gateway for centralized access control",
+      "Rate limiting on all endpoints",
+      "Schema validation before reaching app",
+      "Monitor and alert on blocks",
+      "Regular tuning to reduce false positives"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Common Mistakes",
+    points: [
+      "Default allow firewall rules",
+      "Outdated WAF signatures",
+      "No rate limiting",
+      "Trusting client-side validation",
+      "No schema validation",
+      "Silently dropping traffic without alerts",
+      "Never reviewing/updating rules"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase>
+  <div>
+    <h3>🎯 Secure Pattern: Defense in Depth</h3>
+    <p>Multiple layers: firewall, WAF, API Gateway, application validation. Catch attacks at multiple points.</p>
+  </div>
+  <div>
+    <h3>⚠️ Pitfall: Single Layer Reliance</h3>
+    <p>Assuming WAF prevents all attacks. Attacker may bypass with encoding or find app-specific logic flaw.</p>
+  </div>
+  <div>
+    <h3>🎯 Secure Pattern: Rate Limiting</h3>
+    <p>Limit requests per user/IP/endpoint. Prevents brute force, DDoS, and resource exhaustion.</p>
+  </div>
+  <div>
+    <h3>⚠️ Pitfall: No Rate Limiting</h3>
+    <p>Allows attackers to brute force, enumerate, or exhaust resources.</p>
+  </div>
+</Showcase>
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Default deny firewall rules?",
+  "Only required ports/protocols open?",
+  "Rules documented and version controlled?",
+  "Geo-blocking applied for high-risk regions?",
+  "WAF enabled on all public endpoints?",
+  "Managed rule groups active (SQL, XSS, etc.)?",
+  "Custom rules for application-specific attacks?",
+  "Rate limiting configured?",
+  "Authentication enforced (API key, OAuth, mTLS)?",
+  "Request schema validation enabled?",
+  "Rate limits per user/endpoint?",
+  "Monitoring and alerting on API misuse?",
+  "Log all firewall blocks?",
+  "Alert on WAF rule triggers?",
+  "Analyze false positives regularly?",
+  "Dashboard of security metrics?"
+]} />
+
+## Advanced Patterns
+
+### DDoS Protection Strategies
+
+Multi-layer DDoS defense.
+
+```yaml
+# Layer 1: Network-level (ISP/CDN)
+CDN:
+  Provider: Cloudflare, AWS CloudFront
+  Protection:
+    - UDP flood detection (drop >1000 pps from single IP)
+    - SYN flood protection (rate limit new connections)
+    - Geographic blocking (block non-US traffic if serving US only)
+
+# Layer 2: Firewall-level
+Firewall:
+  Rules:
+    - Connection per source IP: max 1000
+    - New connections per second: max 100/sec per IP
+    - TCP SYN queue size: limit to prevent SYN flood
+
+# Layer 3: Application-level (WAF)
+WAF:
+  Rules:
+    - Request rate per IP: 100 req/min
+    - Request size: max 10MB
+    - Suspicious patterns: block bots, scrapers
+    - CAPTCHA on spike detection
+
+# Layer 4: Application response
+Application:
+  Strategies:
+    - Graceful degradation: shed non-essential features
+    - Queue requests: hold in queue if overloaded
+    - Circuit breaker: stop accepting if backend overwhelmed
+```
+
+### Bot Detection and Blocking
+
+Distinguish legitimate users from bots.
+
+```javascript
+// Client-side: Collect device fingerprint
+const fingerprint = {
+  user_agent: navigator.userAgent,
+  screen: { width: window.screen.width, height: window.screen.height },
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  language: navigator.language,
+  plugins: navigator.plugins.length,
+  canvas: getCanvasFingerprint(),
+  webgl: getWebGLFingerprint()
+};
+
+fetch('/api/request', {
+  headers: { 'X-Fingerprint': JSON.stringify(fingerprint) }
+});
+
+// Server-side: Analyze fingerprint
+app.use((req, res, next) => {
+  const fp = JSON.parse(req.get('X-Fingerprint'));
+
+  // Bots often have:
+  // - No plugins
+  // - Generic screen size
+  // - Missing WebGL
+  // - Identical fingerprints (many requests from same bot)
+
+  if (isLikelyBot(fp)) {
+    return res.status(403).json({ error: 'Suspicious activity detected' });
+  }
+
+  next();
+});
+```
+
+### Rate Limiting Strategies
+
+Different strategies for different scenarios.
+
+```yaml
+# Token Bucket: Smooth bursts, rate-based limit
+Strategy: Token Bucket
+  Tokens: 1000
+  Refill rate: 10 tokens/sec
+  Burst: Can use 1000 tokens immediately, then capped at 10/sec
+  Use case: APIs where bursts are acceptable (bulk operations)
+
+# Leaky Bucket: Fixed rate, queue overflow
+Strategy: Leaky Bucket
+  Capacity: 100 requests
+  Leak rate: 10 req/sec (fixed)
+  Excess: Queue if under capacity, reject if queue full
+  Use case: Strict rate limiting (prevent overload)
+
+# Sliding Window: Time-based count
+Strategy: Sliding Window
+  Window: 1 minute
+  Limit: 100 requests per minute
+  Precision: Count requests in rolling 60-sec window
+  Use case: Accurate per-user rate limiting
+
+Example Nginx configuration:
+http {
+  limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+  limit_req_status 429;
+
+  server {
+    location /api/ {
+      limit_req zone=api burst=20 nodelay;
+    }
+  }
+}
+
+Example Express.js:
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,    // 15 minutes
+  max: 100,                      // 100 requests per window
+  message: 'Too many requests',
+  standardHeaders: true,         // Return rate limit info in headers
+  skip: (req) => req.user?.premium  // Skip for premium users
+}));
+```
+
+## Self-Check
+
+- Can you describe your firewall rules and justify each?
+- What WAF rules are active? How often are they updated?
+- Do you rate limit all APIs? What are your thresholds?
+- How many false positives do you get? Is this acceptable?
+- What's your DDoS response plan?
+
+:::info One Takeaway
+
+Firewalls, WAF, and API Gateways create multiple security layers. Each catches different attacks. Together they reduce risk, but none is perfect—defense in depth is essential. Monitor for false positives and tune regularly.
+
+:::
+
+## Next Steps
+
+1. Audit and document all firewall rules
+2. Deploy WAF with managed rule groups
+3. Implement API Gateway with authentication
+4. Configure rate limiting on all endpoints
+5. Set up monitoring and alerting
+6. Regularly tune rules to reduce false positives
+7. Test DDoS response procedures
+8. Implement bot detection
+9. Log all blocks for analysis
+10. Alert on unusual patterns (spike detection)
+
+## References
+
+- [OWASP ModSecurity Core Rule Set](https://coreruleset.org/)
+- [AWS WAF Best Practices](https://docs.aws.amazon.com/waf/latest/developerguide/)
+- [API Gateway Security Patterns](https://swagger.io/security/)
+- [DDoS Mitigation Strategies](https://www.cloudflare.com/learning/ddos/)
+- [Rate Limiting Best Practices](https://www.nginx.com/blog/rate-limiting-nginx/)

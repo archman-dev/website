@@ -1,0 +1,374 @@
+---
+sidebar_position: 3
+title: "Incremental Schema Migrations"
+description: "Execute database schema changes without downtime using multi-phase rollouts."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: [modernization, migration, patterns, refactoring]
+image: /img/archman-social-card.webp
+tags: [modernization, migration, patterns, refactoring]
+hide_title: true
+---
+
+<Hero title="Incremental Schema Migrations" subtitle="Execute database schema changes without downtime using multi-phase rollouts." imageAlt="modernization illustration" size="large" />
+
+## TL;DR
+
+Execute database schema changes without downtime using multi-phase rollouts. Rather than risky big-bang replacements, these patterns enable incremental, low-risk transitions that keep systems running while you modernize. They require discipline and clear governance but dramatically reduce modernization risk.
+
+## Learning Objectives
+
+- Understand the pattern and when to apply it
+- Learn how to avoid common modernization pitfalls
+- Apply risk mitigation techniques for major changes
+- Plan and execute incremental transitions safely
+- Manage team and organizational change during modernization
+
+## Motivating Scenario
+
+You have a legacy system that is becoming a bottleneck. Rewriting it would take a year and risk breaking critical functionality. Instead, you incrementally replace it with new services while keeping the old system running, gradually shifting traffic and functionality. Six months later, the legacy system handles 10 percent of traffic and serves as a fallback. Eventually, you can retire it completely. This pattern turns a risky all-or-nothing gamble into a managed, incremental transition.
+
+## Core Concepts
+
+### Migration Risk
+
+Major system changes carry existential risk: downtime impacts revenue, data corruption destroys trust, performance regression loses customers. These patterns manage that risk through incremental change and careful rollback planning.
+
+### Incremental Transition
+
+Rather than "old system" then "new system", these patterns create "old plus new coexisting" then "new plus old as fallback" then "new only". This gives you multiple checkpoints to verify things are working.
+
+<Admonition type="tip">
+The key insight: You do not need to be perfect on day one. You just need to be good enough to carry traffic safely, with a fallback if something goes wrong.
+</Admonition>
+
+### Dual-Write and Data Consistency
+
+When migrating data, you typically need both systems to have current data for a period. Dual writes keep both systems in sync, backfill catches up old data, and CDC (Change Data Capture) handles streaming updates.
+
+### Abstraction Layers
+
+Rather than replacing a system wholesale, you wrap it with an abstraction (facade or anti-corruption layer). The abstraction routes traffic gradually: initially 100 percent to old, then 99 percent old / 1 percent new, then 50/50, then eventually 100 percent new.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="strangler" label="Strangler Fig Timeline">
+
+```yaml
+Phase 1: Preparation (Weeks 1-4)
+  New service deployed but offline
+  Load balancer configured to route traffic
+  Both systems connected to same database
+  Risk: Low (new service not receiving traffic)
+
+Phase 2: Canary (Weeks 5-6)
+  Traffic Distribution: 1 percent to new, 99 percent to old
+  Monitoring: Compare response times, error rates
+  Verify data consistency
+  Rollback: Instant (revert to 100 percent old)
+  Risk: Very low (affects 1 percent of traffic)
+
+Phase 3: Ramp (Weeks 7-12)
+  Gradual Increase: 5 percent, 10 percent, 25 percent, 50 percent
+  Continuous comparison with old system
+  Alert on any divergence
+  Rollback: Revert traffic distribution instantly
+  Risk: Medium (affects majority by end)
+
+Phase 4: Retirement (Weeks 13+)
+  New service handles all traffic independently
+  Old system monitored but not actively used
+  Archive old system after stable period
+  Extract data and lessons learned
+```
+
+</TabItem>
+<TabItem value="strategies" label="Migration Strategies">
+
+```
+Core Strategies:
+
+Strangler Fig Pattern:
+  Grow new functionality alongside old
+  Gradually shift traffic
+  Old system stays running as safety net
+  Works for mostly stateless systems
+
+Branch by Abstraction:
+  Use feature flags and abstraction layers
+  Hide complexity behind clean interface
+  Transition implementation at runtime
+
+Dual Write and Backfill:
+  New system writes all new data
+  Old system maintains historical data
+  Backfill job copies old data to new system
+  Both stay consistent until cutover
+
+Anti-Corruption Layers:
+  Wrap legacy systems with adapters
+  Translate between old and new interfaces
+  Insulate new code from legacy complexity
+
+Domain-Aligned Decomposition:
+  Decompose monolith along domain boundaries
+  Each domain becomes new microservice
+  Easier to coordinate
+  Reduces coupling
+```
+
+</TabItem>
+<TabItem value="verification" label="Verification Checklist">
+
+```
+Data Consistency:
+  - Old and new systems return identical data
+  - Both systems show same transaction count
+  - Randomly sampled records match in both
+  - Metadata (timestamps, IDs) consistent
+
+Functionality:
+  - All major features work in new system
+  - Error cases handled identically
+  - Edge cases verified
+  - Security rules enforced identically
+
+Performance:
+  - New system has acceptable latency
+  - New system has acceptable error rate
+  - Database resources not over-utilized
+  - No unexpected slow queries
+
+Operations:
+  - Monitoring and alerting working
+  - Logs contain expected entries
+  - Can trace requests across systems
+  - Runbooks updated for new system
+
+Rollback:
+  - Can quickly switch all traffic back
+  - Old system receives traffic without issues
+  - Data not corrupted if rollback needed
+  - Team has tested rollback procedure
+```
+
+</TabItem>
+</Tabs>
+
+## Key Success Factors
+
+1. **Clear success criteria:** You know what "done" looks like
+2. **Incremental approach:** Big changes done in small, verifiable steps
+3. **Comprehensive testing:** Automated tests at multiple levels
+4. **Constant verification:** Continuous comparison between old and new
+5. **Fast rollback:** Can switch back to old system in minutes
+6. **Team alignment:** Everyone understands the approach and timeline
+7. **Transparent communication:** Stakeholders understand progress and risks
+
+## Pitfalls to Avoid
+
+❌ All-or-nothing thinking: "Just rewrite it" instead of incremental migration
+❌ Ignoring data consistency: Assuming old and new data will magically sync
+❌ No fallback plan: If new system fails, you are stuck
+❌ Invisible progress: Weeks of work with no deployed functionality
+❌ Parallel maintenance: Maintaining old and new systems forever
+❌ Rushing to cleanup: Retiring old system before new one is truly stable
+❌ Team turnover: Key knowledge not documented
+
+## Related Patterns
+
+- Strangler Fig: Wrap and gradually replace legacy systems
+- Feature Flags: Control which code path executes at runtime
+- Blue-Green Deployment: Switch entire systems at once
+- Canary Releases: Route small percentage to new version
+
+## Checklist: Before Modernization
+
+- [ ] Clear business case: Why modernize? What is the benefit?
+- [ ] Phased approach defined: How will you migrate incrementally?
+- [ ] Success criteria explicit: What does "done" look like?
+- [ ] Risk mitigation planned: What could go wrong? How will you recover?
+- [ ] Testing strategy defined: How will you verify correctness?
+- [ ] Monitoring in place: Can you detect problems in new system?
+- [ ] Team capacity sufficient: Do you have capacity for both?
+- [ ] Communication plan ready: How will you keep stakeholders informed?
+
+## Migration Patterns in Detail
+
+### Add Column Without Data Loss
+
+```sql
+-- Phase 1: Add new column with default (non-blocking)
+ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE;
+
+-- Phase 2: Backfill data
+UPDATE users SET email_verified = (email IS NOT NULL);
+
+-- Phase 3: Add NOT NULL constraint once backfilled
+ALTER TABLE users MODIFY COLUMN email_verified BOOLEAN NOT NULL;
+```
+
+### Rename Column Without Downtime
+
+```sql
+-- Phase 1: Add new column with same data
+ALTER TABLE users ADD COLUMN new_email VARCHAR(255);
+CREATE TRIGGER update_new_email
+BEFORE INSERT ON users FOR EACH ROW SET NEW.new_email = NEW.email;
+
+-- Phase 2: Backfill existing rows
+UPDATE users SET new_email = email;
+
+-- Phase 3: Update app to use new_email
+-- (Dual write for safety: write both columns)
+
+-- Phase 4: Verify data consistency
+SELECT COUNT(*) FROM users WHERE email != new_email;  -- Should be 0
+
+-- Phase 5: Remove old column
+ALTER TABLE users DROP COLUMN email;
+ALTER TABLE users RENAME COLUMN new_email TO email;
+```
+
+### Index Creation Without Downtime
+
+```sql
+-- Non-blocking index creation (doesn't lock table for writes)
+CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
+
+-- Monitor creation progress
+SELECT schemaname, tablename, indexname, idx_blks_read, idx_blks_hit
+FROM pg_statio_user_indexes WHERE indexname = 'idx_users_email';
+```
+
+## Verification Strategies
+
+### Data Consistency Verification
+
+```python
+def verify_data_consistency(old_system, new_system, sample_size=1000):
+    """
+    Compare sample of data between old and new systems
+    """
+    import random
+
+    # Get sample of IDs
+    all_ids = old_system.get_all_ids()
+    sample_ids = random.sample(all_ids, min(sample_size, len(all_ids)))
+
+    mismatches = []
+    for id in sample_ids:
+        old_data = old_system.get(id)
+        new_data = new_system.get(id)
+
+        if old_data != new_data:
+            mismatches.append({
+                'id': id,
+                'old': old_data,
+                'new': new_data
+            })
+
+    return {
+        'total_checked': len(sample_ids),
+        'mismatches': len(mismatches),
+        'mismatch_rate': len(mismatches) / len(sample_ids),
+        'details': mismatches[:10]  # First 10
+    }
+
+def compare_performance(old_system, new_system, queries=None):
+    """
+    Compare latency and throughput
+    """
+    import time
+
+    results = {'old': {}, 'new': {}}
+
+    for query_name, query in (queries or {}).items():
+        # Old system
+        start = time.time()
+        old_result = old_system.query(query)
+        results['old'][query_name] = {
+            'latency_ms': (time.time() - start) * 1000,
+            'result_count': len(old_result)
+        }
+
+        # New system
+        start = time.time()
+        new_result = new_system.query(query)
+        results['new'][query_name] = {
+            'latency_ms': (time.time() - start) * 1000,
+            'result_count': len(new_result)
+        }
+
+    return results
+```
+
+### Automated Verification Pipeline
+
+```yaml
+# GitHub Actions workflow for migration validation
+name: Migration Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_system: 'production'
+      new_system: 'staging'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify data consistency
+        run: python scripts/verify_consistency.py --old prod --new staging
+
+      - name: Compare performance
+        run: python scripts/compare_perf.py --queries queries.json
+
+      - name: Check error rates
+        run: python scripts/check_errors.py --old prod --new staging --window 5m
+
+      - name: Functional tests
+        run: pytest tests/migration_tests.py -v
+
+      - name: Report results
+        if: always()
+        run: python scripts/generate_report.py --output report.md
+```
+
+## Self-Check
+
+1. **Can you do this migration in phases?** If not, find a way to break it up. (Tip: almost everything can be phased if you add abstraction layers)
+2. **Can you roll back in less than 1 hour?** If not, design a faster rollback. (Rollback should be: flip feature flag, revert database to backup, done)
+3. **Have you tested the fallback procedure?** If not, do it now. (Actually run through rollback in staging, measure time)
+4. **Does everyone understand the timeline?** If not, communicate more clearly. (Stakeholders should know: phase dates, success criteria, rollback window)
+5. **How do you verify old and new produce same results?** Continuous comparison: shadow traffic, data sampling, query verification
+6. **What's your rollback trigger?** Define explicit failure metrics (error rate over 1%, latency above threshold, data divergence)
+
+**Red flags**:
+- "We have to migrate the entire database in one night"
+- "No rollback plan; we're committed"
+- "Testing will happen after we go live"
+- "Only one person understands the migration plan"
+
+## Takeaway
+
+Modernization is not about technology—it is about managing risk while delivering business value. The best migrations are the ones teams do not notice: they happen gradually, safely, with multiple checkpoints. Time is your friend in modernization; rushing increases risk without proportional gain.
+
+## Next Steps
+
+1. **Define the scope:** What exactly are you modernizing?
+2. **Identify the risks:** What could go wrong? How will you mitigate?
+3. **Plan in phases:** How can you migrate incrementally?
+4. **Design verification:** How will you prove old and new are equivalent?
+5. **Prepare rollback:** How will you revert if something goes wrong?
+
+## References
+
+1. <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Strangler Fig Application ↗️</a>
+2. <a href="https://www.amazon.com/Building-Microservices-Designing-Fine-Grained-Systems/dp/1491950358" target="_blank" rel="nofollow noopener noreferrer">Sam Newman: Building Microservices ↗️</a>
+3. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>

@@ -1,0 +1,477 @@
+---
+sidebar_position: 3
+title: "Log Retention and Privacy"
+description: "Manage log lifecycle responsibly: comply with regulations, protect sensitive data, and optimize retention periods."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [logging, privacy, retention, gdpr, compliance, pii, data-protection, security, storage-costs, audit-trails]
+image: /img/archman-social-card.webp
+tags: [logging, privacy, compliance, gdpr, security, data-protection, retention-policy, sensitive-data, audit, best-practices]
+hide_title: true
+---
+
+<Hero title="Log Retention and Privacy" subtitle="Manage log lifecycle responsibly: comply with regulations, protect sensitive data, and optimize retention periods." imageAlt="Privacy illustration" size="large" />
+
+## TL;DR
+
+Logs contain sensitive data: passwords, API keys, PII, payment info. Never log secrets. Redact or hash PII before writing logs. Comply with regulations: GDPR requires log deletion on user request, which is hard with immutable storage. HIPAA, PCI-DSS impose strict retention limits. Define retention policies: how long must you keep logs? ERROR logs forever (compliance), INFO logs 90 days (debugging), DEBUG logs 7 days (development). Encrypt logs at rest. Access control: who can read logs? Audit log access. Delete or anonymize logs when retention expires. Use log sanitization libraries to prevent secrets in logs. Privacy is not optional—it's a legal and ethical requirement.
+
+## Learning Objectives
+
+- Identify what data should never appear in logs
+- Implement log sanitization to prevent secrets
+- Design retention policies based on regulatory requirements
+- Manage log deletion and data subject access requests (DSARs)
+- Protect logs at rest and in transit
+- Audit who accesses logs and when
+
+## Motivating Scenario
+
+A developer commits code with passwords hardcoded in error messages. Now every production error logs the password. The logs are retained for 2 years. A breach exposes 18 months of logs, compromising customer accounts. A customer requests deletion under GDPR. The company searches for "my username" across 100TB of logs, but the immutable log archive makes deletion difficult. The incident costs $5M in breach remediation plus GDPR fines. A sanitization filter at log write-time would have prevented this.
+
+## Core Concepts
+
+### Sensitive Data Categories
+
+**Secrets**: passwords, API keys, tokens, credentials. Never log intentionally.
+
+**PII**: names, email, phone, addresses, IDs. Log sparingly, hash or redact.
+
+**Financial**: credit cards, bank accounts, transaction amounts. Avoid logging.
+
+**Health**: medical conditions, diagnoses, prescriptions. Strictly controlled.
+
+**Behavioral**: user clicks, searches, browsing history. May be sensitive.
+
+### Regulatory Requirements
+
+**GDPR** (EU): User can request deletion. You must delete their logs within 30 days. Retention must be minimal and justified.
+
+**HIPAA** (US Health): Strict controls on health data logs. Retention limited. Access must be audited.
+
+**PCI-DSS** (Payment Cards): Cannot log full card numbers. Retention typically 1 year. Encryption required.
+
+**SOC 2**: Audit logs must be kept (typically 90 days+) for access auditing. Integrity must be protected.
+
+### Retention Policies
+
+Different log categories need different retention:
+- **Audit logs**: 2-7 years (compliance, legal)
+- **Error logs**: 1-2 years (debugging, incident investigation)
+- **INFO logs**: 90 days (operational debugging)
+- **DEBUG logs**: 7 days (development)
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - No sanitization, logs secrets
+import logging
+
+logger = logging.getLogger(__name__)
+
+def authenticate(username, password):
+    user = find_user(username)
+    if user and user.password == password:
+        logger.info(f"User {username} authenticated with password {password}")
+        return user
+    logger.error(f"Auth failed: {username}, password: {password}")
+    return None
+
+def call_external_api(api_key, user_id):
+    logger.debug(f"Calling API with key: {api_key}")
+    response = requests.get('https://api.example.com', headers={'X-API-Key': api_key})
+    logger.info(f"API response: {response.json()}")
+    return response
+
+# Results: Logs contain passwords and API keys. Retention of 2 years means
+# 18 months of exposed credentials if breached.
+
+# ✅ EXCELLENT - Sanitization, encryption, retention policy
+import logging
+import re
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional
+
+class SensitiveDataFilter(logging.Filter):
+    """Remove or redact sensitive data from logs."""
+
+    # Patterns for common sensitive data
+    PATTERNS = {
+        'password': r'password["\']?\s*[:=]\s*["\']?([^"\'\s,;]+)',
+        'api_key': r'api[_-]?key["\']?\s*[:=]\s*["\']?([a-zA-Z0-9\-_]+)',
+        'token': r'(token|bearer|jwt)["\']?\s*[:=]\s*["\']?([a-zA-Z0-9\-_.]+)',
+        'credit_card': r'\b(\d{4}[\s\-]?){3}\d{4}\b',
+        'ssn': r'\b\d{3}-\d{2}-\d{4}\b',
+        'email': r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b',
+    }
+
+    def filter(self, record):
+        """Sanitize log record."""
+        msg = record.getMessage()
+
+        # Remove passwords
+        msg = re.sub(self.PATTERNS['password'], 'password=[REDACTED]', msg, flags=re.I)
+
+        # Remove API keys
+        msg = re.sub(self.PATTERNS['api_key'], 'api_key=[REDACTED]', msg, flags=re.I)
+
+        # Remove tokens
+        msg = re.sub(self.PATTERNS['token'], r'\1=[REDACTED]', msg, flags=re.I)
+
+        # Replace credit card with last 4 digits
+        def redact_card(match):
+            card = match.group(1).replace(' ', '').replace('-', '')
+            return f"****{card[-4:]}"
+
+        msg = re.sub(self.PATTERNS['credit_card'], redact_card, msg)
+
+        # Remove SSN
+        msg = re.sub(self.PATTERNS['ssn'], '[REDACTED_SSN]', msg)
+
+        # Hash emails (preserve for queries, lose identity)
+        def hash_email(match):
+            email = match.group(0).lower()
+            hashed = hashlib.sha256(email.encode()).hexdigest()[:16]
+            return f"user_{hashed}"
+
+        msg = re.sub(self.PATTERNS['email'], hash_email, msg)
+
+        record.msg = msg
+        record.args = ()
+        return True
+
+# Setup logger with sanitization
+def setup_logger(name: str):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+
+    handler = logging.StreamHandler()
+    handler.addFilter(SensitiveDataFilter())
+
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    return logger
+
+logger = setup_logger('auth_service')
+
+# Retention policy
+@dataclass
+class RetentionPolicy:
+    """Define how long different log types are kept."""
+    audit_logs: timedelta = timedelta(days=365*2)  # 2 years for compliance
+    error_logs: timedelta = timedelta(days=365)    # 1 year for debugging
+    info_logs: timedelta = timedelta(days=90)      # 90 days for ops
+    debug_logs: timedelta = timedelta(days=7)      # 7 days for dev
+
+def log_with_retention(logger, level, message, retention_days: int):
+    """Log with retention metadata."""
+    log_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'level': level,
+        'message': message,
+        'expires_at': (datetime.now() + timedelta(days=retention_days)).isoformat(),
+        'retention_days': retention_days,
+    }
+
+    getattr(logger, level.lower())(log_entry)
+
+def authenticate(username: str, password: str) -> Optional[dict]:
+    """Authenticate without logging secrets."""
+    user = find_user(username)
+
+    if user and user.password_hash == hash_password(password):
+        # Log with hashed username, retention 90 days
+        log_with_retention(logger, 'INFO', f'Authentication successful', 90)
+        return user
+
+    log_with_retention(logger, 'WARN', f'Authentication failed', 90)
+    return None
+
+def call_external_api(api_key: str, user_id: str):
+    """Call API without logging the key."""
+    # Log that we're calling the API, but not the actual key
+    log_with_retention(logger, 'DEBUG', f'Calling external API', 7)
+
+    response = requests.get('https://api.example.com',
+                           headers={'X-API-Key': api_key})
+
+    # Log response without sensitive details
+    log_with_retention(logger, 'INFO', f'API call succeeded, status: {response.status_code}', 30)
+    return response
+
+# DSAR (Data Subject Access Request) support
+def export_user_logs(user_id: str) -> str:
+    """Export all logs for a user (GDPR compliance)."""
+    # Collect all logs mentioning this user
+    logs = query_logs(f'user_id={user_id}')
+    return json.dumps(logs, indent=2)
+
+def delete_user_logs(user_id: str):
+    """Delete all logs for a user (GDPR compliance)."""
+    # This is hard with immutable log systems
+    # Solution 1: Query logs, mark as deleted, don't query again
+    # Solution 2: Use separate log index with retention labels, delete from index
+    # Solution 3: Encrypt logs with per-user key, delete key = practical deletion
+    mark_logs_for_deletion(user_id)
+    logger.info(f'Marked logs for user {user_id} for deletion')
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Logs secrets and PII
+function authenticate(username, password) {
+    logger.info(`Authenticating user ${username} with password ${password}`);
+    const user = findUser(username);
+    if (user && user.password === password) {
+        logger.info(`User ${username} authenticated successfully`);
+        return user;
+    }
+    logger.error(`Auth failed: ${username}, password: ${password}`);
+    return null;
+}
+
+// Logs contain plaintext passwords!
+
+// ✅ EXCELLENT - Sanitization and retention
+const crypto = require('crypto');
+
+class LogSanitizer {
+    constructor() {
+        this.patterns = {
+            password: /password['"]?\s*[:=]\s*['"]?([^'"\s,;]+)/gi,
+            apiKey: /api[_-]?key['"]?\s*[:=]\s*['"]?([a-zA-Z0-9\-_]+)/gi,
+            token: /(token|bearer|jwt)['"]?\s*[:=]\s*['"]?([a-zA-Z0-9\-_.]+)/gi,
+            creditCard: /\b(\d{4}[\s\-]?){3}\d{4}\b/g,
+            ssn: /\b\d{3}-\d{2}-\d{4}\b/g,
+            email: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g,
+        };
+    }
+
+    sanitize(message) {
+        let sanitized = message;
+
+        // Remove passwords
+        sanitized = sanitized.replace(
+            this.patterns.password,
+            'password=[REDACTED]'
+        );
+
+        // Remove API keys
+        sanitized = sanitized.replace(
+            this.patterns.apiKey,
+            'api_key=[REDACTED]'
+        );
+
+        // Remove tokens
+        sanitized = sanitized.replace(
+            this.patterns.token,
+            '$1=[REDACTED]'
+        );
+
+        // Hash emails
+        sanitized = sanitized.replace(this.patterns.email, (match) => {
+            const hashed = crypto
+                .createHash('sha256')
+                .update(match.toLowerCase())
+                .digest('hex')
+                .substring(0, 16);
+            return `user_${hashed}`;
+        });
+
+        // Redact credit cards
+        sanitized = sanitized.replace(
+            this.patterns.creditCard,
+            (match) => {
+                const cleaned = match.replace(/[\s\-]/g, '');
+                return `****${cleaned.slice(-4)}`;
+            }
+        );
+
+        // Redact SSN
+        sanitized = sanitized.replace(this.patterns.ssn, '[REDACTED_SSN]');
+
+        return sanitized;
+    }
+}
+
+const sanitizer = new LogSanitizer();
+
+// Retention policy
+const RETENTION_POLICY = {
+    audit_logs: 365 * 2,      // 2 years
+    error_logs: 365,           // 1 year
+    info_logs: 90,             // 90 days
+    debug_logs: 7,             // 7 days
+};
+
+class RetentionAwareLogger {
+    constructor() {
+        this.sanitizer = new LogSanitizer();
+    }
+
+    log(level, message, retentionDays, fields = {}) {
+        const sanitized = this.sanitizer.sanitize(message);
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            level,
+            message: sanitized,
+            expires_at: new Date(
+                Date.now() + retentionDays * 24 * 60 * 60 * 1000
+            ).toISOString(),
+            retention_days: retentionDays,
+            ...fields,
+        };
+
+        console.log(JSON.stringify(logEntry));
+
+        // In real system, send to log aggregator with TTL metadata
+        sendToLogAggregator(logEntry);
+    }
+
+    info(message, retentionDays = 90, fields = {}) {
+        this.log('INFO', message, retentionDays, fields);
+    }
+
+    error(message, retentionDays = 365, fields = {}) {
+        this.log('ERROR', message, retentionDays, fields);
+    }
+
+    audit(message, fields = {}) {
+        this.log('AUDIT', message, RETENTION_POLICY.audit_logs, fields);
+    }
+}
+
+const logger = new RetentionAwareLogger();
+
+// Safe authentication logging
+function authenticate(username, password) {
+    // Never log the password
+    logger.info('Authentication attempt', RETENTION_POLICY.info_logs, {
+        user_hash: crypto
+            .createHash('sha256')
+            .update(username)
+            .digest('hex')
+            .substring(0, 16),
+    });
+
+    const user = findUser(username);
+    if (user && user.passwordHash === hashPassword(password)) {
+        logger.audit('User authenticated', {
+            user_hash: crypto
+                .createHash('sha256')
+                .update(username)
+                .digest('hex')
+                .substring(0, 16),
+        });
+        return user;
+    }
+
+    logger.info('Authentication failed', RETENTION_POLICY.info_logs);
+    return null;
+}
+
+// GDPR: Data Subject Access Request
+async function exportUserLogs(userId) {
+    const logs = await queryLogs(`user_id=${userId}`);
+    return JSON.stringify(logs, null, 2);
+}
+
+// GDPR: Delete user data
+async function deleteUserLogs(userId) {
+    // Mark logs for deletion (can't truly delete from immutable storage)
+    await markLogsForDeletion(userId);
+    logger.audit('User logs marked for deletion', { user_id: userId });
+}
+
+// Encryption at rest
+async function encryptLogAtRest(logEntry) {
+    const cipher = crypto.createCipher('aes-256-cbc', encryptionKey);
+    const encrypted = cipher.update(JSON.stringify(logEntry)) + cipher.final();
+    return encrypted;
+}
+```
+</TabItem>
+</Tabs>
+
+## Retention Strategy
+
+### By Log Type
+
+**Audit Logs** (2+ years)
+- Access logs, authentication, authorization changes
+- Compliance requirement
+- Immutable storage recommended
+
+**Error Logs** (1 year)
+- For incident investigation and RCA
+- Can be deleted after 1 year if no regulatory requirement
+
+**Info Logs** (90 days)
+- Operational troubleshooting
+- Delete after debugging window
+
+**Debug Logs** (7 days)
+- Development and active incident investigation
+- Short-lived
+
+### Deletion Strategy
+
+```
+Immutable logs: Mark as "deleted" (logical), exclude from queries
+- Prevents re-analysis of deleted data
+- Maintains audit trail that deletion occurred
+
+Mutable logs: True delete
+- Remove from storage (GDPR requirement)
+- Verify deletion in backups
+- Document deletion in audit log
+```
+
+## Design Review Checklist
+
+- Does your sanitization filter catch passwords, API keys, tokens, credit cards, SSN, PII?
+- Are secrets never intentionally logged?
+- Is PII hashed or redacted before logging?
+- Do you have a documented retention policy?
+- Can you delete logs for a user within 30 days (GDPR)?
+- Are audit logs protected with integrity checks?
+- Are logs encrypted at rest and in transit?
+- Is log access audited (who read what when)?
+- Do retention policies match regulatory requirements?
+
+## Self-Check
+
+1. Review your logs from the past week. What sensitive data appears? Design filters to prevent it.
+
+2. Write a retention policy for a healthcare system (HIPAA), an e-commerce site (PCI-DSS), and a SaaS (GDPR).
+
+3. How would you handle a GDPR deletion request for a user whose logs span 500 GB across immutable storage?
+
+<Admonition type="info" title="One Takeaway">
+Sensitive data in logs is a compliance and security liability. Use automatic sanitization filters to prevent secrets, hash or redact PII, and implement retention policies based on regulations. Design for deletion: be able to fulfill GDPR requests within 30 days. Privacy is not a feature—it's foundational to responsible logging.
+</Admonition>
+
+## Next Steps
+
+- Review <a href="./structured-logs-context-correlation-ids">structured logs and correlation IDs ↗</a> for complementary practices
+- Explore <a href="../metrics">metrics ↗</a> for privacy-friendly observability
+- Study <a href="../../security-architecture">security architecture ↗</a> for broader compliance
+- Learn about <a href="../../quality-attributes/security">security attributes ↗</a>
+
+## References
+
+1. GDPR - General Data Protection Regulation. (2018). Retrieved from https://gdpr-info.eu/
+2. HIPAA Security Rule. (2023). Retrieved from https://www.hhs.gov/hipaa/for-professionals/security/
+3. PCI DSS - Payment Card Industry Data Security Standard v4.0. (2023). Retrieved from https://www.pcisecuritystandards.org/
+4. OWASP - Logging Cheat Sheet. (2024). Retrieved from https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html

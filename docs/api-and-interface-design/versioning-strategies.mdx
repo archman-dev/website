@@ -1,0 +1,511 @@
+---
+sidebar_position: 5
+title: "Versioning Strategies"
+description: "Manage API evolution while maintaining backward compatibility"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [API versioning, backward compatibility, deprecation, breaking changes, semantic versioning, URI versioning, header versioning]
+image: /img/archman-social-card.webp
+tags: [API-design, versioning, backward-compatibility, deprecation, breaking-changes, semantic-versioning, evolution, lifecycle]
+hide_title: true
+---
+
+<Hero title="Versioning Strategies" subtitle="Evolve APIs without breaking existing clients" imageAlt="Versioning illustration" size="large" />
+
+## TL;DR
+
+APIs change. You add fields, remove deprecated endpoints, adjust schemas. The goal is evolution without breaking clients. **Backward-compatible changes** (new optional fields, new endpoints) don't break old clients. **Breaking changes** (removing fields, changing type) require a versioning strategy. Choices: URI versioning (`/v1/`, `/v2/`), header versioning (Accept header), or no versioning (semantic versioning of your service). Deploy carefully, deprecate clearly, and give clients migration time. The best strategy is avoiding breaking changes; when unavoidable, plan the transition.
+
+## Learning Objectives
+
+- Distinguish backward-compatible from breaking changes
+- Choose a versioning strategy aligned with your ecosystem
+- Design deprecation and migration paths
+- Handle multiple versions in production
+- Communicate changes clearly to API consumers
+
+## Motivating Scenario
+
+Your v1 API has `/users/{id}` returning `{ "id", "name", "email" }`. A new requirement adds addresses. You can add an optional `addresses` array—backward compatible, old clients ignore it. Later, you realize the response should be `{ "data": { ... }, "meta": {...} }`. This is a breaking change; old clients expect flat structure.
+
+Do you version as `/v2/users/{id}`? Or use Accept header to signal versions? How long do you support v1? How do you deprecate?
+
+## Core Concepts
+
+### Backward-Compatible Changes
+
+These don't break existing clients:
+- Add new optional fields
+- Add new endpoints
+- Add new query parameters (with defaults)
+- Add new HTTP headers
+- Expand enum values (if client doesn't validate against exact set)
+
+### Breaking Changes
+
+These require versioning:
+- Remove fields
+- Change field types (string → int)
+- Move fields to nested structure
+- Change HTTP status codes
+- Rename endpoints
+- Change response structure
+
+### Versioning Approaches
+
+**URI Versioning**: `/v1/users`, `/v2/users`. Clear, visible, hard to test (need multiple test suites), hard to deprecate.
+
+**Header Versioning**: `Accept: application/json;version=2`. Less visible but flexible, allows gradual migration.
+
+**Semantic Versioning (No Explicit Versioning)**: Service version increments (1.0.0 → 2.0.0), but API doesn't change URLs. Requires strong backward compatibility discipline.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="backward" label="✅ Backward-Compatible Change">
+
+```bash
+# v1 Response
+GET /api/users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com"
+}
+
+# v1.1 Response (backward-compatible)
+GET /api/users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com",
+  "addresses": [  # NEW OPTIONAL FIELD
+    { "type": "billing", "street": "123 Main St" }
+  ],
+  "phone": "+1-555-1234"  # NEW OPTIONAL FIELD
+}
+
+# Old clients ignore new fields. New clients benefit.
+# No versioning needed.
+```
+
+</TabItem>
+<TabItem value="breaking" label="❌ Breaking Change">
+
+```bash
+# v1 Response
+GET /api/users/123
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com"
+}
+
+# v2 Response (breaking change - wrapped in object)
+GET /api/v2/users/123
+{
+  "data": {
+    "id": 123,
+    "name": "Alice",
+    "email": "alice@example.com"
+  },
+  "meta": {
+    "version": 2,
+    "timestamp": "2025-02-14T10:00:00Z"
+  }
+}
+
+# Old clients expect flat structure. They break.
+# Must version as v2.
+```
+
+</TabItem>
+<TabItem value="deprecation" label="Deprecation Timeline">
+
+```bash
+# Q1 2025: Announce v1 deprecation
+# Headers signal v1 is deprecated
+GET /api/users/123
+Deprecation: true
+Sunset: Sat, 30 Jun 2025 00:00:00 GMT
+Link: <https://docs.api.example.com/v1-migration>; rel="deprecation"
+
+{
+  "id": 123,
+  "name": "Alice",
+  "email": "alice@example.com"
+}
+
+# Q2 2025: v2 stable, v1 deprecated, both active
+# Clients migrate at their pace
+
+# Q3 2025: v1 sunset date reached
+# v1 endpoints return 410 Gone
+GET /api/users/123
+HTTP/1.1 410 Gone
+
+# Remaining clients forced to upgrade
+```
+
+</TabItem>
+<TabItem value="strategy" label="Versioning Strategy Comparison">
+
+**URI Versioning** (`/v1/`, `/v2/`):
+```
+GET /api/v1/users/123
+GET /api/v2/users/123
+```
+Pros: Clear, discoverable
+Cons: Duplication, hard to deprecate, maintenance burden
+
+**Header Versioning** (`Accept: version=2`):
+```
+GET /api/users/123
+Accept: application/json;version=2
+```
+Pros: Single endpoint, gradual rollout, clean URLs
+Cons: Less visible, tooling doesn't always support it
+
+**Accept Media Type** (Content Negotiation):
+```
+GET /api/users/123
+Accept: application/vnd.api+json;version=2
+```
+Pros: REST-compliant, content negotiation standard
+Cons: Verbose, tooling complexity
+
+</TabItem>
+</Tabs>
+
+## Semantic Versioning (Service Version, Not API)
+
+Some teams use service semantic versioning without explicit API versioning. The service goes 1.0.0 → 2.0.0, but API endpoints remain unchanged. This requires strong discipline:
+
+**Rules for true semantic versioning without API versioning:**
+1. Never remove or rename fields
+2. New fields must be optional and have sensible defaults
+3. Optional fields must be ignorable by old clients
+4. Enums can only expand, never shrink
+5. Type changes forbidden (string to int is breaking)
+
+This works for stable APIs but is brittle if discipline erodes.
+
+## Deprecation Best Practices
+
+- **Announce early**: Give 6-12 months notice before sunset
+- **Use HTTP Deprecation header**: `Deprecation: true`, `Sunset: Date`
+- **Link to migration guide**: `Link: <url>; rel="deprecation"`
+- **Version monitoring**: Track adoption of old versions via analytics
+- **Communicate via multiple channels**: Email, docs, headers, blogs
+- **Support window**: Run old and new versions simultaneously for migration period
+
+## Design Review Checklist
+
+- [ ] Versioning strategy chosen and documented
+- [ ] Breaking vs backward-compatible changes defined
+- [ ] Deprecation policy clear (how long old versions supported)
+- [ ] Migration guide provided for breaking changes
+- [ ] Sunset date communicated via HTTP headers
+- [ ] Monitoring tracks version adoption
+- [ ] API contract documented (what fields required, what optional)
+- [ ] New fields documented for clients
+- [ ] Removed fields deprecated gradually, not abruptly
+- [ ] Version support policy (e.g., "last 2 versions")
+
+## Versioning for Different API Types
+
+### REST APIs
+
+```
+V1 → V2 Breaking Changes:
+├─ Field removed
+├─ Response structure changed
+├─ HTTP status codes changed
+└─ Endpoint path changed
+```
+
+**Best Strategy**: URI versioning (`/v1/`, `/v2/`)
+- Explicit, discoverable
+- Multiple versions in production simultaneously
+- Straightforward deployment
+
+### GraphQL APIs
+
+```graphql
+# GraphQL can evolve without breaking (schema stitching)
+query GetUser($id: ID!) {
+  user(id: $id) {
+    id
+    name
+    email      # new field (backwards compatible)
+    addresses  # new field (backwards compatible)
+  }
+}
+
+# Deprecated fields marked with @deprecated
+type User {
+  id: ID!
+  name: String!
+  email: String!       # new
+  phone: String        # deprecated (use contactInfo)
+  contactInfo: Contact # new
+}
+```
+
+**Best Strategy**: No explicit versioning needed (schema evolution)
+- Add fields, don't remove
+- Deprecate fields, don't remove immediately
+- Use directives for client guidance
+
+### Internal APIs (Microservices)
+
+```
+Best for rapid iteration without backward compatibility
+
+If using Kafka/Events: Schema Registry versioning
+If using gRPC: Semantic versioning of proto definitions
+If using REST: Header versioning for flexibility
+```
+
+## Self-Check
+
+- What's the difference between a backward-compatible and breaking change?
+- When would you choose header versioning over URI versioning?
+- How should you announce an API deprecation?
+- What's your strategy for supporting multiple versions?
+- How do you track version adoption among clients?
+- How long do you support old versions?
+- What's your migration path for breaking changes?
+- Do you have a communication plan for deprecations?
+
+:::info One Takeaway
+Plan for change from day one: design flexible schemas, deprecate gradually, communicate clearly.
+
+:::
+
+## Next Steps
+
+- Read **Error Formats** for version-related error responses
+- Study **API Governance** for managing API lifecycle
+- Explore **GraphQL** for schema evolution patterns
+
+## Real-World Versioning Examples
+
+### Stripe API Versioning (Accept Header)
+
+Stripe uses account API versions to manage breaking changes:
+
+```bash
+# Client requests v1
+GET /v1/customers/cus_123
+Authorization: Bearer sk_live_...
+Stripe-Version: 2015-10-16
+
+# Server can return different behavior based on version
+# Old clients get old response format
+# New clients get new format
+# Same endpoint, different versions
+
+Response:
+{
+  "id": "cus_123",
+  "email": "alice@example.com",
+  "created": 1420070400,
+  "metadata": {
+    "order_id": "6735"
+  }
+}
+```
+
+### GitHub API Versioning
+
+GitHub deprecated API v3 and moved to GraphQL + REST v3 with different endpoints:
+
+```bash
+# v3 (old REST)
+GET /repos/owner/repo/issues
+Accept: application/vnd.github.v3+json
+
+# Sunset announced: Oct 2022
+# Shutdown: 2022
+
+# GraphQL (new)
+POST https://api.github.com/graphql
+{
+  "query": "{ repository(owner:\"owner\", name:\"repo\") { issues(first:20) { edges { node { id title } } } } }"
+}
+```
+
+### AWS API Versioning (Date-Based)
+
+AWS services version by date to allow for breaking changes:
+
+```bash
+# DynamoDB operations dated 2012-08-10
+POST / HTTP/1.1
+X-Amz-Target: DynamoDB_20120810.GetItem
+Content-Type: application/x-amz-json-1.0
+
+{
+  "TableName": "Users",
+  "Key": { "id": {"S": "user123"} }
+}
+
+# If AWS updates API, old clients get old behavior
+# New clients must explicitly request new format
+```
+
+## Versioning Decision Matrix
+
+```
+┌─────────────────────┬──────────────────┬────────────────┬────────────────┐
+│ Scenario            │ URI Versioning   │ Header          │ No Versioning  │
+├─────────────────────┼──────────────────┼────────────────┼────────────────┤
+│ Small API, slow     │ Acceptable       │ Good           │ OK             │
+│ change rate         │                  │                │                │
+├─────────────────────┼──────────────────┼────────────────┼────────────────┤
+│ Public API,         │ Yes (visible)    │ Less ideal     │ Not recommended│
+│ many clients        │                  │ (discovery)    │                │
+├─────────────────────┼──────────────────┼────────────────┼────────────────┤
+│ Internal API        │ Optional         │ Good           │ Possible       │
+│ (controlled users)  │                  │                │                │
+├─────────────────────┼──────────────────┼────────────────┼────────────────┤
+│ Stable API          │ Acceptable       │ Good           │ Best           │
+│ (rarely changes)    │                  │                │                │
+├─────────────────────┼──────────────────┼────────────────┼────────────────┤
+│ Rapid iteration     │ Difficult        │ Recommended    │ Recommended    │
+│ (frequent changes)  │                  │                │                │
+└─────────────────────┴──────────────────┴────────────────┴────────────────┘
+```
+
+## Building Version-Aware Clients
+
+```python
+class APIClient:
+    """Client that handles versioning transparently."""
+
+    def __init__(self, base_url, api_version='2025-02-14'):
+        self.base_url = base_url
+        self.api_version = api_version
+        self.supported_versions = ['2024-01-01', '2024-06-01', '2025-02-14']
+
+    def get(self, endpoint, **kwargs):
+        """GET request with version header."""
+        headers = kwargs.pop('headers', {})
+        headers['Accept'] = f'application/json;version={self.api_version}'
+
+        response = requests.get(
+            f'{self.base_url}{endpoint}',
+            headers=headers,
+            **kwargs
+        )
+
+        # Handle version-specific responses
+        if response.status_code == 410:
+            # Gone (deprecated version)
+            raise APIVersionDeprecated(
+                f"API version {self.api_version} is no longer supported. "
+                f"Upgrade to one of: {', '.join(self.supported_versions)}"
+            )
+
+        # Warn if deprecated
+        if 'Deprecation' in response.headers:
+            logger.warning(
+                f"API version {self.api_version} is deprecated. "
+                f"Sunset: {response.headers.get('Sunset')}"
+            )
+
+        return response.json()
+
+    def upgrade_to_latest(self):
+        """Auto-upgrade to latest supported version."""
+        self.api_version = self.supported_versions[-1]
+        logger.info(f"Upgraded to API version {self.api_version}")
+
+# Usage
+client = APIClient('https://api.example.com', api_version='2024-01-01')
+
+try:
+    data = client.get('/users/123')
+except APIVersionDeprecated:
+    # Auto-upgrade if version is no longer supported
+    client.upgrade_to_latest()
+    data = client.get('/users/123')
+```
+
+## Versioning Strategy Comparison Table
+
+| Strategy | Pros | Cons | Best For |
+|----------|------|------|----------|
+| **URI** (`/v1/`, `/v2/`) | Visible, clear URLs, independent deployments | Duplication, hard to deprecate, mataint multiple versions | Public APIs with multiple active versions |
+| **Header** (`Accept: version=2`) | Single endpoint, clean URLs, gradual rollout | Less discoverable, tooling issues, harder to test | Enterprise APIs, private APIs |
+| **Media Type** (`application/vnd.api+json;version=2`) | REST-compliant, content negotiation | Complex, verbose, poor tooling support | APIs following REST strictly |
+| **Parameter** (`?version=2`) | Simple, flexible | Non-standard, clutters URL, cache confusion | Legacy systems only |
+| **Semantic Versioning** (no explicit API versioning) | Simplest, clean, single endpoint | Requires strict discipline, risk of accidental breaks | Internal APIs with strong governance |
+
+## Monitoring Version Adoption
+
+```python
+class VersionAnalytics:
+    """Track API version adoption over time."""
+
+    def __init__(self, analytics_db):
+        self.db = analytics_db
+
+    def log_api_call(self, endpoint, version, response_time, status_code):
+        """Log each API call with version info."""
+        self.db.insert('api_calls', {
+            'endpoint': endpoint,
+            'version': version,
+            'response_time_ms': response_time,
+            'status_code': status_code,
+            'timestamp': datetime.now()
+        })
+
+    def get_version_adoption(self):
+        """Report on API version usage."""
+        return self.db.query("""
+            SELECT version, COUNT(*) as call_count, AVG(response_time_ms) as avg_latency
+            FROM api_calls
+            WHERE timestamp >= NOW() - INTERVAL 30 DAY
+            GROUP BY version
+            ORDER BY call_count DESC
+        """)
+
+    def alert_on_deprecated_version_usage(self, deprecated_version, threshold_percent=5):
+        """Alert if deprecated version still getting traffic."""
+        stats = self.get_version_adoption()
+        total_calls = sum(s['call_count'] for s in stats)
+
+        for stat in stats:
+            if stat['version'] == deprecated_version:
+                percent = (stat['call_count'] / total_calls) * 100
+                if percent > threshold_percent:
+                    logger.warning(
+                        f"Deprecated version {deprecated_version} "
+                        f"still getting {percent:.1f}% of traffic"
+                    )
+
+# Dashboard-ready data
+analytics = VersionAnalytics(db)
+adoption = analytics.get_version_adoption()
+
+# Results:
+# version    | call_count | avg_latency
+# -----------+------------+-----------
+# 2025-02-14 | 95000      | 145ms
+# 2024-06-01 | 4500       | 156ms
+# 2024-01-01 | 150        | 198ms  <-- Deprecated, should sunset
+```
+
+## References
+
+- Semantic Versioning (semver.org)
+- API Versioning Best Practices (stripe.com, github.com)
+- RFC 8594: The Sunset HTTP Header Field
+- Deprecation in Web APIs (WHATWG)
+- "RESTful API Design Rulebook" by Mark Masse
+- "API Design Patterns" by Biehl

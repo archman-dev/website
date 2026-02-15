@@ -1,0 +1,426 @@
+---
+sidebar_position: 9
+title: "Protected Variations"
+description: "Protect classes from variations in other classes using abstraction and stable interfaces"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [protected-variations, abstraction, interfaces, stable, variations, grasp, robustness, change]
+image: /img/archman-social-card.webp
+tags: [grasp, protected-variations, abstraction, stable-interfaces, robustness, design-principles, flexibility, change-management]
+hide_title: true
+---
+
+<Hero title="Protected Variations" subtitle="Protect classes from variations in other classes using abstraction and stable interfaces" imageAlt="Protected Variations illustration" size="large" />
+
+## TL;DR
+
+Protected Variations is the ultimate GRASP principle that ties all others together. It teaches you to protect classes from variations and change by using abstraction and stable interfaces. Rather than having classes vulnerable to changes in other classes, you design systems where variations are isolated behind stable abstractions.
+
+## Learning Objectives
+
+- Understand what variations are and why protecting from them matters
+- Learn to identify points of variation in your design
+- Apply abstraction to isolate variations
+- Design stable interfaces that insulate classes from change
+- Balance flexibility with simplicity in your designs
+
+## Motivating Scenario
+
+Your system uses payment processing that may change: sometimes credit card, sometimes digital wallet, sometimes bank transfer. Without protection, your OrderProcessor knows about all payment variations and changes whenever a new payment method arrives. Protected Variations says: define a stable Payment interface that PaymentProcessor depends on. New payment methods extend this interface without affecting OrderProcessor.
+
+## Core Concepts
+
+**Protected Variations** is the foundational principle underlying all other GRASP patterns. It states: identify points of likely variation and protect against them using abstraction and stable interfaces. Areas of variation include:
+
+1. **External Systems**: Database, API, file systems—hide behind stable interfaces
+2. **Business Rules**: Discounts, fees, calculations—isolate in modular objects
+3. **Algorithms**: Sorting, searching, processing—encapsulate in strategy patterns
+4. **Object Types**: Different implementations—use polymorphism
+5. **Requirements**: Features that change often—abstract into pluggable components
+
+By designing systems that are protected from variations, you achieve systems that are more resilient, maintainable, and extensible. This isn't premature defense against every imagined change; it's thoughtful design that protects against known or likely variations.
+
+Protected Variations connects to all other patterns:
+- Information Expert keeps variation knowledge localized
+- Creator keeps object creation strategies flexible
+- Controller isolates UI/domain variations
+- Low Coupling isolates components from variation in others
+- Polymorphism handles type variations
+- Pure Fabrication isolates infrastructure variations
+- Indirection creates barriers against variation
+
+<Figure caption="Protected Variations: Isolation Through Abstraction">
+```mermaid
+flowchart TB
+    subgraph Unprotected["WITHOUT PROTECTION"]
+        A["OrderProcessor<br/>if payment == 'CC'<br/>if payment == 'Wallet'<br/>if payment == 'Transfer'"]
+        B["PaymentSystem"]
+        A -->|tightly coupled| B
+    end
+    subgraph Protected["WITH PROTECTION"]
+        C["OrderProcessor"]
+        I["Payment<br/>stable interface"]
+        C -->|depends on| I
+        I <|implements| D["CreditCard<br/>variation"]
+        I <|implements| E["Wallet<br/>variation"]
+        I <|implements| F["Transfer<br/>variation"]
+    end
+    style Unprotected fill:#FFB6C6
+    style Protected fill:#90EE90
+    style I fill:#87CEEB
+    style D fill:#E6F3FF
+    style E fill:#E6F3FF
+    style F fill:#E6F3FF
+```
+</Figure>
+
+## Practical Example
+
+Let's see how Protected Variations isolates variations:
+
+<Tabs>
+<TabItem value="python" label="Python">
+```python title="protected_variations_example.py" showLineNumbers
+from abc import ABC, abstractmethod
+
+# WITHOUT PROTECTION (vulnerable to variations)
+class BadOrderProcessor:
+    def process_order(self, order, payment_data):
+        if payment_data["type"] == "credit_card":
+            # Credit card logic - changes when CC varies
+            order.total = order.total * 0.95
+        elif payment_data["type"] == "digital_wallet":
+            # Wallet logic - changes when wallet varies
+            order.total = order.total * 0.92
+        elif payment_data["type"] == "bank_transfer":
+            # Transfer logic - changes when transfer varies
+            order.total = order.total * 0.98
+        # Adding new payment type requires modifying this method
+
+# WITH PROTECTION (using abstraction)
+class PaymentStrategy(ABC):
+    """Stable interface protecting from payment variations"""
+    @abstractmethod
+    def apply_discount(self, amount: float) -> float:
+        pass
+
+class CreditCardPayment(PaymentStrategy):
+    def apply_discount(self, amount: float) -> float:
+        return amount * 0.95
+
+class DigitalWalletPayment(PaymentStrategy):
+    def apply_discount(self, amount: float) -> float:
+        return amount * 0.92
+
+class BankTransferPayment(PaymentStrategy):
+    def apply_discount(self, amount: float) -> float:
+        return amount * 0.98
+
+# New payment types can be added without changing OrderProcessor
+class CryptoCurrencyPayment(PaymentStrategy):
+    def apply_discount(self, amount: float) -> float:
+        return amount * 0.90
+
+class Order:
+    def __init__(self, customer: str, total: float):
+        self.customer = customer
+        self.total = total
+
+class GoodOrderProcessor:
+    """Protected from payment variations"""
+    def process_order(self, order: Order,
+                      payment: PaymentStrategy) -> dict:
+        # No knowledge of specific payment types
+        order.total = payment.apply_discount(order.total)
+        return {
+            "success": True,
+            "customer": order.customer,
+            "total": order.total
+        }
+
+# Usage
+processor = GoodOrderProcessor()
+order = Order("John", 100.0)
+
+# Credit card payment
+cc_payment = CreditCardPayment()
+result = processor.process_order(order, cc_payment)
+print(f"CC: ${result['total']:.2f}")
+
+# Digital wallet payment
+order.total = 100.0
+wallet_payment = DigitalWalletPayment()
+result = processor.process_order(order, wallet_payment)
+print(f"Wallet: ${result['total']:.2f}")
+
+# New cryptocurrency payment - NO CHANGES TO OrderProcessor!
+order.total = 100.0
+crypto_payment = CryptoCurrencyPayment()
+result = processor.process_order(order, crypto_payment)
+print(f"Crypto: ${result['total']:.2f}")
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go title="protected_variations_example.go" showLineNumbers
+package main
+
+import "fmt"
+
+// WITH PROTECTION: Stable interface isolates payment variations
+type PaymentStrategy interface {
+    ApplyDiscount(amount float64) float64
+}
+
+type CreditCardPayment struct{}
+
+func (cc *CreditCardPayment) ApplyDiscount(amount float64) float64 {
+    return amount * 0.95
+}
+
+type DigitalWalletPayment struct{}
+
+func (dw *DigitalWalletPayment) ApplyDiscount(amount float64) float64 {
+    return amount * 0.92
+}
+
+type BankTransferPayment struct{}
+
+func (bt *BankTransferPayment) ApplyDiscount(amount float64) float64 {
+    return amount * 0.98
+}
+
+// New payment type - OrderProcessor doesn't need changes
+type CryptoCurrencyPayment struct{}
+
+func (cc *CryptoCurrencyPayment) ApplyDiscount(amount float64) float64 {
+    return amount * 0.90
+}
+
+type Order struct {
+    Customer string
+    Total    float64
+}
+
+type OrderProcessor struct{}
+
+func (op *OrderProcessor) ProcessOrder(order *Order,
+    payment PaymentStrategy) map[string]interface{} {
+    // Protected from payment variations
+    order.Total = payment.ApplyDiscount(order.Total)
+    return map[string]interface{}{
+        "success":  true,
+        "customer": order.Customer,
+        "total":    order.Total,
+    }
+}
+
+func main() {
+    processor := &OrderProcessor{}
+    order := &Order{Customer: "John", Total: 100.0}
+
+    // Credit card
+    cc := &CreditCardPayment{}
+    result := processor.ProcessOrder(order, cc)
+    fmt.Printf("CC: $%.2f\n", result["total"])
+
+    // Digital wallet
+    order.Total = 100.0
+    wallet := &DigitalWalletPayment{}
+    result = processor.ProcessOrder(order, wallet)
+    fmt.Printf("Wallet: $%.2f\n", result["total"])
+
+    // New cryptocurrency - NO CHANGES TO OrderProcessor!
+    order.Total = 100.0
+    crypto := &CryptoCurrencyPayment{}
+    result = processor.ProcessOrder(order, crypto)
+    fmt.Printf("Crypto: $%.2f\n", result["total"])
+}
+```
+</TabItem>
+
+<TabItem value="nodejs" label="Node.js">
+```javascript title="protected_variations_example.js" showLineNumbers
+// WITH PROTECTION: Stable interface isolates variations
+
+class PaymentStrategy {
+    applyDiscount(amount) {
+        throw new Error("Must be implemented");
+    }
+}
+
+class CreditCardPayment extends PaymentStrategy {
+    applyDiscount(amount) {
+        return amount * 0.95;
+    }
+}
+
+class DigitalWalletPayment extends PaymentStrategy {
+    applyDiscount(amount) {
+        return amount * 0.92;
+    }
+}
+
+class BankTransferPayment extends PaymentStrategy {
+    applyDiscount(amount) {
+        return amount * 0.98;
+    }
+}
+
+// New payment type - OrderProcessor doesn't need changes
+class CryptoCurrencyPayment extends PaymentStrategy {
+    applyDiscount(amount) {
+        return amount * 0.90;
+    }
+}
+
+class Order {
+    constructor(customer, total) {
+        this.customer = customer;
+        this.total = total;
+    }
+}
+
+class OrderProcessor {
+    processOrder(order, payment) {
+        // Protected from payment variations
+        order.total = payment.applyDiscount(order.total);
+        return {
+            success: true,
+            customer: order.customer,
+            total: order.total,
+        };
+    }
+}
+
+// Usage
+const processor = new OrderProcessor();
+let order = new Order("John", 100.0);
+
+// Credit card
+const cc = new CreditCardPayment();
+let result = processor.processOrder(order, cc);
+console.log(`CC: $${result.total.toFixed(2)}`);
+
+// Digital wallet
+order = new Order("John", 100.0);
+const wallet = new DigitalWalletPayment();
+result = processor.processOrder(order, wallet);
+console.log(`Wallet: $${result.total.toFixed(2)}`);
+
+// New cryptocurrency - NO CHANGES TO OrderProcessor!
+order = new Order("John", 100.0);
+const crypto = new CryptoCurrencyPayment();
+result = processor.processOrder(order, crypto);
+console.log(`Crypto: $${result.total.toFixed(2)}`);
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Use",
+    points: [
+      "For known or likely variations in requirements",
+      "When integrating with external systems that change",
+      "For business rules that evolve over time",
+      "When multiple implementations of a concept exist",
+      "For architectural boundaries between subsystems"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid",
+    points: [
+      "Protecting against imagined variations that never occur",
+      "Over-abstracting simple, stable requirements",
+      "Creating unnecessary layers for single-variant scenarios",
+      "Sacrificing simplicity for hypothetical flexibility",
+      "Designing based on speculation instead of real needs"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase title="Protected Variations Implementation" sections={[
+  {
+    label: "Do",
+    body: <>
+      <p><strong>Design for known variations:</strong> Protect against variations you know exist or are likely to occur. Credit card vs. digital wallet is a real variation worth protecting against.</p>
+      <p><strong>Use stable interfaces:</strong> Create interfaces or abstract classes that are unlikely to change, isolating variations behind them.</p>
+      <p><strong>Locate variation:</strong> Identify the specific point of variation and create abstraction right there, not everywhere speculatively.</p>
+    </>,
+    tone: "positive"
+  ,
+    body: <>
+      <p><strong>Design for known variations:</strong> Protect against variations you know exist or are likely to occur. Credit card vs. digital wallet is a real variation worth protecting against.</p>
+      <p><strong>Use stable interfaces:</strong> Create interfaces or abstract classes that are unlikely to change, isolating variations behind them.</p>
+      <p><strong>Locate variation:</strong> Identify the specific point of variation and create abstraction right there, not everywhere speculatively.</p>
+    </>,
+    tone: "positive"
+  ,
+    tone: "positive"
+  },
+  {
+    label: "Avoid",
+    body: <>
+      <p><strong>Over-engineering:</strong> Don't create abstraction layers for every possible future variation. Design for known variations, refactor when new ones appear.</p>
+      <p><strong>Speculative design:</strong> Don't assume variations that never occur. This creates unnecessary complexity without providing value.</p>
+      <p><strong>Leaky abstractions:</strong> Don't create interfaces that expose implementation details. Stable interfaces hide the variations they're meant to protect against.</p>
+    </>,
+    tone: "warning"
+  ,
+    body: <>
+      <p><strong>Over-engineering:</strong> Don't create abstraction layers for every possible future variation. Design for known variations, refactor when new ones appear.</p>
+      <p><strong>Speculative design:</strong> Don't assume variations that never occur. This creates unnecessary complexity without providing value.</p>
+      <p><strong>Leaky abstractions:</strong> Don't create interfaces that expose implementation details. Stable interfaces hide the variations they're meant to protect against.</p>
+    </>,
+    tone: "warning"
+  ,
+    tone: "warning"
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Have you identified the points of likely variation?",
+  "Are these variations protected behind stable abstractions?",
+  "Can variations be added or changed without modifying other classes?",
+  "Is the abstraction stable (unlikely to change)?",
+  "Does the protection provide real value or is it over-engineering?",
+  "Are variations truly isolated or do they leak through the interface?"
+]} />
+
+## Self-Check
+
+1. **What is Protected Variations and why does it matter?** It's the principle of protecting classes from variations in other classes using stable abstractions. This makes systems more resilient to change and extension.
+
+2. **How does Protected Variations relate to other GRASP patterns?** It's the underlying principle that justifies all other patterns. Low Coupling protects from variation in dependencies, Polymorphism protects from type variation, Pure Fabrication protects from infrastructure variation, etc.
+
+3. **When should you protect against variations?** When you have known or likely variations in requirements, external systems, algorithms, or implementations. Avoid protecting against imagined variations that may never occur.
+
+:::info
+**One Takeaway**: Identify points of likely variation and protect against them using stable abstractions. This makes your systems more resilient, maintainable, and extensible.
+
+:::
+
+## Next Steps
+
+- Review [Low Coupling](/docs/core-design-and-programming-principles/grasp/low-coupling) as a mechanism for protecting against variation
+- Study [Polymorphism](/docs/core-design-and-programming-principles/grasp/polymorphism) for protecting against type variation
+- Learn [Pure Fabrication](/docs/core-design-and-programming-principles/grasp/pure-fabrication) for protecting against infrastructure variation
+- Explore [Indirection](/docs/core-design-and-programming-principles/grasp/indirection) for protecting against direct dependencies
+- Review all GRASP patterns as applications of Protected Variations principle
+
+## References
+
+1. <a href="https://en.wikipedia.org/wiki/GRASP_(object-oriented_design)" target="_blank" rel="nofollow noopener noreferrer">GRASP (Object-Oriented Design) - Wikipedia ↗️</a>
+2. <a href="https://www.oreilly.com/library/view/applying-uml-and/0131489062/" target="_blank" rel="nofollow noopener noreferrer">Applying UML and Patterns by Craig Larman ↗️</a>

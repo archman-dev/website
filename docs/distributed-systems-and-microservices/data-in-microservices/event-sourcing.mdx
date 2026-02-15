@@ -1,0 +1,444 @@
+---
+sidebar_position: 5
+title: "Event Sourcing"
+description: "Store the complete history of changes as immutable events rather than storing only the current state."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [event-sourcing, event-streams, snapshots, projections, event-store, immutability, audit-trail, temporal-queries, replay]
+image: /img/archman-social-card.webp
+tags: [microservices, architecture, event-driven, data-management, patterns, auditability, temporal-queries, consistency, operational-excellence, best-practices]
+hide_title: true
+---
+
+<Hero title="Event Sourcing" subtitle="Store the complete history of changes as immutable events rather than storing only the current state." imageAlt="Event sourcing illustration" size="large" />
+
+## TL;DR
+
+Instead of storing current state (user's name, balance, status), store the complete history of changes as immutable events: "NameChanged", "DepositMade", "StatusUpdated". Rebuild current state by replaying events. This gives you a complete audit trail, enables temporal queries (what was the balance on March 5?), and makes debugging easier—you can replay events to see exactly what happened. The tradeoff: reading requires replaying events, which is slower than a state table. Use snapshots to optimize: instead of replaying 1 million events, take a snapshot at event 500,000 and replay only 500,000 more. Event sourcing is powerful but adds complexity—use it when complete history, auditability, or temporal queries are requirements, not just nice-to-haves.
+
+## Learning Objectives
+
+- Understand event sourcing vs. state-based storage
+- Design event streams for your domain
+- Implement event replay and state reconstruction
+- Use snapshots to optimize performance
+- Create projections from event streams
+- Handle event versioning and schema evolution
+- Enable temporal queries and debugging
+
+## Motivating Scenario
+
+A financial system stores current account balance: 5000. A user disputes a transaction from two months ago. How do you reconstruct exactly what happened? Without event sourcing, the history is lost. With event sourcing, you have the complete ledger: "Deposit 10000", "Withdraw 3000", "Fee 500", "Deposit 1500"—every change. You can replay to see balances at any point in time.
+
+## Core Concepts
+
+### Event Store vs. State Store
+
+Traditional: store current state, optionally log changes. Event sourcing: store only events, derive state. Events are immutable facts; state is derived and can change as you understand your domain better. This enables debugging and auditability.
+
+### Event Streams
+
+Organize events by aggregate (domain object). An "Account" aggregate has events like AccountCreated, MoneyDeposited, MoneyWithdrawn. Stream all events for one account together, enabling consistent reads and writes.
+
+### Snapshots
+
+Replaying all events is slow. Take periodic snapshots: "At event 100,000, the balance was 5000". To rebuild state, load the latest snapshot and replay events since that snapshot. This trades off storage for speed.
+
+### Projections
+
+Create materialized views from events. A "CustomerDashboard" projection consumes events and updates a view table: "When UserCreated event arrives, insert row into users table". Projections enable easy reads and integrations with non-event-sourced systems.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - State-based storage loses history
+class Account:
+    def __init__(self, account_id, balance=0):
+        self.account_id = account_id
+        self.balance = balance
+
+    def deposit(self, amount):
+        self.balance += amount
+        db.update('accounts', self.account_id, {'balance': self.balance})
+
+    def get_balance(self):
+        return self.balance
+
+# ✅ EXCELLENT - Event sourcing with complete history
+class AccountEvent:
+    def __init__(self, event_type, data, timestamp=None):
+        self.event_type = event_type
+        self.data = data
+        self.timestamp = timestamp or datetime.now()
+
+class Account:
+    def __init__(self, account_id, event_store):
+        self.account_id = account_id
+        self.event_store = event_store
+        self.version = 0
+
+    def deposit(self, amount):
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        event = AccountEvent('MoneyDeposited', {'amount': amount})
+        self.event_store.append(self.account_id, event)
+
+    def withdraw(self, amount):
+        if amount <= 0:
+            raise ValueError("Amount must be positive")
+        event = AccountEvent('MoneyWithdrawn', {'amount': amount})
+        self.event_store.append(self.account_id, event)
+
+    def get_current_state(self):
+        """Reconstruct current state by replaying events"""
+        events = self.event_store.get_events(self.account_id)
+        state = {'balance': 0, 'created_at': None}
+
+        for event in events:
+            if event.event_type == 'AccountCreated':
+                state['created_at'] = event.timestamp
+            elif event.event_type == 'MoneyDeposited':
+                state['balance'] += event.data['amount']
+            elif event.event_type == 'MoneyWithdrawn':
+                state['balance'] -= event.data['amount']
+
+        return state
+
+    def get_balance_at_date(self, date):
+        """Temporal query: what was the balance on this date?"""
+        events = self.event_store.get_events(self.account_id)
+        balance = 0
+
+        for event in events:
+            if event.timestamp > date:
+                break
+            if event.event_type == 'MoneyDeposited':
+                balance += event.data['amount']
+            elif event.event_type == 'MoneyWithdrawn':
+                balance -= event.data['amount']
+
+        return balance
+
+class EventStore:
+    def __init__(self, db):
+        self.db = db
+
+    def append(self, stream_id, event):
+        """Append event to stream"""
+        self.db.insert('events', {
+            'stream_id': stream_id,
+            'event_type': event.event_type,
+            'data': json.dumps(event.data),
+            'timestamp': event.timestamp
+        })
+
+    def get_events(self, stream_id):
+        """Get all events for a stream"""
+        rows = self.db.query(
+            'SELECT * FROM events WHERE stream_id = %s ORDER BY id',
+            stream_id
+        )
+        return [AccountEvent(row['event_type'], json.loads(row['data']), row['timestamp'])
+                for row in rows]
+
+    def get_snapshot(self, stream_id):
+        """Get latest snapshot for optimization"""
+        return self.db.query(
+            'SELECT * FROM snapshots WHERE stream_id = %s ORDER BY event_number DESC LIMIT 1',
+            stream_id
+        )
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Storing only current state
+type Account struct {
+    ID      string
+    Balance int
+}
+
+func (a *Account) Deposit(amount int, db *sql.DB) error {
+    a.Balance += amount
+    _, err := db.Exec("UPDATE accounts SET balance = ? WHERE id = ?", a.Balance, a.ID)
+    return err
+}
+
+// ✅ EXCELLENT - Event sourcing with complete history
+type Event struct {
+    ID        string
+    StreamID  string
+    Type      string
+    Data      map[string]interface{}
+    Timestamp time.Time
+}
+
+type EventStore struct {
+    db *sql.DB
+}
+
+type Account struct {
+    ID    string
+    store *EventStore
+}
+
+func (a *Account) Deposit(amount int) error {
+    if amount <= 0 {
+        return fmt.Errorf("amount must be positive")
+    }
+    event := Event{
+        StreamID: a.ID,
+        Type:     "MoneyDeposited",
+        Data: map[string]interface{}{
+            "amount": amount,
+        },
+        Timestamp: time.Now(),
+    }
+    return a.store.Append(event)
+}
+
+func (a *Account) GetCurrentState(ctx context.Context) (map[string]interface{}, error) {
+    events, err := a.store.GetEvents(ctx, a.ID)
+    if err != nil {
+        return nil, err
+    }
+
+    state := map[string]interface{}{"balance": 0}
+
+    for _, event := range events {
+        switch event.Type {
+        case "MoneyDeposited":
+            state["balance"] = state["balance"].(int) + event.Data["amount"].(int)
+        case "MoneyWithdrawn":
+            state["balance"] = state["balance"].(int) - event.Data["amount"].(int)
+        }
+    }
+
+    return state, nil
+}
+
+func (a *Account) GetBalanceAtDate(ctx context.Context, date time.Time) (int, error) {
+    events, err := a.store.GetEvents(ctx, a.ID)
+    if err != nil {
+        return 0, err
+    }
+
+    balance := 0
+    for _, event := range events {
+        if event.Timestamp.After(date) {
+            break
+        }
+        switch event.Type {
+        case "MoneyDeposited":
+            balance += event.Data["amount"].(int)
+        case "MoneyWithdrawn":
+            balance -= event.Data["amount"].(int)
+        }
+    }
+
+    return balance, nil
+}
+
+func (es *EventStore) Append(event Event) error {
+    _, err := es.db.Exec(
+        "INSERT INTO events (stream_id, type, data, timestamp) VALUES (?, ?, ?, ?)",
+        event.StreamID, event.Type, event.Data, event.Timestamp,
+    )
+    return err
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Current state storage loses history
+class Account {
+    constructor(id, db) {
+        this.id = id;
+        this.db = db;
+    }
+
+    async deposit(amount) {
+        const result = await this.db.query(
+            'UPDATE accounts SET balance = balance + $1 WHERE id = $2 RETURNING balance',
+            [amount, this.id]
+        );
+        return result.rows[0].balance;
+    }
+
+    async getBalance() {
+        const result = await this.db.query('SELECT balance FROM accounts WHERE id = $1', [this.id]);
+        return result.rows[0].balance;
+    }
+}
+
+// ✅ EXCELLENT - Event sourcing with complete audit trail
+class Event {
+    constructor(type, data, timestamp = new Date()) {
+        this.type = type;
+        this.data = data;
+        this.timestamp = timestamp;
+    }
+}
+
+class EventStore {
+    constructor(db) {
+        this.db = db;
+    }
+
+    async append(streamId, event) {
+        await this.db.query(
+            'INSERT INTO events (stream_id, event_type, data, timestamp) VALUES ($1, $2, $3, $4)',
+            [streamId, event.type, JSON.stringify(event.data), event.timestamp]
+        );
+    }
+
+    async getEvents(streamId) {
+        const result = await this.db.query(
+            'SELECT * FROM events WHERE stream_id = $1 ORDER BY id',
+            [streamId]
+        );
+        return result.rows.map(row => new Event(
+            row.event_type,
+            JSON.parse(row.data),
+            new Date(row.timestamp)
+        ));
+    }
+}
+
+class Account {
+    constructor(id, eventStore) {
+        this.id = id;
+        this.eventStore = eventStore;
+    }
+
+    async deposit(amount) {
+        if (amount <= 0) throw new Error('Amount must be positive');
+        const event = new Event('MoneyDeposited', { amount });
+        await this.eventStore.append(this.id, event);
+    }
+
+    async withdraw(amount) {
+        if (amount <= 0) throw new Error('Amount must be positive');
+        const event = new Event('MoneyWithdrawn', { amount });
+        await this.eventStore.append(this.id, event);
+    }
+
+    async getCurrentState() {
+        const events = await this.eventStore.getEvents(this.id);
+        let balance = 0;
+
+        for (const event of events) {
+            if (event.type === 'MoneyDeposited') {
+                balance += event.data.amount;
+            } else if (event.type === 'MoneyWithdrawn') {
+                balance -= event.data.amount;
+            }
+        }
+
+        return { balance };
+    }
+
+    async getBalanceAtDate(date) {
+        const events = await this.eventStore.getEvents(this.id);
+        let balance = 0;
+
+        for (const event of events) {
+            if (event.timestamp > date) break;
+
+            if (event.type === 'MoneyDeposited') {
+                balance += event.data.amount;
+            } else if (event.type === 'MoneyWithdrawn') {
+                balance -= event.data.amount;
+            }
+        }
+
+        return balance;
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0, 1]} items={[
+{
+    label: "When to Use Event Sourcing",
+    points: ["Systems requiring complete audit trails and regulatory compliance", "Applications where temporal queries (what was the state on date X) are important", "Debugging complex business processes by replaying events", "Systems with complex domain logic that benefit from event-driven design", "High-scale systems where event streams enable interesting analysis"],
+    highlightTone: "positive"
+  },
+{
+    label: "When NOT to Use Event Sourcing",
+    points: ["Simple CRUD applications where history isn", ",", ",", "t justified)", "Teams without event-driven architecture maturity", "Systems with high update frequency where event storage becomes a bottleneck"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Event Replay Performance",
+      description: "Replaying millions of events is slow. Use snapshots to checkpoint state at regular intervals.",
+      icon: "⚠️"
+    }, {
+      title: "Event Schema Evolution",
+      description: "Events are permanent. Design for evolution: versioning, upcasting old events to new schemas.",
+      icon: "⚠️"
+    }, {
+      title: "Event Immutability",
+      description: "Events are immutable facts. Never delete or modify events. Create compensating events instead.",
+      icon: "✓"
+    }, {
+      title: "Temporal Queries",
+      description: "Rebuild state at any point in time. Enable debugging and analysis by replaying events up to a target timestamp.",
+      icon: "✓"
+    }, {
+      title: "Complete Audit Trail",
+      description: "Every change is recorded. Use for compliance, debugging, and understanding how decisions were made.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "All state changes are represented as events",
+    "Events are immutable and append-only",
+    "Event store supports efficient querying by stream ID and timestamp",
+    "Snapshots are taken at regular intervals for performance",
+    "Event versioning strategy handles schema evolution",
+    "Events include sufficient context for debugging (user ID, timestamp, reasons)",
+    "Projections derive read models from events for query performance"
+  ]}
+/>
+
+## Self-Check
+
+- How would you reconstruct state at a specific point in time?
+- What are the performance implications of replaying events?
+- How do you handle schema changes in events that have already been stored?
+
+:::info One Takeaway
+Event sourcing trades write simplicity for complete history and auditability. Store immutable events, rebuild state by replaying, and use snapshots to optimize performance. The investment in this pattern pays off when history, auditability, or temporal queries are central to your application.
+
+:::
+
+## Next Steps
+
+- Implement event store with persistence and efficient querying
+- Design snapshots to optimize event replay performance
+- Create projections from events to support different query patterns
+- Build event versioning and upcasting for schema evolution
+
+## References
+
+- Greg Young, Event Sourcing
+- Martin Fowler, Event Sourcing
+- Chris Richardson, Microservices Patterns: Pattern Language for Microservices

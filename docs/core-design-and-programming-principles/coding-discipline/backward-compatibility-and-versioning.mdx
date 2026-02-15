@@ -1,0 +1,456 @@
+---
+sidebar_position: 6
+title: "Backward Compatibility and Versioning"
+description: "Design systems that evolve safely without breaking users and manage versions with semantic clarity."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [versioning, backward-compatibility, semantic-versioning, breaking-changes, api-evolution, deprecation, upgrades, stability]
+image: /img/archman-social-card.webp
+tags: [versioning, api-design, backward-compatibility, deprecation, semantic-versioning, stability, maintainability, evolution, breaking-changes, best-practices]
+hide_title: true
+---
+
+<Hero title="Backward Compatibility and Versioning" subtitle="Design systems that evolve safely without breaking users and manage versions with semantic clarity." imageAlt="Versioning illustration" size="large" />
+
+## TL;DR
+
+Version your code, APIs, and data formats. Use semantic versioning: MAJOR.MINOR.PATCH. PATCH for bug fixes, MINOR for backward-compatible features, MAJOR for breaking changes. Maintain backward compatibility as long as possible—breaking changes force users to upgrade immediately. When breaking changes are unavoidable, deprecate old interfaces first, giving users time to upgrade. Document breaking changes clearly in release notes. Version your data formats: schema changes can break consumers. Plan for multiple versions coexisting in production during migration periods. Backward compatibility is a commitment to your users.
+
+## Learning Objectives
+
+- Understand semantic versioning and its implications
+- Design APIs that age gracefully with new versions
+- Implement deprecation cycles that give users time to upgrade
+- Distinguish between breaking and non-breaking changes
+- Manage data schema evolution across versions
+- Document changes clearly to guide user upgrades
+
+## Motivating Scenario
+
+A company releases their service API, and customers integrate it. Six months later, the API team decides to rename a parameter from `user_id` to `userId` for consistency. They release version 2.0 with this change. Every customer application breaks immediately. Support is flooded, customers scramble to update, some blame the service for the disruption. The service team could have avoided this: support both names in the new version, deprecate the old one, and provide a migration timeline. Customers would have time to update gradually.
+
+## Core Concepts
+
+### Semantic Versioning
+
+MAJOR version for incompatible changes. MINOR version for backward-compatible features. PATCH version for bug fixes. This signals to users the effort required to upgrade.
+
+### Backward Compatibility
+
+Code that depends on your API should work with new versions without changes. Add features without removing old ones. Rename with aliases, not replacements. Support multiple formats when schema changes.
+
+### Deprecation Cycle
+
+When you must remove something, warn first. Mark features as deprecated, document the timeline, offer migration paths. Give users time (typically 6+ months for major changes) before removing old code.
+
+### Data Version Management
+
+Data schemas change. New fields are added, fields are removed, structures change. Version your data formats or maintain migration logic to handle multiple versions coexisting.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Breaking change without deprecation cycle
+# v1.0
+def get_user(user_id):
+    return User.find(user_id)
+
+# v2.0 - breaks all existing code
+def get_user_by_id(user_id):
+    return User.find(user_id)
+
+# ✅ EXCELLENT - Graceful evolution with deprecation
+import warnings
+from typing import Optional
+
+# v1.1 - New function added, old one still works
+def get_user_by_id(user_id: int):
+    """Get user by ID. Preferred method."""
+    return User.find(user_id)
+
+def get_user(user_id: int):
+    """Get user by ID. DEPRECATED: Use get_user_by_id() instead."""
+    warnings.warn(
+        "get_user() is deprecated, use get_user_by_id() instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return get_user_by_id(user_id)
+
+# v1.2 - Support both old and new parameter names
+def create_payment(amount: float, user_id: Optional[int] = None,
+                  userId: Optional[int] = None) -> Payment:
+    """Create payment. Both user_id and userId are supported."""
+    if userId is not None and user_id is None:
+        warnings.warn(
+            "userId parameter is deprecated, use user_id instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        user_id = userId
+
+    if user_id is None:
+        raise ValueError("user_id is required")
+
+    return Payment.create(amount=amount, user_id=user_id)
+
+# v2.0 - Major version: old function finally removed
+def get_user_by_id(user_id: int):
+    """Get user by ID."""
+    return User.find(user_id)
+
+# API versioning
+class APIResponse:
+    """Response wrapper with version info."""
+    def __init__(self, data, version="1.0"):
+        self.data = data
+        self.version = version
+        self.timestamp = datetime.now()
+
+    def to_dict(self):
+        return {
+            "data": self.data,
+            "version": self.version,
+            "timestamp": self.timestamp.isoformat()
+        }
+
+# Multiple API versions coexist
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route('/api/v1/users/<int:user_id>')
+def get_user_v1(user_id):
+    user = User.find(user_id)
+    return APIResponse({
+        'id': user.id,
+        'name': user.name,
+        'email': user.email
+    }, version="1.0").to_dict()
+
+@app.route('/api/v2/users/<int:user_id>')
+def get_user_v2(user_id):
+    user = User.find(user_id)
+    return APIResponse({
+        'id': user.id,
+        'name': user.name,
+        'email': user.email,
+        'created_at': user.created_at,  # New field in v2
+        'status': user.status  # New field in v2
+    }, version="2.0").to_dict()
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Breaking change without migration path
+// v1
+func GetUser(id string) *User {
+    return users[id]
+}
+
+// v2 - breaks all callers
+func GetUserByID(id string) *User {
+    return users[id]
+}
+
+// ✅ EXCELLENT - Graceful versioning with deprecation
+package user
+
+import (
+    "log"
+)
+
+// v1.1 - New preferred function, old one delegates
+func GetUserByID(id string) *User {
+    return users[id]
+}
+
+// Deprecated: Use GetUserByID() instead
+func GetUser(id string) *User {
+    log.Println("WARNING: GetUser() is deprecated, use GetUserByID()")
+    return GetUserByID(id)
+}
+
+// v1.2 - Support both old and new field names
+type PaymentRequest struct {
+    Amount   float64 `json:"amount"`
+    UserID   string  `json:"user_id"`
+    UserIdOld string `json:"user_id_old"` // For backward compatibility
+}
+
+func (p *PaymentRequest) GetUserID() string {
+    if p.UserID != "" {
+        return p.UserID
+    }
+    if p.UserIdOld != "" {
+        log.Println("WARNING: user_id_old is deprecated, use user_id")
+        return p.UserIdOld
+    }
+    return ""
+}
+
+// API versioning
+func GetUserV1(id string) map[string]interface{} {
+    user := GetUserByID(id)
+    return map[string]interface{}{
+        "id":    user.ID,
+        "name":  user.Name,
+        "email": user.Email,
+    }
+}
+
+func GetUserV2(id string) map[string]interface{} {
+    user := GetUserByID(id)
+    return map[string]interface{}{
+        "id":         user.ID,
+        "name":       user.Name,
+        "email":      user.Email,
+        "created_at": user.CreatedAt,
+        "status":     user.Status,
+    }
+}
+
+// Data schema versioning
+type UserV1 struct {
+    ID   string
+    Name string
+}
+
+type UserV2 struct {
+    ID        string
+    Name      string
+    CreatedAt string
+    Status    string
+}
+
+func MigrateUserToV2(oldUser UserV1) UserV2 {
+    return UserV2{
+        ID:        oldUser.ID,
+        Name:      oldUser.Name,
+        CreatedAt: time.Now().String(),
+        Status:    "active",
+    }
+}
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Breaking change
+// v1.0
+function getUser(userId) {
+    return users[userId];
+}
+
+// v2.0 - breaks existing code
+function getUserById(userId) {
+    return users[userId];
+}
+
+// ✅ EXCELLENT - Graceful evolution
+// v1.1 - Add new preferred function
+function getUserById(userId) {
+    return users[userId];
+}
+
+// Keep old function with deprecation warning
+function getUser(userId) {
+    console.warn('DEPRECATED: getUser() is deprecated, use getUserById() instead');
+    return getUserById(userId);
+}
+
+// v1.2 - Support both old and new parameter names
+function createPayment({ amount, user_id, userId }) {
+    // Accept both formats, warn about old one
+    const finalUserId = user_id || userId;
+
+    if (userId !== undefined && user_id === undefined) {
+        console.warn('DEPRECATED: userId parameter is deprecated, use user_id instead');
+    }
+
+    if (!finalUserId) {
+        throw new Error('user_id is required');
+    }
+
+    return { amount, userId: finalUserId };
+}
+
+// v2.0 - Major version, can remove old interface
+function getUserById(userId) {
+    return users[userId];
+}
+
+// Semantic versioning with explicit version info
+const VERSION = '2.1.0';
+
+function getVersionInfo() {
+    return {
+        version: VERSION,
+        breaking_in_next_major: [
+            'getUser() removed - use getUserById()',
+            'userId parameter removed - use user_id'
+        ]
+    };
+}
+
+// API versioning with multiple routes
+const express = require('express');
+const app = express();
+
+// v1 API - includes new fields with defaults
+app.get('/api/v1/users/:id', (req, res) => {
+    const user = getUserById(req.params.id);
+    res.json({
+        id: user.id,
+        name: user.name,
+        email: user.email
+    });
+});
+
+// v2 API - adds new fields
+app.get('/api/v2/users/:id', (req, res) => {
+    const user = getUserById(req.params.id);
+    res.json({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        created_at: user.createdAt,  // New in v2
+        status: user.status           // New in v2
+    });
+});
+
+// Data schema versioning
+class UserMigrator {
+    static toV2(userV1) {
+        return {
+            id: userV1.id,
+            name: userV1.name,
+            email: userV1.email,
+            created_at: new Date().toISOString(),
+            status: 'active'
+        };
+    }
+
+    static fromV2ToV1(userV2) {
+        // Downgrade to v1 if needed
+        return {
+            id: userV2.id,
+            name: userV2.name,
+            email: userV2.email
+        };
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## Deprecation Patterns
+
+### Deprecation Timeline
+
+```javascript
+// v1.5 - Feature deprecated, announced end-of-life
+// December 1, 2024: Feature deprecated
+// June 1, 2025: Feature removed (6-month notice)
+
+function oldFeature() {
+    console.warn(
+        'oldFeature() is deprecated and will be removed on June 1, 2025. ' +
+        'Migrate to newFeature() immediately.'
+    );
+    return newFeature();
+}
+
+// v2.0 - Feature removed (June 1, 2025)
+function newFeature() {
+    // oldFeature() no longer exists
+}
+```
+
+### Supporting Multiple API Versions
+
+```javascript
+// Both v1 and v2 endpoints can coexist
+app.get('/api/v1/resource', handleV1);
+app.get('/api/v2/resource', handleV2);
+
+function handleV1(req, res) {
+    const data = getData();
+    res.json({
+        items: data.map(item => ({
+            id: item.id,
+            name: item.name
+        }))
+    });
+}
+
+function handleV2(req, res) {
+    const data = getData();
+    res.json({
+        items: data.map(item => ({
+            id: item.id,
+            name: item.name,
+            created_at: item.createdAt,
+            metadata: item.metadata
+        })),
+        total: data.length
+    });
+}
+```
+
+### Version-Aware Response
+
+```javascript
+const VERSION_MAPPING = {
+    '1.0': (user) => ({ id: user.id, name: user.name }),
+    '2.0': (user) => ({ id: user.id, name: user.name, email: user.email }),
+    '2.1': (user) => ({ id: user.id, name: user.name, email: user.email, status: user.status })
+};
+
+function getUser(userId, version = '2.1') {
+    const user = users[userId];
+    const formatter = VERSION_MAPPING[version] || VERSION_MAPPING['2.1'];
+    return formatter(user);
+}
+```
+
+## Design Review Checklist
+
+- Are you using semantic versioning (MAJOR.MINOR.PATCH)?
+- When making changes, have you considered backward compatibility?
+- Are breaking changes absolutely necessary or can they be delayed/mitigated?
+- Do you deprecate interfaces before removing them?
+- Is the deprecation timeline documented (when will feature be removed)?
+- Are multiple API versions supported during migration periods?
+- Is the versioning scheme documented for users?
+- Are migration guides provided for significant changes?
+
+## Self-Check
+
+1. Identify a feature you want to remove from your system. Design a deprecation cycle for it.
+
+2. How would you handle changing a required parameter in your API while maintaining backward compatibility?
+
+3. What would happen if two versions of your application simultaneously accessed the same database? Are schema changes safe?
+
+<Admonition type="info" title="One Takeaway">
+Breaking changes are costly—they force users to update immediately and create support burdens. Instead, plan for evolution: add new features alongside old ones, deprecate before removing, and provide migration time. Multiple API versions coexisting in production is normal and valuable. Backward compatibility is not a feature—it's a commitment to stability and respect for your users.
+</Admonition>
+
+## Next Steps
+
+- Learn about <a href="../configuration-vs-code">configuration management ↗</a> to manage version-specific behavior
+- Explore <a href="../feature-flags-and-toggles">feature flags ↗</a> for conditional code based on versions
+- Study <a href="../../solid/open-closed">Open/Closed Principle ↗</a> for designing systems that extend without breaking
+- Review <a href="../input-validation-and-defensive-programming">input validation ↗</a> for handling both old and new formats
+
+## References
+
+1. Semantic Versioning. (2024). Retrieved from https://semver.org/
+2. Humble, J., & Farley, D. (2010). Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation. Addison-Wesley.
+3. Fielding, R. T. (2000). Architectural Styles and the Design of Network-based Software Architectures. UC Irvine Dissertation.
+4. Newman, S. (2015). Building Microservices. O'Reilly Media.

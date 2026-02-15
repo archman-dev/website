@@ -1,0 +1,470 @@
+---
+sidebar_position: 1
+title: ADR Template & Rationale
+description: Structure and best practices for writing architecture decisions
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","tech-lead"]
+keywords: ["adr","template","decision","status","context","consequences","alternatives"]
+image: /img/archman-social-card.webp
+tags: ["documentation","decisions"]
+hide_title: true
+---
+
+<Hero
+  title="ADR Template & Rationale"
+  description="Standard format for capturing architecture decisions with context, alternatives, and consequences"
+  size="large"
+/>
+
+## TL;DR
+
+An ADR template captures architectural decisions systematically: **Title** (clear decision statement), **Context** (problem and constraints), **Decision** (chosen solution and rationale), **Consequences** (positive and negative trade-offs), **Alternatives Considered** (rejected options with reasons), and **Status** (Proposed, Accepted, Superseded, Deprecated). Write ADRs early when deciding, not after implementation. Focus on *why* more than *what*. Be honest about trade-offs and constraints. Use ADRs to preserve institutional knowledge and enable informed future decisions.
+
+## Learning Objectives
+
+You will be able to:
+
+- Write ADRs that capture decision context, not just conclusions
+- Articulate trade-offs with both positive and negative consequences
+- Evaluate alternatives systematically and document why they were rejected
+- Use ADRs to communicate decisions to distributed teams
+- Capture tribal knowledge that would otherwise be lost when people leave
+
+## Motivating Scenario
+
+Your team is moving from a monolith to microservices. You choose Apache Kafka for event streaming. At the time, the decision seems obvious. "We need async communication; Kafka is industry standard; let's go with it."
+
+Fast-forward three years. The system has 20+ services communicating via Kafka. Operational costs are high. A new engineer asks: "Why Kafka? Have we considered RabbitMQ or Pulsar?" Nobody remembers. The person who made the decision left. The choice was never documented.
+
+You spend weeks evaluating alternatives, only to realize the original constraints (high throughput, persistence, exactly-once semantics) still apply. You reinvent the wheel. The team has lost three weeks on a decision that was already made and had solid reasons behind it.
+
+An ADR written at decision time would have captured: the constraints (100K msg/sec, retention > 7 days), the alternatives considered (RabbitMQ, Pulsar, simple message queue), the trade-offs (operational complexity vs. scalability), and the date. Three years later, the team could have read that ADR and understood the context in 15 minutes.
+
+## Core Content
+
+### What is an ADR?
+
+An Architecture Decision Record is a lightweight document capturing a decision made during system design. It's not a design document (too long), not a bug ticket (wrong format), not a feature spec (different purpose). An ADR answers a specific question: "Why did we choose technology/pattern/approach X over alternatives?"
+
+ADRs serve multiple purposes:
+- **Onboarding**: New engineers understand architectural constraints and decisions
+- **Justification**: Why was this choice made? What problem does it solve?
+- **Trade-off documentation**: What are we gaining? What are we sacrificing?
+- **Governance**: Which decisions are approved vs. experimental?
+- **Audit trail**: When was this decided? Who made it? Has it changed?
+- **Knowledge preservation**: When the decision-maker leaves, the reasoning stays
+
+### Structure of an ADR
+
+Use this template structure (Markdown format):
+
+```markdown
+---
+adr: 0047
+title: Use Redis for Session Storage
+status: Accepted
+decision_date: 2025-02-10
+author: Alice Chen
+affects: ["session-management", "authentication"]
+---
+
+# ADR-0047: Use Redis for Session Storage
+
+## Status
+Accepted
+
+## Context
+Describe the issue or problem that prompted the decision.
+Include constraints, assumptions, and background.
+Why is this decision needed *right now*?
+
+## Decision
+State the decision clearly and unambiguously.
+What did we choose? Why this choice?
+
+## Consequences
+Describe the impacts, both positive and negative.
+
+## Alternatives Considered
+What other options did we evaluate?
+Why did we reject them?
+
+## Related Decisions
+Link to other ADRs that depend on or relate to this one.
+```
+
+**Recommended length**: 500-2000 words. Long enough to be complete; short enough to read in 20 minutes. Longer decisions should be split into multiple ADRs or supported by detailed design docs.
+
+### Context Section Best Practices
+
+The **Context** section explains why the decision was needed. It should answer:
+
+- **Problem**: What issue are we solving? What pain point exists?
+- **Constraints**: What limitations or requirements must we satisfy?
+- **Assumptions**: What are we assuming to be true?
+- **Background**: Is this decision dependent on other decisions or organizational factors?
+
+Bad Context:
+> "We need to store sessions. Currently using in-memory store."
+
+Good Context:
+> "Sessions are stored in application memory, which causes loss of session state when Pods restart during Kubernetes deployments. This affects users who experience unexpected logouts and requires reauth. We're deploying to Kubernetes for scalability, requiring stateless services. Constraints: must support 100K concurrent sessions, lookup latency < 10ms, survive pod restarts, and scale horizontally. Current in-memory solution violates the stateless constraint."
+
+Good context includes numbers, constraints, and the consequence of inaction. It explains urgency: why now, not later?
+
+### Decision Section: Be Clear & Specific
+
+The **Decision** section should be unambiguous. An engineer three years from now should read this and know exactly what was chosen.
+
+Bad Decision:
+> "Use Redis for caching."
+
+Good Decision:
+> "Use Redis (cluster mode, 6 nodes) for distributed session storage. All session-related services will include Redis client library. Sessions expire after 30 days of inactivity. On Redis connection failure, services evict local session cache rather than serving stale sessions. Redis cluster deployed on dedicated hardware in each availability zone for redundancy."
+
+Include specifics: deployment topology, client libraries, timeout values, failure modes. This prevents later ambiguity: "Did we mean a single Redis instance or a cluster?"
+
+### Consequences: List Both Positive & Negative
+
+The **Consequences** section honestly assesses trade-offs. Every choice has trade-offs. Pretending there are none is dishonest and damages trust.
+
+**Positive Consequences** (what we gain):
+- Sessions survive pod restarts (addresses the core problem)
+- Stateless services enable horizontal scaling
+- Sessions shared across service replicas (geographic redundancy)
+- Single source of truth for session data
+
+**Negative Consequences** (what we sacrifice):
+- Additional Redis cluster to operate (DevOps overhead)
+- Network latency for session lookups (vs. in-memory instant access)
+- Additional failure mode: Redis outage breaks authentication
+- Increased infrastructure cost (Redis cluster hardware)
+- Learning curve for team on Redis administration
+
+Not acknowledging negatives is a red flag. Every architecture choice involves trade-offs. Documenting them helps future teams understand whether the choice still makes sense as constraints evolve.
+
+### Alternatives Considered: Be Thorough
+
+Why did we choose Redis over alternatives? The **Alternatives Considered** section shows systematic thinking.
+
+Document:
+1. Alternative name and brief description
+2. Why we considered it
+3. Why we rejected it
+
+Example:
+
+> **Alternative 1: Sticky Sessions (Session Affinity)**
+> Route all requests from a user to the same Pod. Sessions stay in-memory.
+> Rejected because: Violates cloud-native principles (we want to decommission Pods without warning). Complicates load balancing. Geographic failover breaks user sessions.
+>
+> **Alternative 2: Memcached for Session Storage**
+> Memcached is lighter-weight than Redis, good for caching.
+> Rejected because: Memcached doesn't persist to disk. Sessions lost if Memcached Pod restarts. No data expiration API (we need 30-day TTL).
+>
+> **Alternative 3: Database (PostgreSQL) for Session Storage**
+> Use existing PostgreSQL cluster for sessions.
+> Rejected because: Database writes are slower than cache (10ms+ latency). Would add pressure on PostgreSQL, complicating replication. Overkill for non-persistent data.
+>
+> **Alternative 4: Distributed Session Table in Kafka**
+> Session state distributed via Kafka topics.
+> Rejected because: Over-engineered. Kafka not designed for lookups. Operational complexity.
+
+Document the alternatives you *seriously* considered, not every possible option. Three to five alternatives is typical. This shows you thought systematically, not arbitrarily chose the first option.
+
+### Status: Use Consistently
+
+Define status meanings clearly and use them consistently:
+
+- **Proposed**: Suggested but not yet approved. Under discussion. May be rejected.
+- **Accepted**: Approved and in effect. Implementations should follow this decision.
+- **Superseded**: Replaced by a newer decision. Code should migrate away from this. Link to the superseding ADR.
+- **Deprecated**: Still in use in some parts of codebase, but not recommended for new code. Usually used before a decision is fully superseded.
+- **Rejected**: Proposed but not accepted. Documented to avoid revisiting the same idea.
+
+Add status dates:
+
+```markdown
+## Status
+Accepted (2025-02-10)
+Superseded by ADR-0055 (2025-08-20)
+Migration deadline: 2025-12-31
+```
+
+This gives context: how long has the decision been in effect? When did circumstances change?
+
+### Metadata & Attributes
+
+Include machine-readable metadata for indexing:
+
+```yaml
+---
+adr: 0047
+title: Use Redis for Session Storage
+status: Accepted
+decision_date: 2025-02-10
+author: Alice Chen (Backend Team)
+reviewers: [Bob Jones, Carol Smith]
+supersedes: ADR-0028
+related_to: [ADR-0012, ADR-0035]
+affects: ["session-management", "authentication", "devops"]
+tags: ["infrastructure", "caching", "critical"]
+---
+```
+
+Metadata enables searching by author, date, domain, or status. Tools can generate reports: "Show me all infrastructure decisions from the last year" or "Which decisions does Alice own?"
+
+### When to Write ADRs
+
+Write ADRs *early*, when deciding. Not after implementation. If the ADR is written after, you risk:
+- **Justifying the implementation** rather than capturing the decision process
+- **Missing alternatives** that were considered and rejected
+- **Losing context** about constraints or trade-offs
+- **Rewriting** if implementation encounters issues
+
+Ideal: propose ADR before implementation, refine during implementation, finalize when decision is accepted.
+
+Process:
+1. **Recognition phase**: Team identifies a decision needed
+2. **Proposal phase**: Person proposes ADR. Circulates for feedback.
+3. **Refinement phase**: Feedback incorporated. Alternatives discussed.
+4. **Acceptance phase**: Architecture board approves. Status → Accepted.
+5. **Implementation phase**: Teams implement per ADR.
+
+If a decision is already made but not documented, backfill the ADR as soon as possible while context is still fresh.
+
+### Writing Tips
+
+**1. Use Active Voice & Second Person Sparingly**
+
+Bad: "The team decided that Redis should be used for session storage."
+Good: "Use Redis for session storage."
+
+Short, clear, direct.
+
+**2. Link to External References**
+
+```markdown
+## Decision
+Use Apache Kafka for event streaming per [Confluent Best Practices](link).
+See [Kafka vs. RabbitMQ Comparison](link) for detailed analysis.
+```
+
+Don't repeat what's documented elsewhere. Link and summarize.
+
+**3. Include Quantitative Constraints**
+
+Bad: "We need good performance."
+Good: "Lookup latency < 10ms (p95), throughput > 100K msg/sec, retention > 7 days."
+
+Specific metrics prevent later misunderstandings.
+
+**4. Be Honest About Unknowns**
+
+```markdown
+## Uncertainties
+- Operational cost not yet modeled. Will gather metrics in first 3 months.
+- Team's Redis expertise limited. Will require training.
+```
+
+Acknowledging unknowns is better than pretending certainty.
+
+**5. Include Implementation Notes**
+
+```markdown
+## Implementation Guidance
+- Configuration: See `config/session-store.yaml`
+- Client library: Use `redis-py` with connection pooling
+- Testing: Integration tests in `test/session_store_test.py`
+- Deployment: Terraform modules in `infra/redis/`
+```
+
+Help implementers find relevant code and guides.
+
+### Example: Complete ADR
+
+<Figure caption="ADR Template Example">
+```markdown
+---
+adr: 0047
+title: Use Redis for Session Storage
+status: Accepted
+decision_date: 2025-02-10
+author: Alice Chen (Backend Team)
+affects: ["session-management", "authentication"]
+supersedes: ADR-0028
+related_to: [ADR-0012, ADR-0035]
+---
+
+# ADR-0047: Use Redis for Session Storage
+
+## Status
+Accepted (2025-02-10)
+
+## Context
+Sessions are currently stored in application memory (ADR-0028).
+During Kubernetes Pod restarts (deployments, node failures), sessions are lost.
+This causes unexpected logouts and requires reauthentication.
+
+Constraints:
+- Support 100K concurrent sessions peak load
+- Session lookup latency < 10ms (p95)
+- Survive Pod restarts without data loss
+- Scale horizontally with more services
+- Current in-memory solution violates stateless service principle
+
+Background: Migration to Kubernetes requires stateless services.
+In-memory sessions violate this principle.
+
+## Decision
+Use Redis (cluster mode, 6 nodes) for distributed session storage.
+- All session reads/writes go to Redis
+- Sessions replicated across nodes for redundancy
+- Configurable TTL (default 30 days, 1 day inactivity timeout)
+- Session serialization via JSON (compatible with polyglot services)
+
+## Consequences
+
+Positive:
+- Sessions survive Pod restarts (solves core problem)
+- Stateless services enable Kubernetes scaling
+- Sessions shared across service instances (geographic redundancy)
+- Single source of truth for session data
+
+Negative:
+- Additional Redis cluster to operate (DevOps complexity)
+- Network latency for session lookups (1-2ms vs. in-memory instant)
+- Redis failure breaks authentication (mitigation: clustering + failover)
+- Infrastructure cost (~$10K/month for production cluster)
+- Team must learn Redis administration
+
+## Alternatives Considered
+
+**Sticky Sessions (Session Affinity)**
+Route user requests to same Pod. Sessions stay in-memory.
+Rejected: Violates cloud-native principles. Breaks geographic failover.
+
+**Memcached**
+Simpler than Redis, lighter-weight.
+Rejected: No persistence. Sessions lost on restart. No expiration API.
+
+**PostgreSQL**
+Reuse existing database for sessions.
+Rejected: Too slow (10ms+ latency). Puts pressure on OLTP database.
+
+**Kafka Topic (State Store)**
+Distribute session state via Kafka streams.
+Rejected: Over-engineered. Kafka not designed for lookups. High complexity.
+
+## Implementation
+
+- Client library: `redis-py` with connection pooling (10-100 connections)
+- Session serialization: JSON (supports interop with other languages)
+- Deployment: Kubernetes StatefulSet with persistent volumes
+- Configuration: `config/session-store.yaml`
+- Tests: Integration tests verifying 99th percentile latency < 10ms
+
+See implementation guide: `docs/session-store-implementation.md`
+
+## Related Decisions
+
+- ADR-0028 (In-Memory Sessions) - superseded by this decision
+- ADR-0012 (Kubernetes for Orchestration) - prerequisite
+- ADR-0035 (Redis for Cache Layer) - uses same Redis cluster approach
+- ADR-0042 (Distributed Caching Strategy) - related
+
+## Monitoring & Metrics
+
+Track these metrics to validate decision:
+- Session lookup latency (target: p95 < 10ms)
+- Redis cluster availability (target: 99.95%)
+- Session eviction rate (trigger investigation if > 0.1%)
+- Infrastructure cost (current: $X/month, target: $Y/month)
+
+Review decision annually or if any metric breaches threshold.
+```
+</Figure>
+
+## Patterns & Pitfalls
+
+**Pattern: Decision Trees**
+For related decisions, show the tree:
+"This decision depends on ADR-0012 (Kubernetes). If we weren't using Kubernetes, sticky sessions might be acceptable."
+
+**Pattern: Version Numbers**
+As context changes, update ADR version: "ADR-0047 v1 vs v2".
+Or create new ADR: "ADR-0047 obsoleted by ADR-0055".
+
+**Pitfall: Vague Decisions**
+"Use modern tools" or "Think about performance" aren't decisions. Be specific.
+
+**Pitfall: Ignoring Negatives**
+"Redis is great, no downsides" is dishonest. Every choice has trade-offs. Document them.
+
+**Pitfall: Stale ADRs**
+Decision made in 2020 never revisited. Context changed; decision is outdated. Schedule reviews.
+
+## When to Use / When Not to Use
+
+**Write ADRs for:**
+- Technology choices with lasting impact (database, cache, message broker)
+- Architectural patterns (microservices, CQRS, event sourcing)
+- High-level API design decisions
+- Deployment strategy (Kubernetes, serverless, on-prem)
+- Security model or authentication approach
+- Data consistency strategy (eventual consistency vs. strong consistency)
+
+**Don't write ADRs for:**
+- Trivial choices (logging format, naming conventions)
+- Easily reversible decisions (choice of JSON library)
+- Implementation details (which sorting algorithm)
+- Tools (Git vs. Mercurial)
+
+**Balance:** ADRs capture decisions with architectural significance. If reversing the decision would require significant refactoring, it's worth documenting.
+
+## Operational Considerations
+
+- **Process**: Define ADR approval process. Who approves? What's turnaround time?
+- **Storage**: Store in version control alongside code. Markdown format for readability.
+- **Review cycle**: Quarterly review to identify stale or contradictory decisions.
+- **Supersession**: When superseding, move old ADR to archive and link from new one.
+- **Access**: Make searchable in documentation site, IDE plugins, internal wiki.
+
+## Design Review Checklist
+
+<Checklist items={["ADR template established and documented in CONTRIBUTING.md", "ADR includes all sections: Status, Context, Decision, Consequences, Alternatives", "Decision statement is clear and specific (not vague)", "Context explains constraints and background thoroughly", "Consequences include both positive and negative trade-offs", "Alternatives section shows systematic evaluation (not arbitrary rejection)", "Metadata included: author, date, affected areas, related ADRs", "Length appropriate (500-2000 words; not too brief or too verbose)", "Technical details sufficient for implementers", "External links provided for deeper information", "ADR written early (during decision, not after implementation)", "Review process defined and team trained on using ADRs"]} />
+
+<Showcase>
+Well-written ADRs become reference material for the entire organization. New engineers read them during onboarding. Architects reference them when planning changes. During postmortems, teams reference ADRs to understand why a decision was made and whether it contributed to the incident. After a year, a mature engineering organization has a comprehensive, searchable ADR catalog that dramatically accelerates all decision-making and reduces repeated mistakes.
+</Showcase>
+
+## Self-Check
+
+1. **If someone asked you "Why did we choose X?", could you point them to an ADR that answers in 15 minutes?** If not, your ADR writing is too vague or incomplete.
+
+2. **Do your ADRs honestly acknowledge trade-offs, or do they read like marketing copy for your choice?** Honest ADRs admit downsides; that's what makes them credible.
+
+3. **Could a new engineer unfamiliar with your system understand this decision's importance from the ADR?** If not, context section needs more detail.
+
+## Next Steps
+
+1. **Establish ADR process**: Write CONTRIBUTING.md guide on when/how to write ADRs
+2. **Create template**: Use example above as starting point. Customize for your org.
+3. **Backfill key decisions**: Document 5-10 existing major decisions (while context is fresh)
+4. **Train team**: Show examples of good vs. bad ADRs. Practice writing together.
+5. **Integrate with workflow**: Add ADR step to architecture review process
+
+<Callout tone="info">
+ADR writing is a discipline. The best ADRs are written when the team is *actively deciding*, capturing context and trade-offs that would otherwise be lost. ADRs written years later, justifying past decisions, are valuable for context but often miss nuance. Invest in capturing decisions at decision time.
+</Callout>
+
+## References
+
+1. <a href="https://adr.github.io/" target="_blank" rel="nofollow noopener noreferrer">ADR GitHub - Architecture Decision Records ↗️</a>
+2. <a href="https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions" target="_blank" rel="nofollow noopener noreferrer">Cognitect - Documenting Architecture Decisions (Original Michael Nygard article) ↗️</a>
+3. <a href="https://www.ozimmer.ch/practices/2020/04/27/ArchitectureDecisionRecords.html" target="_blank" rel="nofollow noopener noreferrer">Ozimmer - Architecture Decision Records Best Practices ↗️</a>
+4. <a href="https://github.com/adr/adr-tools" target="_blank" rel="nofollow noopener noreferrer">ADR Tools - Command-line tool for working with ADRs ↗️</a>
+---

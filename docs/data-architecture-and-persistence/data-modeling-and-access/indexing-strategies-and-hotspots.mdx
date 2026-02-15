@@ -1,0 +1,473 @@
+---
+sidebar_position: 4
+title: "Indexing Strategies & Hotspots"
+description: "Design indexes for query performance while avoiding write penalties and fragmentation"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [indexing, B-tree, hash indexes, composite indexes, hotspots, query optimization]
+image: /img/archman-social-card.webp
+tags: [indexing, performance, query-optimization, B-tree, indexes, database-tuning, hotspots]
+hide_title: true
+---
+
+<Hero title="Indexing Strategies & Hotspots" subtitle="Design indexes for query performance while managing write overhead" size="large" />
+
+## TL;DR
+
+Indexes speed queries but slow writes (maintenance cost). Single-column indexes for simple lookups; composite indexes for multi-column WHERE+ORDER BY; avoid indexing low-cardinality columns or frequently updated columns. Monitor for hotspots: queries accessing tiny dataset repeatedly.
+
+## Learning Objectives
+
+- Understand index structures (B-tree, hash)
+- Design single and composite indexes
+- Recognize when indexes help or hurt
+- Identify and resolve hotspots
+
+## Index Types
+
+<Vs items={[
+{
+    label: "B-Tree Index",
+    points: ["Range queries (>, <, BETWEEN)", "Sorting (ORDER BY)", "Prefix matching (LIKE", ")", "General purpose", "Default in most databases"]
+  },
+{
+    label: "Hash Index",
+    points: ["Exact match only (=)", "Very fast equality", "No range queries", "No sorting benefit", "In-memory stores (Redis)"]
+  }
+]} />
+
+## Practical Example
+
+<Showcase  sections={[{
+      title: "Single-Column Index",
+      description: "CREATE INDEX idx_posts_author ON posts(author_id)",
+      tags: ["simple", "common"]
+    }, {
+      title: "Composite Index",
+      description: "CREATE INDEX idx_posts_status_date ON posts(status, created_at DESC)",
+      tags: ["multi-column", "performance"]
+    }, {
+      title: "Covering Index",
+      description: "Index includes all queried columns, avoiding row lookup",
+      tags: ["optimization", "performance"]
+    }, {
+      title: "Partial Index",
+      description: "CREATE INDEX idx_posts_published ON posts(id) WHERE published = true",
+      tags: ["filtering", "size"]
+    }, {
+      title: "Expression Index",
+      description: "Index on function result: CREATE INDEX idx_lower_email ON users(LOWER(email))",
+      tags: ["computed", "optimization"]
+    }, {
+      title: "JSON/Array Index",
+      description: "PostgreSQL GIN indexes for JSON fields and arrays"
+    }]}
+/>
+
+## Design Checklist
+
+<Checklist
+  items={[
+    "Indexed columns match WHERE clause filters",
+    "Composite index order matches query patterns",
+    "ORDER BY column is last in composite index",
+    "Cardinality is reasonable (avoid low-cardinality indexes)",
+    "Frequently updated columns not heavily indexed",
+    "Index size reasonable (not indexing large text)",
+    "Covering indexes used for common queries",
+    "Partial indexes for filtered queries",
+    "Explain plans verify index usage",
+    "Index fragmentation monitored and rebuilt"
+  ]}
+/>
+
+## Self-Check
+
+- What's the difference between single and composite indexes?
+- Why does index order matter in composite indexes?
+- When would you use a partial vs full index?
+- How do you detect if an index helps or hurts?
+- What are hotspots and how do you identify them?
+
+## Design Review Checklist (Already included)
+
+## Understanding Hotspots
+
+A **hotspot** is a small dataset accessed repeatedly and intensively, creating a bottleneck. Examples:
+- Most recent orders (constantly queried and updated)
+- Bestselling product (millions of reads/day)
+- Trending user profile (high concurrent access)
+- Global counter (thousands of increments/second)
+
+### Problems Hotspots Create
+
+1. **Lock Contention**: Multiple queries compete for locks on same rows
+2. **Index Cache Inefficiency**: Popular rows keep evicting others from cache
+3. **I/O Bottleneck**: Queries queue waiting for disk access
+4. **Scalability Wall**: Can't improve by adding more servers (all hit same row)
+
+### Hotspot Detection
+
+```sql
+-- PostgreSQL: Find most frequently accessed tables
+SELECT schemaname, tablename, idx_scan
+FROM pg_stat_user_indexes
+ORDER BY idx_scan DESC
+LIMIT 10;
+
+-- MySQL: Identify slow query patterns
+SELECT * FROM mysql.slow_log
+WHERE query_time > 0.1
+GROUP BY digest
+ORDER BY count(*) DESC;
+```
+
+### Hotspot Solutions
+
+<Tabs>
+  <TabItem value="caching" label="Caching (Recommended)">
+    ```python
+    # Problem: Product #42 gets 100,000 queries/second
+    # Database can't handle it; CPU at 100%
+
+    # Solution: Cache in Redis
+    def get_product(product_id):
+        # Check cache first
+        cached = redis.get(f"product:{product_id}")
+        if cached:
+            return json.loads(cached)  # 1ms response
+
+        # Cache miss: query database
+        product = db.query("SELECT * FROM products WHERE id = ?", product_id)
+
+        # Store in cache with TTL
+        redis.setex(f"product:{product_id}", 300, json.dumps(product))
+        # 300 second = 5 minute cache
+
+        return product
+
+    # Result: 99% of queries hit Redis (1ms)
+    # Only 1% hit database (100ms)
+    # Effective latency: 99% * 1ms + 1% * 100ms = 1.99ms
+    # Database load: 1/100x
+    ```
+  </TabItem>
+
+  <TabItem value="denormalization" label="Denormalization">
+    ```sql
+    -- Problem: Computing order total requires joining Orders + OrderItems
+    -- On hot orders, this is slow
+
+    -- Solution 1: Store computed total in orders table
+    ALTER TABLE orders ADD COLUMN cached_total DECIMAL(10,2);
+
+    -- When order changes, update cached_total
+    UPDATE orders SET cached_total = (
+        SELECT SUM(price * quantity) FROM order_items
+        WHERE order_id = orders.id
+    ) WHERE id = ?;
+
+    -- Query: No join needed
+    SELECT * FROM orders WHERE id = ?;  -- Much faster
+
+    -- Problem: Must keep total in sync
+    -- Solution: Trigger or application logic
+    CREATE TRIGGER update_order_total
+    AFTER INSERT ON order_items
+    FOR EACH ROW
+    BEGIN
+        UPDATE orders SET cached_total = (
+            SELECT SUM(price * quantity) FROM order_items
+            WHERE order_id = NEW.order_id
+        ) WHERE id = NEW.order_id;
+    END;
+    ```
+  </TabItem>
+
+  <TabItem value="sharding" label="Sharding">
+    ```python
+    # Problem: User #1 is a celebrity with 1M followers
+    # All requests hit same row; database can't keep up
+
+    # Solution: Shard by user_id
+    def get_user_followers(user_id):
+        # Shard key: user_id
+        shard_id = user_id % NUM_SHARDS  # Distribute across shards
+
+        # Query appropriate shard
+        db = get_shard(shard_id)
+        followers = db.query(
+            "SELECT * FROM followers WHERE user_id = ?",
+            user_id
+        )
+        return followers
+
+    # Result:
+    # User #1 is on shard 0 (handles 1/10 of load)
+    # User #2 is on shard 2 (handles 1/10 of load)
+    # Hot users distributed across shards
+
+    # Trade-off: Cross-shard queries are complex
+    ```
+  </TabItem>
+
+  <TabItem value="replicas" label="Read Replicas">
+    ```python
+    # Problem: Hot product gets 50,000 reads/second
+    # Master can handle max 10,000/second
+
+    # Solution: Read replicas
+    primary_db = connect("mysql-primary")
+    replica_1 = connect("mysql-replica-1")
+    replica_2 = connect("mysql-replica-2")
+    replica_3 = connect("mysql-replica-3")
+
+    def get_product(product_id):
+        # Round-robin across replicas
+        replicas = [replica_1, replica_2, replica_3]
+        db = replicas[product_id % len(replicas)]
+
+        product = db.query(
+            "SELECT * FROM products WHERE id = ?",
+            product_id
+        )
+        return product
+
+    # Write: Still goes to primary
+    def update_product(product_id, data):
+        primary_db.query("UPDATE products SET ... WHERE id = ?", product_id)
+
+    # Result:
+    # Reads distributed across 3 replicas (3x capacity)
+    # Each replica handles 50,000 / 3 = 16,667 reads/s
+    # Acceptable load per replica
+    ```
+  </TabItem>
+</Tabs>
+
+Example Hotspot Case:
+
+```sql
+-- E-commerce hotspot: "Get my current cart"
+-- 10,000 concurrent shoppers querying their cart
+-- Each cart has 5 items; 50,000 rows accessed
+-- Database sees 10,000 QPS all on same 50,000 rows
+
+-- Without optimization: Database CPU at 100%, response times 500ms+
+-- With caching: Cache hit rate 95%+, response times < 5ms
+
+-- Implementation:
+-- 1. Cache cart in Redis (TTL: 5 minutes)
+-- 2. On checkout, invalidate cache
+-- 3. Periodic sync: refresh cache from DB every minute
+```
+
+## Index Maintenance and Cost
+
+Indexes have hidden costs that accumulate:
+
+```sql
+-- Every INSERT, UPDATE, DELETE updates all indexes on the table
+-- 100 insert/sec on table with 5 indexes = 500 index updates/sec
+
+-- Index fragmentation over time
+-- PostgreSQL: Indexes don't fragment; but need REINDEX occasionally
+REINDEX INDEX idx_users_email;
+
+-- MySQL: Fragmentation increases disk I/O
+OPTIMIZE TABLE users;  -- Rebuilds table and indexes
+
+-- Detecting index bloat (PostgreSQL)
+SELECT schemaname, tablename, indexname, idx_blkssread, idx_blksread
+FROM pg_stat_user_indexes
+ORDER BY idx_blkssread DESC  -- largest indexes first
+LIMIT 10;
+```
+
+### Index Selection Trade-offs
+
+```
+More indexes = Faster reads, slower writes
+Fewer indexes = Slower reads, faster writes
+
+Example:
+- Table: users (1M rows)
+- Read load: 10,000 QPS (high; reads matter)
+- Write load: 10 QPS (low; writes don't matter)
+- Decision: Create comprehensive indexes; optimize for reads
+
+Alternative:
+- Table: events (100M rows, append-only)
+- Read load: 100 QPS (low)
+- Write load: 10,000 QPS (very high; writes matter)
+- Decision: Minimal indexes; optimize for writes
+```
+
+## Query Optimization Without Indexes
+
+Sometimes indexes aren't the answer:
+
+```sql
+-- Problem: Query is slow even with indexes
+SELECT u.id, u.name, COUNT(o.id) as order_count
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+WHERE u.created_at > '2025-01-01'
+GROUP BY u.id, u.name
+HAVING COUNT(o.id) > 10
+ORDER BY order_count DESC
+
+-- Solution 1: Materialized View (pre-computed)
+CREATE MATERIALIZED VIEW user_order_summary AS
+SELECT u.id, u.name, COUNT(o.id) as order_count
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+GROUP BY u.id, u.name
+
+REFRESH MATERIALIZED VIEW user_order_summary;  -- Run nightly
+
+-- Query becomes: SELECT * FROM user_order_summary WHERE order_count > 10
+
+-- Solution 2: Denormalization (cache in application)
+-- Compute during background job, store in separate table
+CREATE TABLE user_stats (
+  user_id PRIMARY KEY,
+  name,
+  order_count,
+  last_order_date,
+  total_spend
+)
+-- Update via trigger or batch job
+
+-- Solution 3: Archive old data (partition)
+-- Store 2024 orders in archive table; query only 2025
+SELECT u.id, u.name, COUNT(o.id) as order_count
+FROM users u
+LEFT JOIN orders_2025 o ON u.id = o.user_id  -- only recent data
+WHERE u.created_at > '2025-01-01'
+GROUP BY u.id
+HAVING COUNT(o.id) > 10
+```
+
+## Hotspot Patterns Across Different Systems
+
+### Social Media: Celebrity User
+
+```
+Problem:
+- Celebrity with 10M followers; all reading celebrity's posts
+- Single row in followers table accessed 10M times/day
+- Cache misses; database can't keep up
+
+Solutions:
+1. Caching (aggressive)
+   - Redis cache: celebrity posts (TTL: 1 minute)
+   - CDN for celebrity photos (geographic distribution)
+   - 99% of requests served from cache
+
+2. Denormalization
+   - Pre-compute follower feed rankings
+   - Store top 100 posts in user_feed table
+   - Query: SELECT * FROM user_feed WHERE user_id = celebrity_id
+
+3. Fanout (write-time)
+   - When celebrity posts, push to all followers' feeds asynchronously
+   - Trade: higher write latency, but reads extremely fast
+
+4. Sharding (extreme)
+   - Shard followers by follower_id % 100
+   - Each shard has fraction of followers
+   - Celebrity distributed; no single bottleneck
+   - Trade: cross-shard queries expensive
+```
+
+### E-Commerce: Bestselling Product
+
+```
+Problem:
+- Product SKU-42 on sale; 1,000 page views/sec
+- Inventory: 500 units
+- 100 orders/sec (all for SKU-42)
+- Single row updated constantly; lock contention
+
+Solutions:
+1. Read Replica for Reads
+   - Primary: handles all writes (inventory updates)
+   - Replicas (3x): handle all reads (page views)
+   - Distributed read load; primary writes
+
+2. Eventual Consistency
+   - Accept stale inventory (30 seconds old)
+   - Cache inventory in Redis; 30s TTL
+   - Occasional oversell, but cache handles 99% of reads
+   - Inventory corrected asynchronously
+
+3. Distributed Counter
+   - Instead of SELECT inventory WHERE sku = 42; UPDATE ...
+   - Use atomic counter: DECR inventory:sku-42
+   - Extremely fast (no lock contention)
+   - Eventually consistent with database
+   - Periodic sync: calculate actual inventory, correct counter
+
+4. Async Processing
+   - Frontend shows cached inventory
+   - User clicks "Add to Cart" (doesn't decrement inventory yet)
+   - Background job processes cart asynchronously
+   - If inventory runs out, cart rejected with backorder option
+   - Separates UI (fast) from inventory (slow)
+```
+
+### Time-Series: Recent Data
+
+```
+Problem:
+- Metrics table: 10B rows/day
+- All queries ask for "last 24 hours" or "last hour"
+- Database scans only 0.1% of rows (recent data)
+- But table so large, sequential scan slow
+
+Solutions:
+1. Time-Bucketing (Partition by Time)
+   - Create one table per day: metrics_2025_02_15
+   - Queries: SELECT * FROM metrics_2025_02_15 WHERE timestamp > ...
+   - Only recent tables live in hot storage
+   - Old tables archived to cold storage
+   - Result: scans only relevant partition
+
+2. Index on Timestamp + Metric
+   - CREATE INDEX idx_metrics_ts ON metrics(timestamp DESC)
+   - Query: SELECT * FROM metrics WHERE timestamp > now() - '1h'
+   - Index scan returns only recent rows
+   - Fast; avoids full table scan
+
+3. Columnar Storage
+   - Time-series databases (InfluxDB, Prometheus) store by column
+   - Metrics table: [time, metric_name, server_id, value]
+   - Stored as columns: [all_times], [all_names], [all_ids], [all_values]
+   - Compression: repeated values compress well
+   - Query: fetch only needed columns; skip others
+   - Result: 10x faster on relevant data
+```
+
+## Next Steps
+
+1. **Analyze queries** — Use EXPLAIN PLAN to verify index usage
+2. **Identify hotspots** — Monitor slow queries, identify repeated patterns
+3. **Design indexes** — Match WHERE and ORDER BY columns
+4. **Test before deploy** — Ensure indexes improve (not hurt) performance
+5. **Monitor fragmentation** — Rebuild indexes regularly
+6. **Cache hot data** — Redis for frequently accessed datasets
+7. **Consider materialization** — Pre-compute expensive queries
+8. **Partition strategically** — Time-bucketing for time-series data
+
+## References
+
+- <a href="https://www.postgresql.org/docs/current/indexes.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL Index Documentation ↗</a>
+- <a href="https://dev.mysql.com/doc/refman/8.0/en/optimization-indexes.html" target="_blank" rel="nofollow noopener noreferrer">MySQL Index Optimization ↗</a>
+- <a href="https://use-the-index-luke.com/" target="_blank" rel="nofollow noopener noreferrer">Use The Index, Luke! ↗</a>
+- <a href="https://www.postgresql.org/docs/current/sql-explain.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL EXPLAIN Documentation ↗</a>
+- "Designing Data-Intensive Applications" by Martin Kleppmann (index chapter)
+- "Learning SQL" by Alan Beaulieu (optimization chapter)

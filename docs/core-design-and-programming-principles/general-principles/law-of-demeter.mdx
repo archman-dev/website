@@ -1,0 +1,436 @@
+---
+title: Law of Demeter
+description: "Master the Principle of Least Knowledge to reduce coupling and improve maintainability in complex systems."
+hide_title: true
+sidebar_position: 7
+sidebar_label: Law of Demeter
+docType: deep-dive
+difficulty: intro
+estimatedTime: 10
+lastReviewed: "2025-09-10"
+personas: ["engineer", "architect", "lead"]
+keywords: ["law of demeter", "principle of least knowledge", "loose coupling", "encapsulation", "object-oriented design", "code navigation", "dependencies", "maintainability", "refactoring", "modular architecture"]
+tags: ["coupling", "encapsulation", "object-oriented-design", "maintainability", "best-practices", "design-principles", "code-quality", "architecture", "dependencies", "refactoring"]
+image: /img/archman-social-card.webp
+---
+
+<Hero
+  title="Law of Demeter"
+  subtitle="Principle of Least Knowledge"
+  description="Only talk to your immediate friends, not to strangers. Reduce coupling by limiting object dependencies."
+/>
+
+<Head>
+  <meta name="description" content="Master the Principle of Least Knowledge to reduce coupling and improve maintainability in complex systems." />
+  <meta property="og:title" content="Law of Demeter" />
+  <meta property="og:description" content="Master the Principle of Least Knowledge to reduce coupling and improve maintainability in complex systems." />
+  <meta property="og:image" content="https://archman.dev/img/archman-social-card.webp" />
+  <meta name="twitter:card" content="summary_large_image" />
+  
+  
+</Head>
+
+  
+## What Is Law of Demeter?
+
+The **Law of Demeter (LoD)**, also known as the **Principle of Least Knowledge**, is a design principle that restricts how objects communicate with each other. It states that an object should only interact with:
+
+1. **Itself** - its own methods and properties
+2. **Its parameters** - objects passed into methods
+3. **Objects it creates** - instantiated locally
+4. **Direct dependencies** - objects it holds references to
+
+In essence: *"Only talk to your immediate friends, not to strangers."*
+
+This principle emerged from early object-oriented design and is named after the mythical "Demeter" (goddess of agriculture), intended to protect the isolation of components.
+
+## TL;DR
+
+- **Minimize object coupling** by avoiding chains of method calls across multiple layers
+- **Use facades and intermediate objects** to manage complex interactions
+- **Protect internal structure** by not exposing object relationships
+- **Improves maintainability** when internal implementations change
+- **Reduces fragility** - less breakage from external changes
+
+## Learning Objectives
+
+By the end of this article, you will understand:
+
+- The core principle and why coupling matters
+- Common violations and how to identify them
+- Practical refactoring techniques
+- When Law of Demeter adds value vs. overhead
+
+## Motivating Scenario
+
+You're working on a payment processing system:
+
+```
+User → Order → Invoice → Payment → BankAccount
+```
+
+A developer calls:
+
+```python
+user.get_order().get_invoice().get_payment().process()
+```
+
+The problem: if the `Order` class changes its internal structure, this code breaks. You're violating the Law of Demeter because you're navigating through multiple object layers.
+
+## Core Concepts
+
+### Train Wreck (Anti-Pattern)
+
+The most obvious LoD violation is the **"train wreck"** - chaining multiple method calls:
+
+```python
+# Violates Law of Demeter
+total = user.account.portfolio.holdings[0].value
+```
+
+Each dot represents moving to a stranger, exposing internal structure.
+
+### Permitted Object Interactions
+
+**ALLOWED:**
+- `this.method()` - calling your own methods
+- `param.method()` - calling methods on parameters
+- `this.field.method()` - calling on your direct dependencies
+- `new Object().method()` - calling on objects you created
+
+**NOT ALLOWED:**
+- `this.field.field.method()` - navigating through multiple layers
+- `param.field.method()` - accessing fields of parameters
+- Return values from external calls - unless you created them
+
+### Benefits of Following LoD
+
+<ProsCons
+  pros={[
+    "Lower coupling - objects don't depend on internal structures",
+    "Easier refactoring - changing internals doesn't break external code",
+    "Better encapsulation - objects control what information they expose",
+    "Improved testability - fewer dependencies to mock",
+    "Clearer contracts - object interfaces are more explicit"
+  ]}
+  cons={[
+    "More wrapper methods - can feel verbose",
+    "Potentially slower navigation - indirect calls add indirection",
+    "Design overhead - requires careful thought about facades",
+    "May hide useful information - can limit flexibility"
+  ]}
+/>
+
+## Practical Example
+
+### Before: Train Wreck
+
+<Tabs>
+  <TabItem value="python" label="Python">
+    ```python
+    class User:
+        def __init__(self, name):
+            self.account = Account(name)
+
+    class Account:
+        def __init__(self, name):
+            self.profile = UserProfile(name)
+            self.balance = 0.0
+
+    class UserProfile:
+        def __init__(self, name):
+            self.name = name
+            self.email = ""
+
+    # VIOLATION: navigating through multiple objects
+    user = User("Alice")
+    user_email = user.account.profile.email  # Train wreck!
+    ```
+  </TabItem>
+  <TabItem value="go" label="Go">
+    ```go
+    type User struct {
+        Account *Account
+    }
+
+    type Account struct {
+        Profile *UserProfile
+        Balance float64
+    }
+
+    type UserProfile struct {
+        Name  string
+        Email string
+    }
+
+    // VIOLATION: navigating through multiple objects
+    user := &User{
+        Account: &Account{
+            Profile: &UserProfile{Name: "Alice", Email: "alice@example.com"},
+        },
+    }
+    email := user.Account.Profile.Email  // Train wreck!
+    ```
+  </TabItem>
+  <TabItem value="javascript" label="Node.js">
+    ```javascript
+    class User {
+        constructor(name) {
+            this.account = new Account(name);
+        }
+    }
+
+    class Account {
+        constructor(name) {
+            this.profile = new UserProfile(name);
+            this.balance = 0.0;
+        }
+    }
+
+    class UserProfile {
+        constructor(name) {
+            this.name = name;
+            this.email = "";
+        }
+    }
+
+    // VIOLATION: navigating through multiple objects
+    const user = new User("Alice");
+    const email = user.account.profile.email;  // Train wreck!
+    ```
+  </TabItem>
+</Tabs>
+
+### After: Law of Demeter Compliant
+
+<Tabs>
+  <TabItem value="python" label="Python">
+    ```python
+    class User:
+        def __init__(self, name):
+            self.account = Account(name)
+
+        # Delegate to account - only talk to your direct friend
+        def get_email(self):
+            return self.account.get_email()
+
+    class Account:
+        def __init__(self, name):
+            self.profile = UserProfile(name)
+            self.balance = 0.0
+
+        # Delegate to profile - only talk to your direct friend
+        def get_email(self):
+            return self.profile.get_email()
+
+    class UserProfile:
+        def __init__(self, name):
+            self.name = name
+            self.email = ""
+
+        def get_email(self):
+            return self.email
+
+    # COMPLIANT: only calling methods on direct dependencies
+    user = User("Alice")
+    user_email = user.get_email()
+    ```
+  </TabItem>
+  <TabItem value="go" label="Go">
+    ```go
+    type User struct {
+        Account *Account
+    }
+
+    func (u *User) GetEmail() string {
+        return u.Account.GetEmail()
+    }
+
+    type Account struct {
+        Profile *UserProfile
+        Balance float64
+    }
+
+    func (a *Account) GetEmail() string {
+        return a.Profile.GetEmail()
+    }
+
+    type UserProfile struct {
+        Name  string
+        Email string
+    }
+
+    func (up *UserProfile) GetEmail() string {
+        return up.Email
+    }
+
+    // COMPLIANT: only calling methods on direct dependencies
+    user := &User{
+        Account: &Account{
+            Profile: &UserProfile{Name: "Alice", Email: "alice@example.com"},
+        },
+    }
+    email := user.GetEmail()
+    ```
+  </TabItem>
+  <TabItem value="javascript" label="Node.js">
+    ```javascript
+    class User {
+        constructor(name) {
+            this.account = new Account(name);
+        }
+
+        // Delegate to account - only talk to your direct friend
+        getEmail() {
+            return this.account.getEmail();
+        }
+    }
+
+    class Account {
+        constructor(name) {
+            this.profile = new UserProfile(name);
+            this.balance = 0.0;
+        }
+
+        // Delegate to profile - only talk to your direct friend
+        getEmail() {
+            return this.profile.getEmail();
+        }
+    }
+
+    class UserProfile {
+        constructor(name) {
+            this.name = name;
+            this.email = "";
+        }
+
+        getEmail() {
+            return this.email;
+        }
+    }
+
+    // COMPLIANT: only calling methods on direct dependencies
+    const user = new User("Alice");
+    const email = user.getEmail();
+    ```
+  </TabItem>
+</Tabs>
+
+## Patterns & Pitfalls
+
+### Facade Pattern
+
+Use a **facade** to hide complex internal structure:
+
+<Figure caption="Facade Pattern: Simplify external interactions">
+```
+graph TB
+    Client["Client Code"]
+    Facade["Facade<br/>(provides simple interface)"]
+    A["Complex Object A"]
+    B["Complex Object B"]
+    C["Complex Object C"]
+
+    Client --> Facade
+    Facade --> A
+    Facade --> B
+    Facade --> C
+```
+</Figure>
+
+### The "Long Method" Temptation
+
+Don't solve LoD violations by making objects do too much:
+
+```python
+# BAD: violates Single Responsibility to satisfy LoD
+class User:
+    def process_payment(self, amount):
+        # Doing bank's job - now User is too complex
+        return self.account.process_payment(amount)
+
+# GOOD: delegate to appropriate object
+class PaymentProcessor:
+    def process(self, account, amount):
+        return account.process_payment(amount)
+```
+
+### Streaming Data as an Exception
+
+LoD is stricter for objects you don't own. Be more lenient with data:
+
+```python
+# More acceptable when working with plain data:
+name = data["user"]["profile"]["name"]  # Working with dicts/data structures
+
+# Less acceptable with objects:
+name = user.account.profile.get_name()  # Objects should hide structure
+```
+
+## When to Use / When Not to Use
+
+<Showcase>
+  <div>
+    <h4>✓ When to Apply Law of Demeter</h4>
+    <ul>
+      <li>Large, evolving codebases where changes propagate</li>
+      <li>Team environments where APIs need stability</li>
+      <li>Complex hierarchical object structures</li>
+      <li>Public APIs and library design</li>
+      <li>When you need to swap implementations</li>
+    </ul>
+  </div>
+  <div>
+    <h4>✗ When to Relax Law of Demeter</h4>
+    <ul>
+      <li>Simple data structures and DTOs</li>
+      <li>Prototyping and experimental code</li>
+      <li>Working with immutable records</li>
+      <li>Function programming style with pipelines</li>
+      <li>When facade overhead outweighs benefits</li>
+    </ul>
+  </div>
+</Showcase>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Does code chain multiple method calls (train wreck pattern)?",
+    "Are objects accessing fields of other objects' dependencies?",
+    "Do high-level objects know about low-level implementations?",
+    "Would changing internal object structure break external code?",
+    "Are delegation methods clear and well-documented?",
+    "Do objects expose only necessary information?",
+    "Are facades used to simplify complex interactions?",
+    "Can you easily test objects in isolation?"
+  ]}
+/>
+
+## Self-Check
+
+- **Can you identify a train wreck in your codebase?** Look for chains of 3+ method calls.
+- **What would break if an internal class changed?** If many external places, you're violating LoD.
+- **Are you creating unnecessary wrapper methods?** Balance LoD with KISS principle.
+- **Do your facades serve a real purpose?** Avoid facades that just pass through calls.
+
+## Next Steps
+
+1. **Audit existing code** - find train wreck patterns
+2. **Introduce facades** for complex subsystems
+3. **Refactor gradually** - add delegation methods to key classes
+4. **Document boundaries** - make clear what's safe to access
+5. **Pair with related principles** - combine with <a href="../high-cohesion-low-coupling" target="_blank" rel="nofollow noopener noreferrer">High Cohesion, Low Coupling ↗️</a>
+
+Explore <a href="../../solid/single-responsibility" target="_blank" rel="nofollow noopener noreferrer">Single Responsibility Principle ↗️</a> for complementary design guidance.
+
+## One Takeaway
+
+**Only talk to your immediate friends.** Structure your objects so external code doesn't navigate through multiple layers. This simple rule prevents fragility and makes your code easier to refactor.
+
+## References
+
+- The Pragmatic Programmer - Hunt & Thomas
+- Design Patterns - Gang of Four
+- "The Law of Demeter" - Andrew J. Rubinstein
+- Growing Object-Oriented Software, Guided by Tests - Freeman & Pryce

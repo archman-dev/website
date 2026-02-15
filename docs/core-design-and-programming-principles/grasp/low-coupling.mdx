@@ -1,0 +1,364 @@
+---
+sidebar_position: 4
+title: "Low Coupling"
+description: "Minimize dependencies between classes to improve flexibility, testability, and maintainability"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [low-coupling, dependencies, loose-coupling, abstraction, interfaces, grasp, maintainability, flexibility]
+image: /img/archman-social-card.webp
+tags: [grasp, low-coupling, dependencies, maintainability, flexibility, testability, abstraction, design-principles, ood]
+hide_title: true
+---
+
+<Hero title="Low Coupling" subtitle="Minimize dependencies between classes to improve flexibility and maintainability" imageAlt="Low Coupling illustration" size="large" />
+
+## TL;DR
+
+Low Coupling is a principle that encourages you to minimize dependencies between classes, making your system more flexible, testable, and maintainable. Classes should know as little as possible about each other's implementation details, relying instead on abstractions and interfaces.
+
+## Learning Objectives
+
+- Understand what coupling is and why it matters
+- Learn different types of coupling and their impact
+- Recognize high-coupling situations that need refactoring
+- Apply techniques to reduce coupling in your designs
+- Balance Low Coupling with High Cohesion for optimal designs
+
+## Motivating Scenario
+
+You have an `EmailService` class that your `OrderProcessor` directly depends on. When you need to switch to SMS notifications, you must modify `OrderProcessor`, adding complexity and risk. If instead `OrderProcessor` depends on a generic `NotificationService` interface that both `EmailService` and `SMSService` implement, you can swap implementations without touching `OrderProcessor`.
+
+## Core Concepts
+
+**Coupling** is the degree to which one class depends on or knows about another class. **Low Coupling** is a principle that discourages direct dependencies between classes, preferring instead to depend on abstractions (interfaces, abstract classes) or intermediate objects.
+
+High coupling creates several problems:
+
+1. **Difficulty in Testing**: Testing a class is hard when it requires concrete dependencies
+2. **Difficulty in Modification**: Changes in one class force changes in dependent classes
+3. **Difficulty in Reuse**: A class entangled with other concrete classes can't be reused in different contexts
+4. **Ripple Effects**: Changes propagate through interconnected classes
+
+Low Coupling benefits include:
+
+- **Flexibility**: Swap implementations without changing dependents
+- **Testability**: Mock or stub dependencies easily
+- **Reusability**: Classes work in different contexts
+- **Resilience**: Changes are localized
+
+Achieve Low Coupling through abstraction: depend on interfaces or abstract classes, not concrete implementations. This allows different implementations to be swapped without affecting the dependent code.
+
+<Figure caption="Low Coupling: Abstraction-Based Dependencies">
+```mermaid
+flowchart TB
+    subgraph High["HIGH COUPLING"]
+        A1["OrderProcessor"] -->|depends on| B1["EmailService"]
+        A1 -->|depends on| C1["SMSService"]
+    end
+    subgraph Low["LOW COUPLING"]
+        A2["OrderProcessor"] -->|depends on| I["NotificationService<br/>interface"]
+        I <|implements| B2["EmailService"]
+        I <|implements| C2["SMSService"]
+    end
+    style High fill:#FFB6C6
+    style Low fill:#90EE90
+    style I fill:#87CEEB
+```
+</Figure>
+
+## Practical Example
+
+Let's see how to refactor high-coupling code to achieve Low Coupling:
+
+<Tabs>
+<TabItem value="python" label="Python">
+```python title="low_coupling_example.py" showLineNumbers
+from abc import ABC, abstractmethod
+
+# HIGH COUPLING (avoid this)
+class HighCouplingOrderProcessor:
+    def __init__(self):
+        self.email_service = EmailService()  # Direct dependency
+
+    def process_order(self, order):
+        # ... validation ...
+        self.email_service.send_confirmation(order.customer_email)
+
+# LOW COUPLING (good design)
+class NotificationService(ABC):
+    @abstractmethod
+    def send_notification(self, recipient: str, message: str):
+        pass
+
+class EmailService(NotificationService):
+    def send_notification(self, recipient: str, message: str):
+        print(f"Sending email to {recipient}: {message}")
+
+class SMSService(NotificationService):
+    def send_notification(self, recipient: str, message: str):
+        print(f"Sending SMS to {recipient}: {message}")
+
+class Order:
+    def __init__(self, customer_id: str, email: str):
+        self.customer_id = customer_id
+        self.customer_email = email
+
+class LowCouplingOrderProcessor:
+    """Depends on abstraction, not concrete implementation"""
+    def __init__(self, notifier: NotificationService):
+        self.notifier = notifier  # Injected dependency
+
+    def process_order(self, order: Order) -> bool:
+        # ... validation ...
+        # Uses abstraction, doesn't care about implementation
+        self.notifier.send_notification(
+            order.customer_email,
+            f"Order {order.customer_id} confirmed"
+        )
+        return True
+
+# Usage
+processor_email = LowCouplingOrderProcessor(EmailService())
+processor_sms = LowCouplingOrderProcessor(SMSService())
+
+order = Order("ORD-001", "customer@example.com")
+processor_email.process_order(order)
+processor_sms.process_order(order)
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go title="low_coupling_example.go" showLineNumbers
+package main
+
+import "fmt"
+
+// LOW COUPLING: Depend on interface, not implementation
+type NotificationService interface {
+    SendNotification(recipient, message string)
+}
+
+type EmailService struct{}
+
+func (es *EmailService) SendNotification(
+    recipient, message string) {
+    fmt.Printf("Sending email to %s: %s\n", recipient, message)
+}
+
+type SMSService struct{}
+
+func (ss *SMSService) SendNotification(
+    recipient, message string) {
+    fmt.Printf("Sending SMS to %s: %s\n", recipient, message)
+}
+
+type Order struct {
+    CustomerID    string
+    CustomerEmail string
+}
+
+type OrderProcessor struct {
+    notifier NotificationService // Depends on interface
+}
+
+func NewOrderProcessor(notifier NotificationService) *OrderProcessor {
+    return &OrderProcessor{notifier: notifier}
+}
+
+func (op *OrderProcessor) ProcessOrder(order *Order) bool {
+    // Uses abstraction, doesn't care about implementation
+    op.notifier.SendNotification(
+        order.CustomerEmail,
+        fmt.Sprintf("Order %s confirmed", order.CustomerID),
+    )
+    return true
+}
+
+func main() {
+    email := &EmailService{}
+    sms := &SMSService{}
+
+    processorEmail := NewOrderProcessor(email)
+    processorSMS := NewOrderProcessor(sms)
+
+    order := &Order{
+        CustomerID:    "ORD-001",
+        CustomerEmail: "customer@example.com",
+    }
+
+    processorEmail.ProcessOrder(order)
+    processorSMS.ProcessOrder(order)
+}
+```
+</TabItem>
+
+<TabItem value="nodejs" label="Node.js">
+```javascript title="low_coupling_example.js" showLineNumbers
+// LOW COUPLING: Depend on interface contract, not implementation
+
+class NotificationService {
+    sendNotification(recipient, message) {
+        throw new Error("Must be implemented");
+    }
+}
+
+class EmailService extends NotificationService {
+    sendNotification(recipient, message) {
+        console.log(`Sending email to ${recipient}: ${message}`);
+    }
+}
+
+class SMSService extends NotificationService {
+    sendNotification(recipient, message) {
+        console.log(`Sending SMS to ${recipient}: ${message}`);
+    }
+}
+
+class Order {
+    constructor(customerId, customerEmail) {
+        this.customerId = customerId;
+        this.customerEmail = customerEmail;
+    }
+}
+
+class OrderProcessor {
+    // Depends on abstraction, not concrete implementation
+    constructor(notifier) {
+        if (!(notifier instanceof NotificationService)) {
+            throw new Error(
+                "notifier must implement NotificationService"
+            );
+        }
+        this.notifier = notifier;
+    }
+
+    processOrder(order) {
+        // Uses abstraction, doesn't care about implementation
+        this.notifier.sendNotification(
+            order.customerEmail,
+            `Order ${order.customerId} confirmed`
+        );
+        return true;
+    }
+}
+
+// Usage
+const emailService = new EmailService();
+const smsService = new SMSService();
+
+const processorEmail = new OrderProcessor(emailService);
+const processorSMS = new OrderProcessor(smsService);
+
+const order = new Order("ORD-001", "customer@example.com");
+processorEmail.processOrder(order);
+processorSMS.processOrder(order);
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[1]} items={[
+{
+    label: "Use",
+    points: [
+      "Depending on interfaces rather than concrete classes",
+      "Injecting dependencies instead of creating them internally",
+      "Creating abstraction layers between subsystems",
+      "Limiting what information classes expose to others",
+      "Designing for plug-and-play component replacement"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Avoid",
+    points: [
+      "Over-abstracting simple, stable dependencies",
+      "Creating unnecessary intermediate layers",
+      "Abstracting too early before understanding the real requirements",
+      "Making every class an interface (complexity overhead)",
+      "Sacrificing clarity for the sake of abstraction"
+    ],
+    highlightTone: "warning"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase title="Low Coupling Implementation" sections={[
+  {
+    label: "Do",
+    body: <>
+      <p><strong>Depend on abstractions:</strong> Have OrderProcessor depend on NotificationService interface, not EmailService directly. This allows swapping implementations.</p>
+      <p><strong>Inject dependencies:</strong> Pass dependencies through constructors or setters rather than creating them internally. This makes testing and swapping implementations easy.</p>
+      <p><strong>Encapsulate boundaries:</strong> Limit what classes expose to others. Hide implementation details behind interfaces and use only stable public contracts.</p>
+    </>,
+    tone: "positive"
+  ,
+    body: <>
+      <p><strong>Depend on abstractions:</strong> Have OrderProcessor depend on NotificationService interface, not EmailService directly. This allows swapping implementations.</p>
+      <p><strong>Inject dependencies:</strong> Pass dependencies through constructors or setters rather than creating them internally. This makes testing and swapping implementations easy.</p>
+      <p><strong>Encapsulate boundaries:</strong> Limit what classes expose to others. Hide implementation details behind interfaces and use only stable public contracts.</p>
+    </>,
+    tone: "positive"
+  ,
+    tone: "positive"
+  },
+  {
+    label: "Avoid",
+    body: <>
+      <p><strong>Creating dependencies directly:</strong> Don't have EmailService created directly in OrderProcessor. This creates tight coupling that's hard to test or change.</p>
+      <p><strong>Exposing implementation details:</strong> Don't expose internal collections or configuration objects. Provide clean interfaces instead.</p>
+      <p><strong>Over-abstracting:</strong> Not every dependency needs abstraction. Only abstract when you expect multiple implementations or when testing requires it.</p>
+    </>,
+    tone: "warning"
+  ,
+    body: <>
+      <p><strong>Creating dependencies directly:</strong> Don't have EmailService created directly in OrderProcessor. This creates tight coupling that's hard to test or change.</p>
+      <p><strong>Exposing implementation details:</strong> Don't expose internal collections or configuration objects. Provide clean interfaces instead.</p>
+      <p><strong>Over-abstracting:</strong> Not every dependency needs abstraction. Only abstract when you expect multiple implementations or when testing requires it.</p>
+    </>,
+    tone: "warning"
+  ,
+    tone: "warning"
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Does the class depend on interfaces or abstractions rather than concrete classes?",
+  "Are dependencies injected rather than created internally?",
+  "Can you replace a dependency with a different implementation without changing this class?",
+  "Is the class free of knowledge about how dependencies implement their contracts?",
+  "Are only necessary dependencies required, not optional ones?",
+  "Could the class be easily unit tested with mock implementations?"
+]} />
+
+## Self-Check
+
+1. **What is coupling and why does it matter?** Coupling is the degree classes depend on each other. Low coupling improves testability, flexibility, and maintainability by reducing these dependencies.
+
+2. **How do you reduce coupling?** Depend on abstractions (interfaces) rather than concrete classes, inject dependencies, and hide implementation details.
+
+3. **When is abstraction worth it?** When you have multiple implementations, expect future changes, or need to test in isolation. Don't over-abstract simple, stable dependencies.
+
+:::info
+**One Takeaway**: Depend on abstractions, inject dependencies, and hide implementation details. This maximizes your system's flexibility and testability.
+
+:::
+
+## Next Steps
+
+- Study [High Cohesion](/docs/core-design-and-programming-principles/grasp/high-cohesion) to balance Low Coupling
+- Learn [Information Expert](/docs/core-design-and-programming-principles/grasp/information-expert) to assign responsibilities properly
+- Explore [Dependency Injection](/docs/core-design-and-programming-principles/grasp/indirection) patterns
+- Review [Pure Fabrication](/docs/core-design-and-programming-principles/grasp/pure-fabrication) for creating abstraction layers
+
+## References
+
+1. <a href="https://en.wikipedia.org/wiki/GRASP_(object-oriented_design)" target="_blank" rel="nofollow noopener noreferrer">GRASP (Object-Oriented Design) - Wikipedia ↗️</a>
+2. <a href="https://www.oreilly.com/library/view/applying-uml-and/0131489062/" target="_blank" rel="nofollow noopener noreferrer">Applying UML and Patterns by Craig Larman ↗️</a>

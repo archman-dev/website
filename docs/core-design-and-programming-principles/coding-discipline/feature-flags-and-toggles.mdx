@@ -1,0 +1,412 @@
+---
+sidebar_position: 5
+title: "Feature Flags and Toggles"
+description: "Use feature flags to decouple deployment from release and enable safer experimentation."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [feature-flags, toggles, experimentation, canary-deployment, gradual-rollout, feature-management, safe-release, continuous-deployment]
+image: /img/archman-social-card.webp
+tags: [feature-management, deployment, continuous-delivery, experimentation, risk-management, gradual-rollout, a-b-testing, operational-excellence, code-quality, best-practices]
+hide_title: true
+---
+
+<Hero title="Feature Flags and Toggles" subtitle="Use feature flags to decouple deployment from release and enable safer experimentation." imageAlt="Feature flags illustration" size="large" />
+
+## TL;DR
+
+Feature flags decouple code deployment from feature release. Deploy code with new features disabled, then toggle them on gradually—for specific users, percentages, or regions. This enables safer deployments: if something breaks, flip a flag rather than rolling back and redeploying. Use flags for experimentation: A/B testing, canary releases, and gradual rollouts. However, flag code clutters production code, so manage flag lifecycle carefully—delete flags when they're no longer needed. Feature flags are powerful, but without discipline, they become technical debt.
+
+## Learning Objectives
+
+- Distinguish between deployment (getting code to servers) and release (making features visible)
+- Design feature flags for safe gradual rollouts and experimentation
+- Implement flag evaluation patterns efficiently
+- Manage flag lifecycle to prevent accumulated technical debt
+- Use flags for canary releases, A/B testing, and gradual rollouts
+- Balance flexibility with code clarity
+
+## Motivating Scenario
+
+A critical bug appears in production. The team has two choices: rollback (losing hours of good features deployed alongside the buggy one) or fix-and-redeploy (hours of testing). Neither option is ideal. With feature flags, they could disable the buggy feature instantly while good features remain active. Later, when the bug is fixed, they re-enable the feature. This is the power of decoupling deployment from release.
+
+## Core Concepts
+
+### Deployment vs. Release
+
+Deployment is getting code to servers. Release is making features visible to users. Feature flags separate these concerns. Deploy code with flags controlling visibility, then release features on your own schedule.
+
+### Flag Types
+
+**Operational flags** control performance characteristics (cache enabled, batch size). **Permission flags** control access (beta features for early adopters). **Experiment flags** enable A/B testing and canary releases. Each requires different lifecycle and evaluation strategies.
+
+### Flag Evaluation
+
+Evaluate flags dynamically at runtime based on context: user ID, environment, percentage, etc. Don't hardcode flag decisions. Store flag configurations externally so they can change without redeployment.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - Hardcoded feature gate
+def get_checkout_page(user):
+    if user.id == "admin":  # Hardcoded!
+        return render_new_checkout(user)
+    return render_legacy_checkout(user)
+
+# ✅ EXCELLENT - Feature flag with external configuration
+from enum import Enum
+from typing import Optional
+
+class FeatureFlagService:
+    """Manage feature flags with external configuration."""
+
+    def __init__(self, config_service):
+        self.config = config_service
+
+    def is_enabled(self, flag_name: str, user_id: Optional[str] = None) -> bool:
+        """Check if a feature flag is enabled for a user."""
+        flag_config = self.config.get_flag(flag_name)
+        if not flag_config:
+            return False
+
+        # Disabled globally
+        if not flag_config.get('enabled', False):
+            return False
+
+        # Check percentage rollout (consistent hashing)
+        if 'percentage' in flag_config:
+            rollout_percent = flag_config['percentage']
+            if hash(f"{flag_name}:{user_id}") % 100 < rollout_percent:
+                return True
+            return False
+
+        # Check user whitelist
+        if 'allowed_users' in flag_config:
+            return user_id in flag_config['allowed_users']
+
+        # Check user group/segment
+        if 'user_groups' in flag_config:
+            groups = self.config.get_user_groups(user_id)
+            return any(g in flag_config['user_groups'] for g in groups)
+
+        return True
+
+    def set_flag(self, flag_name: str, enabled: bool, **kwargs):
+        """Update flag configuration."""
+        self.config.update_flag(flag_name, {'enabled': enabled, **kwargs})
+
+# Usage
+flags = FeatureFlagService(config_service)
+
+def get_checkout_page(user):
+    if flags.is_enabled('new_checkout_ui', user.id):
+        return render_new_checkout(user)
+    return render_legacy_checkout(user)
+
+def list_products(filters):
+    products = Product.all()
+
+    if flags.is_enabled('advanced_filtering'):
+        products = products.filter(**filters)
+    else:
+        products = products.filter(category=filters.get('category'))
+
+    return products
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Hardcoded gates
+func GetCheckoutPage(userID string) string {
+    if userID == "admin" {  // Hardcoded!
+        return renderNewCheckout()
+    }
+    return renderLegacyCheckout()
+}
+
+// ✅ EXCELLENT - Feature flag service
+package features
+
+import (
+    "crypto/md5"
+    "encoding/hex"
+    "fmt"
+)
+
+type FlagConfig struct {
+    Enabled      bool
+    Percentage   int // 0-100 rollout percentage
+    AllowedUsers []string
+    UserGroups   []string
+}
+
+type FlagService interface {
+    IsEnabled(ctx context.Context, flagName string, userID string) bool
+    SetFlag(ctx context.Context, flagName string, config FlagConfig) error
+    GetFlag(ctx context.Context, flagName string) (FlagConfig, error)
+}
+
+type FeatureFlagManager struct {
+    configService FlagService
+}
+
+func NewFeatureFlagManager(svc FlagService) *FeatureFlagManager {
+    return &FeatureFlagManager{configService: svc}
+}
+
+func (f *FeatureFlagManager) IsEnabled(ctx context.Context, flagName, userID string) bool {
+    config, err := f.configService.GetFlag(ctx, flagName)
+    if err != nil || !config.Enabled {
+        return false
+    }
+
+    // Consistent hashing for percentage rollout
+    if config.Percentage > 0 {
+        hash := md5.Sum([]byte(flagName + ":" + userID))
+        hashValue := int(hash[0]) % 100
+        return hashValue < config.Percentage
+    }
+
+    // Check whitelist
+    for _, allowed := range config.AllowedUsers {
+        if allowed == userID {
+            return true
+        }
+    }
+
+    // Default if no restrictions
+    return len(config.AllowedUsers) == 0 && len(config.UserGroups) == 0
+}
+
+// Usage
+func GetCheckoutPage(ctx context.Context, userID string, flags *FeatureFlagManager) string {
+    if flags.IsEnabled(ctx, "new_checkout_ui", userID) {
+        return renderNewCheckout()
+    }
+    return renderLegacyCheckout()
+}
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - Hardcoded feature gates
+function getCheckoutPage(user) {
+    if (user.id === 'admin') {  // Hardcoded!
+        return renderNewCheckout(user);
+    }
+    return renderLegacyCheckout(user);
+}
+
+// ✅ EXCELLENT - Feature flag service
+class FeatureFlagManager {
+    constructor(configService) {
+        this.config = configService;
+    }
+
+    isEnabled(flagName, userId) {
+        const flagConfig = this.config.getFlag(flagName);
+
+        if (!flagConfig || !flagConfig.enabled) {
+            return false;
+        }
+
+        // Percentage-based rollout with consistent hashing
+        if (flagConfig.percentage !== undefined) {
+            const hash = this.hashConsistent(flagName, userId);
+            return hash % 100 < flagConfig.percentage;
+        }
+
+        // User whitelist
+        if (flagConfig.allowedUsers) {
+            return flagConfig.allowedUsers.includes(userId);
+        }
+
+        // User group/segment
+        if (flagConfig.userGroups) {
+            const userGroups = this.config.getUserGroups(userId);
+            return flagConfig.userGroups.some(g => userGroups.includes(g));
+        }
+
+        return true;
+    }
+
+    hashConsistent(flagName, userId) {
+        // Simple consistent hashing
+        const str = `${flagName}:${userId}`;
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;  // Convert to 32-bit integer
+        }
+        return Math.abs(hash);
+    }
+
+    setFlag(flagName, enabled, options = {}) {
+        this.config.updateFlag(flagName, { enabled, ...options });
+    }
+}
+
+// Usage
+class CheckoutService {
+    constructor(flags) {
+        this.flags = flags;
+    }
+
+    getCheckoutPage(user) {
+        if (this.flags.isEnabled('new_checkout_ui', user.id)) {
+            return renderNewCheckout(user);
+        }
+        return renderLegacyCheckout(user);
+    }
+
+    listProducts(filters) {
+        let products = Product.all();
+
+        if (this.flags.isEnabled('advanced_filtering')) {
+            products = this.applyAdvancedFilters(products, filters);
+        } else {
+            products = products.filter(p => p.category === filters.category);
+        }
+
+        return products;
+    }
+}
+
+// Typical flag configuration
+const flagConfig = {
+    new_checkout_ui: {
+        enabled: true,
+        percentage: 25  // Gradually roll out to 25% of users
+    },
+    advanced_filtering: {
+        enabled: true,
+        userGroups: ['beta_testers']  // Only for beta testers
+    },
+    experimental_feature: {
+        enabled: false  // Fully disabled, code still present
+    }
+};
+```
+</TabItem>
+</Tabs>
+
+## Feature Flag Patterns
+
+### Canary Releases
+
+```javascript
+// Deploy to 5% of users first, monitor, then increase
+const canaryConfig = {
+    feature_name: {
+        enabled: true,
+        percentage: 5,  // Start with 5%
+    }
+};
+
+// After monitoring for 24 hours
+canaryConfig.feature_name.percentage = 25;  // Increase to 25%
+
+// After 48 hours
+canaryConfig.feature_name.percentage = 100;  // Release to everyone
+```
+
+### A/B Testing
+
+```javascript
+const abTestConfig = {
+    checkout_variant: {
+        enabled: true,
+        variants: {
+            control: { percentage: 50 },
+            test: { percentage: 50 }
+        }
+    }
+};
+
+function getCheckoutVariant(userId) {
+    const variant = hashUser(userId) % 2 === 0 ? 'control' : 'test';
+    return variant;
+}
+```
+
+### Permission-Based Gates
+
+```javascript
+const betaFeatureConfig = {
+    beta_payment_method: {
+        enabled: true,
+        betaUsers: ['user_123', 'user_456', 'org_789']
+    }
+};
+
+function canAccessBetaFeature(userId, orgId) {
+    const config = getConfig('beta_payment_method');
+    return config.betaUsers.includes(userId) ||
+           config.betaUsers.includes(orgId);
+}
+```
+
+## Managing Flag Lifecycle
+
+```javascript
+// Flag lifecycle: create -> test -> deploy -> rollout -> monitor -> remove
+
+// 1. Flag created but disabled (dev phase)
+const flag = { name: 'new_feature', enabled: false, created_at: '2025-09-10' };
+
+// 2. Enabled for small group (testing)
+flag.enabled = true;
+flag.allowedUsers = ['tester_1', 'tester_2'];
+
+// 3. Percentage rollout (gradual release)
+flag.percentage = 10;  // 10% of users
+
+// 4. Monitor metrics, then expand
+flag.percentage = 50;
+
+// 5. Remove flag (flag is fully active)
+// Delete flag config, code path with flag becomes standard path
+// Must clean up conditional code that checks for flag
+```
+
+## Design Review Checklist
+
+- Is flag configuration external, not hardcoded?
+- Can flags be toggled without redeployment?
+- Are flag names clear and descriptive?
+- Is there a process for removing flags once fully released?
+- Are flags consistent for the same user (hashing for percentage rollout)?
+- Is flag evaluation performant (cached, not querying external service on every call)?
+- Are deprecated flags cleaned up regularly?
+- Is there monitoring to track flag usage and impact?
+
+## Self-Check
+
+1. Identify a risky feature being deployed. How would feature flags make deployment safer?
+
+2. What flag lifecycle process exists in your team? How do old flags get removed?
+
+3. Design a canary release strategy for a payment feature using percentage-based rollout.
+
+<Admonition type="info" title="One Takeaway">
+Feature flags transform deployment from binary (on or off for everyone) to granular (on for percentage of users, groups, or specific users). This enables safer releases: deploy with new features dark, validate with small groups, then gradually expand. However, flag code must be managed carefully—flags that aren't eventually removed become technical debt cluttering production code. Establish a process for regular flag cleanup.
+</Admonition>
+
+## Next Steps
+
+- Learn about <a href="../backward-compatibility-and-versioning">versioning ↗</a> for managing breaking changes alongside flags
+- Explore <a href="../configuration-vs-code">configuration management ↗</a> for storing flag configurations
+- Study <a href="../../general-principles/fail-fast">fail-fast ↗</a> for detecting flag misconfiguration early
+- Review <a href="../../solid/single-responsibility">Single Responsibility ↗</a> for keeping flag logic separate
+
+## References
+
+1. Fowler, M. (2015). Feature Toggles. Retrieved from https://martinfowler.com/articles/feature-toggles.html
+2. Humble, J., & Farley, D. (2010). Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation. Addison-Wesley.
+3. Hodges, B. (2016). Releasing Software with Feature Flags. Retrieved from https://launchdarkly.com/
+4. Martin, R. C. (2008). Clean Code: A Handbook of Agile Software Craftsmanship. Prentice Hall.

@@ -1,0 +1,421 @@
+---
+sidebar_position: 2
+title: "Gamedays and Chaos Engineering"
+description: "Practice failure in a controlled environment; discover and fix weaknesses before production."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [chaos-engineering, gameday, resilience-testing, failure-scenarios, incident-practice, learning]
+image: /img/archman-social-card.webp
+tags: [chaos-engineering, gameday, resilience-testing, incident-practice, learning, experimentation]
+hide_title: true
+---
+
+<Hero title="Gamedays and Chaos Engineering" subtitle="Practice failure in a controlled environment; discover and fix weaknesses before production." imageAlt="Chaos illustration" size="large" />
+
+## TL;DR
+
+Gameday: simulate failures in a controlled time window. Kill the database, watch how the system responds. Route traffic to the wrong datacenter. Reveal weaknesses: broken alerting, outdated runbooks, untrained team. Fix them before they cause real incidents.
+
+Chaos engineering: continuously inject failures in staging. Randomly kill instances, inject latency, saturate resources. Measure how gracefully the system degrades. Prevents brittle systems that work until they catastrophically fail.
+
+## Learning Objectives
+
+- Design realistic gameday scenarios matching production risks
+- Run gamedays with clear scope and communication
+- Implement continuous chaos testing in staging
+- Measure system resilience objectively
+- Convert gameday findings into concrete improvements
+- Build team confidence in incident response
+
+## Motivating Scenario
+
+Your payment platform processes 50,000 transactions per hour. Your database is a single leader with read replicas. You assume the system "handles database failover" based on configuration review.
+
+One Tuesday, the leader dies. Your read replicas don't automatically promote. For 18 minutes, all transactions fail. 15,000 users lose access. Your incident report concludes: "We thought failover was automatic. It wasn't configured."
+
+A gameday would have revealed this immediately. Day 1: "Kill the database leader." Day 2: Discover misconfiguration. Day 3: Fix it. All before production.
+
+With chaos engineering running continuously, this configuration drift would have been caught in the next scheduled chaos test.
+
+## Core Concepts
+
+### Gameday Framework
+
+<Figure>
+  {`flowchart TB
+    Plan["Plan Gameday<br/>Scope & Scenario"] --> Pre["Pre-Gameday<br/>Notifications & Setup"]
+    Pre --> Execute["Execute Failures<br/>Inject Problem"]
+    Execute --> Observe["Observe System<br/>Behavior"]
+    Observe --> Respond["Team Responds<br/>Using Runbooks"]
+    Respond --> Measure["Measure Response<br/>Collect Data"]
+    Measure --> Recover["Recover System<br/>Validate Fix"]
+    Recover --> Debrief["Debrief & Document<br/>Lessons Learned"]
+    Debrief --> Tickets["Create Tickets<br/>to Fix Issues"]`}
+</Figure>
+
+### Gameday Scenarios by Severity
+
+**Tier 1: Single Component** (1 hour)
+- Kill one database replica
+- Stop one worker queue
+- Disconnect one microservice
+- Turn off one region
+
+**Tier 2: Infrastructure Failure** (2-3 hours)
+- Entire database unavailable for 30 minutes
+- Network partition (service A cannot reach B)
+- Entire Kubernetes cluster restart
+- Datacenter network disconnect
+
+**Tier 3: Cascading Failures** (3-4 hours)
+- Database + cache both down
+- Multiple service failures in sequence
+- Quota exhaustion (API limits, database connections)
+- Memory leak cascade (slow failure over 30 minutes)
+
+### Chaos Engineering Dimensions
+
+**Infrastructure Level**:
+- Kill random pods
+- Reboot nodes
+- Saturate disk/CPU
+- Inject network packet loss
+
+**Application Level**:
+- Kill in-process cache
+- Timeout database connections
+- Slow down HTTP responses
+- Corrupt message payloads
+
+**Data Level**:
+- Enable read-only mode
+- Delay data synchronization
+- Introduce stale data
+- Trigger backup restoration
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="kubernetes" label="Kubernetes Gameday Setup" default>
+    ```bash
+    # gameday-setup.sh - Configure controlled failure injection
+
+    #!/bin/bash
+    set -euo pipefail
+
+    # Install Chaos toolkit
+    kubectl apply -f https://litmuschaos.github.io/litmus/litmus-operator-latest.yaml
+
+    # Define gameday scenario: Kill payment service
+    cat > gameday-scenario.yaml <<EOF
+    apiVersion: litmuschaos.io/v1alpha1
+    kind: ChaosEngine
+    metadata:
+      name: gameday-payment-kill-pod
+      namespace: chaos-testing
+    spec:
+      # Only run during scheduled gamedays
+      engineState: "active"
+      appinfo:
+        appns: "production"
+        applabel: "app=payment-service"
+        appkind: "deployment"
+
+      experiments:
+      - name: pod-kill
+        spec:
+          components:
+            env:
+              # Kill 1 pod for 5 minutes
+              - name: TOTAL_CHAOS_DURATION
+                value: "300"
+              - name: PODS_AFFECTED_PERC
+                value: "50"  # 50% of replicas
+              - name: FORCE
+                value: "false"  # Graceful shutdown first
+
+          nodeSelector:
+            chaos-enabled: "true"  # Only on test nodes
+
+    # Apply chaos scenario
+    kubectl apply -f gameday-scenario.yaml
+
+    # Monitor system response
+    echo "Gameday started: Payment service degradation"
+    kubectl logs -f -n production -l app=payment-service --tail=50
+
+    # In separate terminal, query metrics
+    watch 'curl -s http://prometheus:9090/api/v1/query?query=payment_error_rate | jq'
+
+    # After 5 minutes, chaos automatically stops
+    # Verify recovery
+    kubectl wait --for=condition=ready pod -l app=payment-service -n production --timeout=2m
+    ```
+  </TabItem>
+
+  <TabItem value="chaos-monkey" label="Chaos Testing Pipeline">
+    ```python
+    # chaos_engine.py - Continuous chaos testing
+
+    import random
+    import time
+    import logging
+    from dataclasses import dataclass
+    from typing import List, Callable
+    import requests
+
+    logger = logging.getLogger(__name__)
+
+    @dataclass
+    class ChaosExperiment:
+        name: str
+        description: str
+        inject: Callable[[], None]  # How to cause failure
+        verify: Callable[[], bool]  # How to verify recovery
+        rollback: Callable[[], None]  # How to fix it
+        enabled_in_staging: bool = True
+        enabled_in_production: bool = False
+        duration_seconds: int = 60
+
+    class ChaosEngine:
+        def __init__(self, environment: str):
+            self.environment = environment
+            self.experiments: List[ChaosExperiment] = []
+
+        def register_experiment(self, exp: ChaosExperiment):
+            self.experiments.append(exp)
+
+        def run_scheduled(self):
+            """Run chaos tests on schedule (e.g., nightly in staging)"""
+            for exp in self.experiments:
+                if not exp.enabled_in_staging and self.environment == "staging":
+                    continue
+
+                logger.info(f"Starting chaos experiment: {exp.name}")
+
+                try:
+                    # Inject failure
+                    exp.inject()
+                    logger.info(f"Injected failure for {exp.duration_seconds}s")
+
+                    # Monitor system
+                    time.sleep(exp.duration_seconds)
+
+                    # Verify graceful degradation (not cascade failure)
+                    if not exp.verify():
+                        logger.error(f"System did not recover: {exp.name}")
+                        self.alert_team(exp.name)
+
+                    # Clean up
+                    exp.rollback()
+                    logger.info(f"Rolled back: {exp.name}")
+
+                except Exception as e:
+                    logger.exception(f"Chaos experiment failed: {e}")
+                    exp.rollback()
+                    self.alert_team(exp.name, error=str(e))
+
+                time.sleep(30)  # Space between experiments
+
+        def alert_team(self, experiment_name: str, error: str = None):
+            msg = f"Chaos experiment detected issue: {experiment_name}"
+            if error:
+                msg += f" - {error}"
+            requests.post("https://slack.com/api/chat.postMessage", json={
+                "channel": "#chaos-alerts",
+                "text": msg
+            })
+
+    # Register experiments
+    engine = ChaosEngine("staging")
+
+    # Experiment: Kill database connection
+    engine.register_experiment(ChaosExperiment(
+        name="database-connection-kill",
+        description="Kill all database connections, verify reconnection",
+        inject=lambda: os.system("pkill -f 'mysql|postgres'"),
+        verify=lambda: requests.get("http://api:8080/health").status_code == 200,
+        rollback=lambda: os.system("systemctl restart database"),
+        duration_seconds=30,
+        enabled_in_production=False
+    ))
+
+    # Experiment: Inject latency
+    engine.register_experiment(ChaosExperiment(
+        name="network-latency-injection",
+        description="Add 1000ms latency to all outbound requests",
+        inject=lambda: os.system(
+          "tc qdisc add dev eth0 root netem delay 1000ms"
+        ),
+        verify=lambda: check_metrics_within_threshold("p99_latency", 5000),
+        rollback=lambda: os.system("tc qdisc del dev eth0 root"),
+        duration_seconds=60,
+        enabled_in_production=False
+    ))
+
+    # Run nightly
+    if __name__ == "__main__":
+        engine.run_scheduled()
+    ```
+  </TabItem>
+
+  <TabItem value="gameday-runbook" label="Gameday Planning Template">
+    ```markdown
+    # Gameday Plan: Database Failover Simulation
+
+    **Date**: 2025-03-15 | **Time**: 14:00-16:00 UTC
+    **Environment**: Staging (exact production config)
+    **Participants**: 2 SREs, 2 Backend leads, 1 Database specialist
+
+    ## Pre-Gameday (Day Before)
+    - [ ] Backup production data (for comparison)
+    - [ ] Set up monitoring dashboard with key metrics
+    - [ ] Notify customer success team (in case staging is visible)
+    - [ ] Ensure kill switches are staged and tested
+
+    ## Scenario: Primary Database Becomes Unavailable
+
+    ### Phase 1: Inject Failure (14:00-14:05)
+    **Injector**: Database specialist
+    - Command: `aws rds failover-db-instance --db-instance-identifier prod-primary`
+    - Expected: Primary transitions to "failing-over" state (5-10 seconds)
+    - Signal to team: Slack message "#gameday: Failure injected"
+
+    ### Phase 2: Observe and Respond (14:05-14:30)
+    **Observers**: SREs monitor dashboards
+    **Responders**: Backend leads follow runbooks
+
+    **What we're testing:**
+    - Do alerts fire within 30 seconds?
+    - Does runbook guide team to diagnosis?
+    - How long until traffic reroutes to replica?
+    - Do read queries succeed? Write queries?
+    - What applications are impacted?
+
+    **Expected timeline:**
+    - 0s: Failure injected
+    - 5-10s: Connection timeout begins
+    - 15-30s: Alert fires
+    - 30-45s: Team diagnosed (runbook executed)
+    - 45-120s: Replica promoted (automatic or manual?)
+    - 120s: Full recovery
+
+    ### Phase 3: Recovery (14:30-14:45)
+    - [ ] Verify all reads succeed
+    - [ ] Verify all writes succeed
+    - [ ] Check replication lag
+    - [ ] Confirm no data loss
+    - [ ] Log all events
+
+    ### Phase 4: Debrief (14:45-16:00)
+    **Questions**:
+    - How long did detection take?
+    - What alerts worked? What didn't?
+    - Did runbooks have accurate steps?
+    - What surprised you?
+    - What do we need to fix?
+
+    **Output**: Tickets with priorities
+    - P0: Things that broke or detected too slowly
+    - P1: Automation opportunities
+    - P2: Documentation improvements
+
+    ## Success Criteria
+    - [ ] Database failover completed <2 min
+    - [ ] All queries succeeded (no client errors)
+    - [ ] Alert fired and routed correctly
+    - [ ] Team could execute runbook without outside help
+    - [ ] Recovery time matches production expectations
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use Gamedays vs Continuous Chaos
+
+<Vs title="Gameday vs Continuous Chaos" items={[
+{label: "Gameday (Scheduled)", points: [
+      "High-risk, complex scenarios",
+      "Team training and practice",
+      "Infrastructure changes testing",
+      "Quarterly or major releases",
+      "Involves entire incident team",
+      "Deep learning and new discoveries"
+    ]},
+{label: "Chaos (Continuous)", points: [
+      "Routine, repeatable failures",
+      "Detect regressions automatically",
+      "Staging environment validation",
+      "Runs daily/weekly unattended",
+      "Automated alert only if broken",
+      "Catches configuration drift"
+    ]}
+]} highlight={[0, 1]} />
+
+## Patterns and Pitfalls
+
+<Showcase
+  sections={[
+    {
+      label: "Pattern: Graduated Complexity",
+      body: "Start with single-component failures. Once team is comfortable, progress to cascading failures. Month 1: Kill pod. Month 2: Kill database. Month 3: Kill database + cache simultaneously."
+    },
+    {
+      label: "Pattern: Chaos Metrics Dashboard",
+      body: "Track: detection latency, recovery time, false positive rate, impact scope. Over time, see these metrics improve as you fix issues. Quantifies system resilience improvements."
+    },
+    {
+      label: "Pitfall: Gameday Theater",
+      body: "Running gameday but ignoring findings. If the same issue appears in gameday #3 that appeared in gameday #1, your process is broken. Every gameday should generate actionable tickets."
+    },
+    {
+      label: "Pitfall: Untrained Team",
+      body: "Gameday only works if team knows runbooks beforehand. Practice runbooks monthly. Junior engineers should be able to execute without senior guidance."
+    },
+    {
+      label: "Pitfall: Chaos Only in Staging",
+      body: "Production systems change. Chaos in staging won't catch production-specific failures. Use very conservative chaos in production (single pod, short duration, business hours only)."
+    }
+  ]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Gameday schedule is published and recurring (quarterly minimum)",
+    "Each gameday scenario tests a specific architectural weakness or recent incident",
+    "Gameday has clear success criteria and metrics to measure",
+    "Both SREs and engineers participate in gamedays",
+    "Gameday findings generate tickets that are prioritized and tracked",
+    "Chaos tests run in staging on a defined schedule (weekly minimum)",
+    "Chaos experiment suite covers all critical services and failure modes",
+    "Team has practiced executing critical runbooks within past 3 months",
+    "Gameday and chaos results are documented and shared across team",
+    "Post-gameday, at least one finding is addressed before next gameday"
+  ]}
+/>
+
+## Self-Check
+
+- How many gamedays has your team run in the past year?
+- After the last gameday, how many P0 issues were discovered?
+- Do you have continuous chaos testing in staging?
+- Can a new engineer execute your critical runbook without help?
+- Has a gameday ever prevented a production incident?
+
+## Next Steps
+
+1. **Week 1**: Schedule first gameday. Choose a single-component failure (kill one service).
+2. **Week 2**: Run gameday. Document findings. Create tickets.
+3. **Week 3**: Fix top 3 issues from gameday.
+4. **Week 4**: Set up chaos testing in staging to catch regressions.
+5. **Ongoing**: Monthly gameday practice; weekly chaos tests.
+
+## References
+
+1. Beyer, B., et al. (2016). Site Reliability Engineering. O'Reilly Media.
+2. Bellamy-McIntyre, A., et al. (2020). Chaos Engineering. O'Reilly Media.
+3. Gremlin. (2023). Chaos Engineering Best Practices. <a href="https://www.gremlin.com/chaos-engineering/" target="_blank" rel="nofollow noopener noreferrer">gremlin.com/chaos-engineering ↗️</a>

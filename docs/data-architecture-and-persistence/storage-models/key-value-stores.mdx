@@ -1,0 +1,563 @@
+---
+sidebar_position: 2
+title: "Key-Value Stores"
+description: "Ultra-fast simple get/set operations with sub-millisecond latency and distributed caching"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [key-value stores, Redis, Memcached, DynamoDB, caching, in-memory, distributed]
+image: /img/archman-social-card.webp
+tags: [databases, key-value, Redis, Memcached, DynamoDB, caching, performance, distributed, scalability]
+hide_title: true
+---
+
+<Hero title="Key-Value Stores" subtitle="Sub-millisecond access with simple get/set semantics and massive scale" size="large" />
+
+## TL;DR
+
+Key-value stores like Redis and DynamoDB provide ultra-fast access with simple get/set/delete operations. Perfect for caching, sessions, real-time leaderboards, and high-throughput scenarios where you don't need complex queries. Trade-off: no complex queries, eventual consistency, typically in-memory (limited by RAM).
+
+## Learning Objectives
+
+- Understand when key-value access patterns apply
+- Design efficient cache invalidation strategies
+- Recognize distributed KV patterns (sharding, replication)
+- Choose between Redis and DynamoDB for your use case
+
+## Motivating Scenario
+
+Your e-commerce site has 100K concurrent users browsing. Product inventory changes frequently. Reading from PostgreSQL causes 100ms latency. Redis caches hot product data, dropping latency to &lt;1ms. Users see inventory updates within seconds through cache invalidation.
+
+## Core Concepts
+
+<Figure
+  title="Key-Value Architecture"
+  description="Simple get/set access with consistent hashing for distribution"
+  diagram={`
+graph TB
+    Client["Client"]
+    KV1["Node 1<br/>Keys: A-F"]
+    KV2["Node 2<br/>Keys: G-M"]
+    KV3["Node 3<br/>Keys: N-Z"]
+    
+    Client -->|get 'product:123'| KV1
+    Client -->|get 'user:456'| KV2
+    Client -->|set 'order:789'| KV3
+    
+    KV1 -.->|Replication| KV2
+    KV2 -.->|Replication| KV3
+  `}
+/>
+
+### Data Structures
+
+Modern key-value stores support rich data types:
+
+```
+Strings:     get "user:123:name" -> "Alice"
+Hashes:      hget "user:123" "email" -> "alice@example.com"
+Lists:       lpush "notifications:456" "New message"
+Sets:        sadd "users:online" "user:123"
+Sorted Sets: zadd "leaderboard" 1000 "user:123"
+Streams:     Event log with consumer groups
+Bitmaps:     Daily active users tracking
+HyperLogLog: Cardinality estimation
+```
+
+### Consistency Models
+
+<Vs items={[
+{
+    label: "Redis (In-Memory)",
+    points: ["Sub-millisecond latency required", "Session storage, caching", "Real-time leaderboards", "Pub/Sub messaging", "Data loss acceptable (cache)"]
+  },
+{
+    label: "DynamoDB (Managed)",
+    points: ["Serverless, fully managed", "AWS ecosystem integration", "Automatic scaling", "Global distribution", "Durability guaranteed"]
+  }
+]} />
+
+## Practical Example
+
+<Tabs>
+<TabItem value="redis" label="Redis">
+
+```python
+import redis
+from datetime import timedelta
+import json
+
+# Connect to Redis
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+# Simple caching pattern
+def get_user(user_id):
+    cache_key = f"user:{user_id}"
+    
+    # Check cache
+    cached = r.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    
+    # Cache miss - fetch from database
+    user = fetch_from_database(user_id)
+    
+    # Store in cache with 1 hour TTL
+    r.setex(cache_key, timedelta(hours=1), json.dumps(user))
+    return user
+
+# Leaderboard using sorted sets
+def add_score(user_id, score):
+    r.zadd("leaderboard", {f"user:{user_id}": score})
+
+def get_top_10():
+    # Get top 10 by descending score
+    return r.zrevrange("leaderboard", 0, 9, withscores=True)
+
+# Session storage
+def store_session(session_id, user_data, ttl_hours=24):
+    r.hset(f"session:{session_id}", mapping=user_data)
+    r.expire(f"session:{session_id}", timedelta(hours=ttl_hours))
+
+# Pub/Sub for real-time notifications
+def publish_notification(user_id, message):
+    r.publish(f"notifications:{user_id}", message)
+
+def subscribe_to_notifications(user_id, callback):
+    pubsub = r.pubsub()
+    pubsub.subscribe(f"notifications:{user_id}")
+    for message in pubsub.listen():
+        if message['type'] == 'message':
+            callback(message['data'])
+```
+
+</TabItem>
+<TabItem value="dynamodb" label="AWS DynamoDB">
+
+```python
+import boto3
+import json
+from datetime import datetime, timedelta
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('Users')
+
+# Put item
+def store_user(user_id, user_data):
+    user_data['user_id'] = user_id
+    user_data['updated_at'] = datetime.utcnow().isoformat()
+    table.put_item(Item=user_data)
+
+# Get item
+def get_user(user_id):
+    response = table.get_item(Key={'user_id': user_id})
+    return response.get('Item')
+
+# Query with partition + sort key
+def get_user_orders(user_id):
+    response = table.query(
+        KeyConditionExpression='user_id = :uid AND order_date > :date',
+        ExpressionAttributeValues={
+            ':uid': user_id,
+            ':date': (datetime.utcnow() - timedelta(days=30)).isoformat()
+        }
+    )
+    return response['Items']
+
+# Batch operations for efficiency
+def store_users_batch(users):
+    with table.batch_writer(batch_size=25) as batch:
+        for user in users:
+            batch.put_item(Item=user)
+
+# DynamoDB Streams for event processing
+# Items automatically expire with TTL
+# Partition key + sort key design for access patterns
+table_resource = dynamodb.Table('Orders')
+table_resource.update_ttl(
+    AttributeDefinitions=[
+        {'AttributeName': 'order_id', 'AttributeType': 'S'},
+        {'AttributeName': 'expires_at', 'AttributeType': 'N'}
+    ],
+    TimeToLiveSpecification={
+        'AttributeName': 'expires_at',
+        'Enabled': True
+    }
+)
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+const redis = require('redis');
+const client = redis.createClient({
+  host: 'localhost',
+  port: 6379
+});
+
+// Cache pattern with async/await
+async function getUser(userId) {
+  const cacheKey = `user:${userId}`;
+  
+  // Try cache first
+  const cached = await client.get(cacheKey);
+  if (cached) {
+    return JSON.parse(cached);
+  }
+  
+  // Cache miss
+  const user = await fetchFromDatabase(userId);
+  
+  // Cache for 1 hour
+  await client.setEx(cacheKey, 3600, JSON.stringify(user));
+  return user;
+}
+
+// Counter/Rate limiting
+async function checkRateLimit(userId, limit = 100, windowSeconds = 60) {
+  const key = `rate_limit:${userId}`;
+  const current = await client.incr(key);
+  
+  if (current === 1) {
+    await client.expire(key, windowSeconds);
+  }
+  
+  return current <= limit;
+}
+
+// Distributed lock for critical sections
+async function acquireLock(resource, ttlSeconds = 10) {
+  const lockKey = `lock:${resource}`;
+  const lockValue = Date.now().toString();
+  
+  const acquired = await client.set(lockKey, lockValue, {
+    NX: true,  // Only set if not exists
+    EX: ttlSeconds
+  });
+  
+  return acquired ? lockValue : null;
+}
+
+async function releaseLock(resource, lockValue) {
+  const lockKey = `lock:${resource}`;
+  const currentValue = await client.get(lockKey);
+  
+  // Only release if we still own it
+  if (currentValue === lockValue) {
+    await client.del(lockKey);
+  }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Key-Value Stores / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Key-Value Stores When",
+    points: ["Sub-millisecond latency required", "Simple get/set/delete access patterns", "Session storage, caching needed", "Real-time leaderboards, rankings", "Rate limiting, throttling"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use RDBMS When",
+    points: ["Complex queries with filtering", "Multi-table joins needed", "Transactional consistency required", "Data must be durable by default", "Complex reporting"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Cache Stampede",
+      description: "Multiple requests miss cache, all hit database simultaneously. Use locks or probabilistic expiration",
+      tags: ["caching", "scaling"]
+    }, {
+      title: "Consistency Window",
+      description: "Cache may be stale. Accept eventual consistency or use write-through for critical data",
+      tags: ["consistency", "patterns"]
+    }, {
+      title: "Eviction Policies",
+      description: "LRU, LFU, TTL. Choose based on workload: hot data vs temporal locality",
+      tags: ["performance", "memory"]
+    }, {
+      title: "Partition-Awareness",
+      description: "Consistent hashing for balanced distribution. Rebalance on node failure",
+      tags: ["scaling", "distributed"]
+    }, {
+      title: "Sentinel/Replication",
+      description: "Master-slave replication for high availability. Sentinel for automatic failover",
+      tags: ["reliability", "availability"]
+    }, {
+      title: "Memory Management",
+      description: "Monitor memory usage. Implement maxmemory policies. Watch for swap"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Access pattern is simple key-based lookup",
+    "Cache invalidation strategy defined",
+    "TTL/expiration times appropriate",
+    "Replication/HA configured (Master-Slave or Sentinel)",
+    "Memory capacity planned for data growth",
+    "Eviction policy chosen appropriately",
+    "Monitoring for hit rate, evictions, memory",
+    "Backup/persistence strategy documented",
+    "Connection pooling configured",
+    "Partition key design prevents hotspots"
+  ]}
+/>
+
+## Self-Check
+
+- What's the difference between Redis and DynamoDB?
+- How do you prevent cache stampede?
+- Why should you use hashes in Redis instead of separate string keys?
+- What consistency guarantees does your key-value store provide?
+
+:::info
+Key-value stores excel at simple lookups and caching, trading away complex queries for sub-millisecond latency. Use them as a caching layer in front of RDBMS, never as your primary data store for critical data.
+:::
+
+## Advanced Key-Value Patterns
+
+### Cache Invalidation Strategies
+
+```python
+# Cache-Aside (most common): App checks cache, on miss loads from DB
+def get_user(user_id):
+    cache_key = f"user:{user_id}"
+
+    # Check cache first
+    user = cache.get(cache_key)
+    if user:
+        return user
+
+    # Cache miss: load from database
+    user = database.get_user(user_id)
+
+    # Store in cache with TTL
+    cache.setex(cache_key, 3600, json.dumps(user))
+    return user
+
+# Write-Through: Update cache and DB together
+def update_user(user_id, updates):
+    cache_key = f"user:{user_id}"
+
+    # Update database first
+    user = database.update_user(user_id, updates)
+
+    # Update cache (if update succeeded)
+    cache.setex(cache_key, 3600, json.dumps(user))
+    return user
+
+# Write-Behind (write-back): Write to cache, async to DB
+def update_user_async(user_id, updates):
+    cache_key = f"user:{user_id}"
+
+    # Update cache immediately (fast response)
+    cache.setex(cache_key, 3600, json.dumps(updates))
+
+    # Queue async write to database
+    async_queue.put(('update_user', user_id, updates))
+
+    return {'status': 'pending'}
+
+# Pros/Cons:
+# Cache-Aside: Simple, but risk of stale reads
+# Write-Through: Always consistent, slower writes
+# Write-Behind: Fast, but risk of data loss if cache crashes
+```
+
+### Distributed Caching with Redis Cluster
+
+```python
+# Redis Cluster handles sharding and replication
+import redis
+
+# Single node (for development)
+r_single = redis.Redis(host='localhost', port=6379)
+
+# Redis Cluster (for production)
+r_cluster = redis.RedisCluster(
+    startup_nodes=[
+        {"host": "node1", "port": 6379},
+        {"host": "node2", "port": 6379},
+        {"host": "node3", "port": 6379},
+    ],
+    decode_responses=True,
+    skip_full_coverage_check=True
+)
+
+# Consistent hashing automatically distributes keys
+# Same key always goes to same node
+for user_id in range(1000000):
+    key = f"user:{user_id}"
+    r_cluster.set(key, json.dumps({'id': user_id}))
+
+# Rebalancing happens automatically when nodes added/removed
+# Data is automatically replicated to replica nodes
+# If a node fails, replicas take over automatically
+```
+
+### Rate Limiting with Redis
+
+```python
+# Token bucket algorithm for rate limiting
+class RateLimiter:
+    def __init__(self, redis_client, max_requests=100, window_seconds=60):
+        self.redis = redis_client
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+
+    def is_allowed(self, user_id: str) -> bool:
+        key = f"rate_limit:{user_id}"
+
+        # Increment counter
+        current = self.redis.incr(key)
+
+        # Set expiration on first request in window
+        if current == 1:
+            self.redis.expire(key, self.window_seconds)
+
+        # Check if over limit
+        return current <= self.max_requests
+
+    def get_remaining(self, user_id: str) -> int:
+        key = f"rate_limit:{user_id}"
+        current = self.redis.get(key) or 0
+        return max(0, self.max_requests - int(current))
+
+# Usage in middleware
+def rate_limit_middleware(request):
+    limiter = RateLimiter(redis_client)
+    user_id = request.user.id
+
+    if not limiter.is_allowed(user_id):
+        remaining = limiter.get_remaining(user_id)
+        return Response(
+            status=429,
+            headers={
+                'Retry-After': str(limiter.window_seconds),
+                'X-RateLimit-Remaining': str(remaining)
+            }
+        )
+    return request
+```
+
+### Distributed Locks with Redis
+
+```python
+# Mutex pattern for critical sections
+import uuid
+import time
+
+class DistributedLock:
+    def __init__(self, redis_client, resource: str, timeout_seconds=30):
+        self.redis = redis_client
+        self.resource = resource
+        self.timeout = timeout_seconds
+        self.lock_id = str(uuid.uuid4())
+
+    def acquire(self, blocking=True) -> bool:
+        key = f"lock:{self.resource}"
+
+        # Try to set key (NX = only if not exists)
+        acquired = self.redis.set(
+            key,
+            self.lock_id,
+            ex=self.timeout,  # Expiration prevents deadlock
+            nx=True  # Only set if doesn't exist
+        )
+
+        if acquired or not blocking:
+            return bool(acquired)
+
+        # Wait for lock (blocking)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            acquired = self.redis.set(key, self.lock_id, ex=self.timeout, nx=True)
+            if acquired:
+                return True
+            time.sleep(0.1)
+
+        return False
+
+    def release(self):
+        key = f"lock:{self.resource}"
+
+        # Only release if we own it (prevent releasing others' locks)
+        current = self.redis.get(key)
+        if current == self.lock_id:
+            self.redis.delete(key)
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+# Usage
+with DistributedLock(redis, "checkout_inventory") as lock:
+    # Critical section: only one process can execute this at a time
+    inventory = db.get_inventory(product_id)
+    if inventory > 0:
+        db.update_inventory(product_id, inventory - 1)
+```
+
+## Comparison: When to Use Each
+
+```
+Use Redis When:
+- Sub-millisecond latency required
+- Bounded dataset (fits in memory)
+- Session storage
+- Real-time leaderboards
+- Pub/Sub messaging
+- Rate limiting
+
+Use DynamoDB When:
+- Serverless/managed preference
+- Unbounded data size
+- AWS ecosystem integration
+- Multi-region replication needed
+- Compliance requirements (fully audited)
+- Pay-per-request pricing works for workload
+
+Use Memcached When:
+- Simple key-value (no data structures)
+- Horizontal scaling is priority
+- Extremely high throughput needed
+- Simpler operations than Redis
+
+Use Application Memory When:
+- Single-instance application
+- Data fits in process memory
+- No need for distributed access
+- Testing/development only
+```
+
+## Next Steps
+
+- Explore **Caching Patterns** for strategies like cache-aside, write-through
+- Learn **In-Memory Caches and Data Grids** for Memcached and Hazelcast
+- Study **Read Replicas** for scaling beyond single instance
+- Dive into **Sharding Strategies** for partitioning across nodes
+- Implement **Cache Warming** for predictable workloads
+- Design **Eviction Policies** for memory-constrained environments
+
+## References
+
+- Redis Official Documentation (redis.io)
+- "Designing Data-Intensive Applications" by Martin Kleppmann
+- AWS DynamoDB Design Patterns (docs.aws.amazon.com)
+- "The Art of Multiprocessor Programming" by Herlihy & Shavit
+- Redis Cluster Tutorial: https://redis.io/topics/cluster-tutorial

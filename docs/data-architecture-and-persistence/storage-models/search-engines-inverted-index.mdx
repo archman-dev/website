@@ -1,0 +1,532 @@
+---
+sidebar_position: 7
+title: "Search Engines & Inverted Indexes"
+description: "Full-text search, relevance ranking, and text analytics with inverted index structures"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [search engines, Elasticsearch, Solr, full-text search, inverted index, relevance ranking, analytics]
+image: /img/archman-social-card.webp
+tags: [databases, search, Elasticsearch, inverted-index, full-text-search, relevance, analytics, text-analytics]
+hide_title: true
+---
+
+<Hero title="Search Engines & Inverted Indexes" subtitle="Full-text search with relevance ranking and powerful text analytics" size="large" />
+
+## TL;DR
+
+Search engines (Elasticsearch, Solr) use inverted indexes to map terms to documents, enabling lightning-fast full-text search. Perfect for product search, log analysis, and text analytics. Trade-off: primarily read-optimized, refresh latency (documents visible after refresh), high memory usage, eventual consistency by default.
+
+## Learning Objectives
+
+- Understand inverted index structure and query execution
+- Design schemas for search and relevance
+- Recognize when to use search vs full-table scan
+- Implement faceted search and analytics
+
+## Motivating Scenario
+
+E-commerce: 100M products searchable by title, description, tags. PostgreSQL full-text search: 10+ second queries. Elasticsearch: &lt;100ms. Faceted search (filter by brand, price, rating) in parallel: milliseconds. Real-time analytics on search queries.
+
+## Core Concepts
+
+<Figure
+  title="Inverted Index Structure"
+  description="Map terms to documents for fast full-text search"
+  diagram={`
+graph TB
+    Doc1["Doc 1: 'python<br/>programming<br/>guide'"]
+    Doc2["Doc 2: 'java<br/>programming<br/>patterns'"]
+    Doc3["Doc 3: 'python<br/>machine learning'"]
+    
+    Term1["python<br/>[Doc1, Doc3]"]
+    Term2["programming<br/>[Doc1, Doc2]"]
+    Term3["java<br/>[Doc2]"]
+    Term4["learning<br/>[Doc3]"]
+    
+    Doc1 -.-&gt;|Extract| Term1
+    Doc1 -.-&gt;|Extract| Term2
+    Doc2 -.-&gt;|Extract| Term2
+    Doc2 -.-&gt;|Extract| Term3
+    Doc3 -.-&gt;|Extract| Term1
+    Doc3 -.-&gt;|Extract| Term4
+    
+    style Term1 fill:#0066cc
+    style Term2 fill:#0066cc
+  `}
+/>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="elasticsearch" label="Elasticsearch">
+
+```python
+from elasticsearch import Elasticsearch
+import json
+
+es = Elasticsearch(['localhost:9200'])
+
+# Create index with mapping
+mapping = {
+    'mappings': {
+        'properties': {
+            'title': {
+                'type': 'text',
+                'analyzer': 'standard',
+                'fields': {
+                    'keyword': {'type': 'keyword'}  # For exact match
+                }
+            },
+            'description': {'type': 'text'},
+            'price': {'type': 'float'},
+            'rating': {'type': 'float'},
+            'brand': {'type': 'keyword'},
+            'category': {'type': 'keyword'},
+            'tags': {
+                'type': 'text',
+                'analyzer': 'standard'
+            },
+            'created_at': {'type': 'date'}
+        }
+    }
+}
+
+es.indices.create(index='products', body=mapping, ignore=400)
+
+# Index documents
+product = {
+    'title': 'Python Programming Guide',
+    'description': 'Comprehensive guide to Python programming',
+    'price': 29.99,
+    'rating': 4.5,
+    'brand': 'TechBooks',
+    'category': 'Programming',
+    'tags': ['python', 'programming', 'guide'],
+    'created_at': '2025-02-14'
+}
+
+es.index(index='products', id=1, body=product)
+
+# Bulk indexing
+from elasticsearch.helpers import bulk
+
+documents = [
+    {'_index': 'products', '_id': i, '_source': product}
+    for i, product in enumerate(get_all_products())
+]
+bulk(es, documents)
+
+# Full-text search
+query = {
+    'query': {
+        'multi_match': {
+            'query': 'python programming',
+            'fields': ['title^3', 'description', 'tags'],  # title weighted 3x
+            'type': 'best_fields'
+        }
+    },
+    'size': 20,
+    'from': 0
+}
+
+results = es.search(index='products', body=query)
+for hit in results['hits']['hits']:
+    print(f"{hit['_score']}: {hit['_source']['title']}")
+
+# Faceted search (aggregations)
+faceted_query = {
+    'query': {
+        'bool': {
+            'must': [
+                {'multi_match': {
+                    'query': 'python',
+                    'fields': ['title', 'description']
+                }}
+        }
+    },
+    'aggs': {
+        'brands': {
+            'terms': {'field': 'brand', 'size': 10}
+        },
+        'categories': {
+            'terms': {'field': 'category', 'size': 10}
+        },
+        'price_ranges': {
+            'range': {
+                'field': 'price',
+                'ranges': [
+                    {'to': 20},
+                    {'from': 20, 'to': 50},
+                    {'from': 50}
+            }
+        }
+    }
+}
+
+results = es.search(index='products', body=faceted_query)
+
+# Extract facets
+for bucket in results['aggregations']['brands']['buckets']:
+    print(f"{bucket['key']}: {bucket['doc_count']}")
+
+# Advanced query with filtering
+advanced_query = {
+    'query': {
+        'bool': {
+            'must': [
+                {'multi_match': {
+                    'query': 'python',
+                    'fields': ['title', 'description']
+                }}
+            ],
+            'filter': [
+                {'range': {'price': {'lte': 50}}},
+                {'term': {'brand.keyword': 'TechBooks'}},
+                {'range': {'rating': {'gte': 4.0}}}
+        }
+    }
+}
+
+results = es.search(index='products', body=advanced_query)
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js + Elasticsearch">
+
+```javascript
+const { Client } = require('@elastic/elasticsearch');
+
+const client = new Client({ node: 'http://localhost:9200' });
+
+async function setupIndex() {
+  await client.indices.create({
+    index: 'products',
+    body: {
+      mappings: {
+        properties: {
+          title: {
+            type: 'text',
+            fields: { keyword: { type: 'keyword' } }
+          },
+          description: { type: 'text' },
+          price: { type: 'float' },
+          brand: { type: 'keyword' },
+          category: { type: 'keyword' },
+          rating: { type: 'float' },
+          tags: { type: 'text' }
+        }
+      }
+    }
+  }, { ignore: [400] });
+}
+
+async function indexProduct(product) {
+  await client.index({
+    index: 'products',
+    body: product
+  });
+}
+
+async function searchProducts(searchTerm) {
+  const results = await client.search({
+    index: 'products',
+    body: {
+      query: {
+        multi_match: {
+          query: searchTerm,
+          fields: ['title^3', 'description', 'tags'],
+          type: 'best_fields'
+        }
+      },
+      size: 20
+    }
+  });
+  
+  return results.body.hits.hits.map(hit => ({
+    id: hit._id,
+    score: hit._score,
+    ...hit._source
+  }));
+}
+
+async function facetedSearch(searchTerm, filters = {}) {
+  const query = {
+    bool: {
+      must: [{
+        multi_match: {
+          query: searchTerm,
+          fields: ['title', 'description']
+        }
+      }],
+      filter: Object.entries(filters).map(([field, value]) => ({
+        term: { [`${field}.keyword`]: value }
+      }))
+    }
+  };
+  
+  const results = await client.search({
+    index: 'products',
+    body: {
+      query,
+      aggs: {
+        brands: { terms: { field: 'brand', size: 10 } },
+        categories: { terms: { field: 'category', size: 10 } },
+        price_ranges: {
+          range: {
+            field: 'price',
+            ranges: [
+              { to: 20 },
+              { from: 20, to: 50 },
+              { from: 50 }
+          }
+        }
+      },
+      size: 20
+    }
+  });
+  
+  return {
+    products: results.body.hits.hits,
+    facets: results.body.aggregations
+  };
+}
+
+// Usage
+(async () => {
+  await setupIndex();
+  
+  await indexProduct({
+    title: 'Python Programming Guide',
+    description: 'Learn Python programming step by step',
+    price: 29.99,
+    brand: 'TechBooks',
+    category: 'Programming',
+    rating: 4.5,
+    tags: ['python', 'programming']
+  });
+  
+  const results = await searchProducts('python');
+  console.log(`Found ${results.length} products`);
+  
+  const faceted = await facetedSearch('python', { brand: 'TechBooks' });
+  console.log(`Results with facets:`, faceted);
+})();
+```
+
+</TabItem>
+<TabItem value="python-simple" label="Python with OpenSearch">
+
+```python
+from opensearchpy import OpenSearch
+
+client = OpenSearch(hosts=[{'host': 'localhost', 'port': 9200}])
+
+# Simple search
+search_body = {
+    'size': 10,
+    'query': {
+        'match': {
+            'title': 'python'
+        }
+    }
+}
+
+response = client.search(body=search_body, index='products')
+
+# Parse results
+for hit in response['hits']['hits']:
+    print(f"Score: {hit['_score']}")
+    print(f"Title: {hit['_source']['title']}")
+    print(f"Price: ${hit['_source']['price']}")
+    print('---')
+
+# Boolean query (must/should/must_not)
+complex_query = {
+    'query': {
+        'bool': {
+            'must': [
+                {'match': {'title': 'python'}},
+                {'match': {'description': 'programming'}}
+            ],
+            'should': [
+                {'match': {'tags': 'trending'}}
+            ],
+            'must_not': [
+                {'match': {'title': 'deprecated'}}
+            ],
+            'filter': [
+                {'range': {'price': {'lte': 50}}},
+                {'range': {'rating': {'gte': 4}}}
+        }
+    }
+}
+
+response = client.search(body=complex_query, index='products')
+```
+
+</TabItem>
+</Tabs>
+
+## When to Use Search Engines / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Search Engines When",
+    points: ["Full-text search needed", "Relevance ranking important", "Text analytics/faceting required", "Log analysis and exploration", "Document discovery primary access"],
+    highlightTone: "positive"
+  },
+{
+    label: "Use RDBMS When",
+    points: ["Simple exact match queries", "Complex transactional updates", "Structured tabular data", "Consistency guarantees required", "Rich normalization needed"],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Analyzer Selection",
+      description: "Choose appropriate analyzer (standard, english, etc) for language. Custom analyzers for domain-specific needs",
+      tags: ["configuration", "relevance"]
+    }, {
+      title: "Index Refresh Latency",
+      description: "New documents visible after refresh (default 1s). Tune based on freshness requirements",
+      tags: ["performance", "consistency"]
+    }, {
+      title: "Shard Strategy",
+      description: "Too many small shards: overhead. Too few large shards: slow. Typical: 10-50GB per shard",
+      tags: ["scaling", "performance"]
+    }, {
+      title: "Boosting and Weighting",
+      description: "Weight fields by importance (title &gt; description). Use field boosts, phrase queries for relevance",
+      tags: ["relevance", "tuning"]
+    }, {
+      title: "Memory Usage",
+      description: "Inverted index is memory-intensive. Compress fields not searched. Monitor heap",
+      tags: ["memory", "operations"]
+    }, {
+      title: "Replication for HA",
+      description: "Configure replicas for availability. Read from replicas for load distribution"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Text analyzer appropriate for language/domain",
+    "Field mapping strategy defined (keyword vs text)",
+    "Boost/weight strategy for relevance",
+    "Index size and shard strategy planned",
+    "Refresh interval tuned for consistency/performance",
+    "Monitoring for slow queries and memory",
+    "Backup strategy documented",
+    "Replication configured for HA",
+    "Faceting aggregations optimized",
+    "Query performance tested at scale"
+  ]}
+/>
+
+## Self-Check
+
+- How do inverted indexes work and why are they fast?
+- What's the difference between text and keyword field types?
+- How do you boost fields for relevance ranking?
+- Why is refresh latency important in search engines?
+
+:::info
+Search engines excel at full-text search and text analytics through inverted indexes, but introduce eventual consistency and refresh latency. Use them alongside RDBMS: RDBMS for transactional data, search engine for discovery and analytics.
+:::
+
+## Next Steps
+
+- Explore **Caching Patterns** for search result caching
+- Learn **Query Optimization** for relevance tuning
+- Study **Aggregations** for analytics on search data
+- Dive into **Data Pipelines** for indexing data
+
+## Real-World Scaling Strategies
+
+### Sharding Strategy for Large Indexes
+
+```python
+# 1 Billion products → single index too large (over 100GB)
+# Solution: Shard by product ID range
+
+class ShardedSearch:
+    def __init__(self, num_shards=10):
+        self.shards = [Elasticsearch(host=f"es-shard-{i}") for i in range(num_shards)]
+
+    def get_shard(self, product_id):
+        """Consistent shard selection."""
+        return self.shards[product_id % len(self.shards)]
+
+    def search(self, query, product_ids=None):
+        """
+        Search across relevant shards.
+        If product_ids provided, search only relevant shards.
+        """
+        if product_ids:
+            # Targeted: only search shards containing these products
+            relevant_shards = set(self.get_shard(pid) for pid in product_ids)
+        else:
+            # Broadcast: search all shards
+            relevant_shards = self.shards
+
+        results = []
+        for shard in relevant_shards:
+            results.extend(shard.search(query))
+
+        # Merge results from all shards
+        return sorted(results, key=lambda r: r['_score'], reverse=True)
+
+# Benefits:
+# - Each shard: 100GB / 10 shards = 10GB (fits in memory)
+# - Search latency: parallel across 10 shards
+# - Scale: add shard 11, rebalance (online rebalancing)
+```
+
+### Relevance Tuning Examples
+
+```python
+# Query with relevance tuning
+query = {
+    'query': {
+        'bool': {
+            'must': [
+                {
+                    'multi_match': {
+                        'query': user_search,
+                        'fields': [
+                            'title^10',      # Title: 10x weight
+                            'category^5',    # Category: 5x weight
+                            'description^1'  # Description: normal
+                        ]
+                    }
+                }
+            ],
+            'should': [
+                {'term': {'has_reviews': True}},           # Boost products with reviews
+                {'range': {'rating': {'gte': 4}}}          # Boost highly rated
+            ]
+        }
+    },
+    'track_scores': True  # Debug: see score breakdowns
+}
+
+# Result: "Nike shoes" returns:
+# 1. Nike Running Shoes (title + reviews + rating = high score)
+# 2. Nike Apparel (title match but no shoes = lower score)
+# 3. Reviews mention Nike shoes (description match = lowest)
+```
+
+## References
+
+- Elasticsearch Official Documentation
+- "Elasticsearch: The Definitive Guide"
+- Lucene Query Syntax Guide
+- Relevance Tuning Guides
+- Real-world search infrastructure case studies

@@ -1,0 +1,375 @@
+---
+sidebar_position: 2
+title: "Authorization: RBAC, ABAC, ReBAC & PBAC"
+description: "Control what authenticated users can do using role, attribute, relationship, or policy-based models"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [authorization, RBAC, ABAC, ReBAC, PBAC, access control, least privilege, permissions, ACL]
+image: /img/archman-social-card.webp
+tags: [authorization, RBAC, ABAC, access-control, least-privilege, security-architecture]
+hide_title: true
+---
+
+<Hero title="Authorization Models" subtitle="Control what users can do with role, attribute, relationship & policy approaches" imageAlt="authorization illustration" size="large" />
+
+## TL;DR
+
+**RBAC (Role-Based)**: User has role (admin, editor, viewer); role has permissions. Simple, scalable, works for most apps. **ABAC (Attribute-Based)**: Decisions based on attributes (user dept=finance, resource level=confidential, time=business hours). Fine-grained but complex. **ReBAC (Relationship-Based)**: User can access resource if relationship exists (user is document owner, or in shared group). Modern, graph-based. **PBAC (Policy-Based)**: Explicit policies define access (if user.dept=="finance" and resource.type=="ledger", allow read). Pick based on granularity needs.
+
+## Learning Objectives
+
+- Understand RBAC strengths and limitations
+- Implement ABAC for fine-grained control
+- Use ReBAC for collaborative access patterns
+- Write clear authorization policies
+- Audit and enforce least privilege
+
+## Motivating Scenario
+
+**Problem**: A medical app needs fine-grained access. Doctor can view patient records only if: (1) patient assigned to doctor, (2) patient consented, (3) viewing during business hours, (4) doctor has valid license, (5) record not sealed by court order. Simple RBAC (role=doctor → can view) fails.
+
+**Solution**: Use PBAC or ABAC. Policies enforce all conditions. ReBAC handles patient-to-doctor relationships. ABAC checks attributes (license status, time). Result: Flexible, auditable, compliant.
+
+## Core Concepts
+
+### RBAC (Role-Based Access Control)
+
+Users assigned to roles. Roles have permissions.
+
+```
+User: alice
+Roles: [admin, editor]
+
+Role: admin
+Permissions: [create_user, delete_user, view_audit]
+
+Role: editor
+Permissions: [create_post, edit_post, delete_own_post]
+
+alice can: create_user, delete_user, view_audit, create_post, edit_post, delete_own_post
+```
+
+**Strengths**:
+- Simple to understand and implement
+- Scales to many users (add user to role, done)
+- Clear separation of duties
+
+**Limitations**:
+- Can't express complex conditions (time, location, resource attributes)
+- Role explosion (need admin_finance, admin_hr, admin_sales...)
+- Difficult to express "user can edit only their own posts"
+
+### ABAC (Attribute-Based Access Control)
+
+Decisions based on attributes of user, resource, environment.
+
+```
+User: alice
+Attributes: { dept: "finance", level: 5, license_valid: true }
+
+Resource: ledger_2025
+Attributes: { type: "financial", sensitivity: "confidential", owner_dept: "finance" }
+
+Environment: { time: "2025-02-14T14:00:00", location: "office" }
+
+Policy:
+  IF user.dept == resource.owner_dept
+    AND user.level >= 3
+    AND user.license_valid == true
+    AND env.time IN business_hours
+  THEN allow read
+```
+
+**Strengths**:
+- Highly flexible and expressive
+- Handles dynamic attributes
+- Minimal role explosion
+
+**Limitations**:
+- Complex to author and maintain
+- Performance impact (many attributes to evaluate)
+- Harder to audit ("why was access denied?")
+
+### ReBAC (Relationship-Based Access Control)
+
+Access determined by relationships in a graph.
+
+```
+User: alice
+Resources: [doc1, doc2, team_project]
+
+Relationships:
+- alice OWNS doc1
+- alice MEMBER_OF team_project
+- team_project OWNS doc2
+
+Policy:
+  - Owner can delete
+  - Team member can edit if team owns resource
+
+Result:
+- alice can delete doc1 (owner)
+- alice can edit doc2 (member of team that owns it)
+```
+
+**Strengths**:
+- Natural for collaborative systems
+- Scales with relationships, not explosion of rules
+- Easy to reason about ("who has access?")
+- Tools: Google Zanzibar (inspiration), Auth0 FGA, Ory Keto
+
+**Limitations**:
+- Requires relationship storage and query
+- Can be slow for complex relationship chains
+
+### PBAC (Policy-Based Access Control)
+
+Explicit policies define access.
+
+```
+{
+  "resource": "s3://bucket/sensitive",
+  "actions": ["s3:GetObject"],
+  "principal": "arn:aws:iam::123456789:role/DataAnalyst",
+  "conditions": {
+    "StringEquals": {
+      "aws:PrincipalOrgID": "org-123"
+    },
+    "IpAddress": {
+      "aws:SourceIp": ["10.0.0.0/8"]
+    }
+  },
+  "effect": "Allow"
+}
+```
+
+**Strengths**:
+- Clear, explicit, auditab le
+- Widely used (AWS IAM, Google Cloud IAM)
+- Conditions can be very specific
+
+**Limitations**:
+- Policy explosion (many similar policies)
+- Hard to query ("what can user do?")
+- Easy to introduce contradictions
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="rbac" label="RBAC Example" default>
+    ```javascript
+    // Simple RBAC in Node.js
+    const roles = {
+      admin: ['read', 'write', 'delete', 'manage_users'],
+      editor: ['read', 'write', 'delete'],
+      viewer: ['read']
+    };
+
+    const userRoles = {
+      alice: ['admin'],
+      bob: ['editor'],
+      charlie: ['viewer']
+    };
+
+    function canDo(userId, action) {
+      const roles = userRoles[userId];
+      for (const role of roles) {
+        if (roles[role]?.includes(action)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    canDo('alice', 'delete'); // true (admin)
+    canDo('bob', 'manage_users'); // false (editor lacks permission)
+    ```
+  </TabItem>
+
+  <TabItem value="abac" label="ABAC Example">
+    ```javascript
+    // ABAC with attribute evaluation
+    function authorize(user, resource, action, env) {
+      // Policy: finance dept can read financial resources
+      // during business hours if their license is valid
+      if (
+        user.attributes.dept === 'finance' &&
+        resource.attributes.type === 'financial' &&
+        user.attributes.license_valid &&
+        isBusinessHours(env.time) &&
+        action === 'read'
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    const user = { attributes: { dept: 'finance', license_valid: true } };
+    const resource = { attributes: { type: 'financial' } };
+    const env = { time: '2025-02-14T14:00:00' };
+
+    authorize(user, resource, 'read', env); // true or false
+    ```
+  </TabItem>
+
+  <TabItem value="rebac" label="ReBAC Example">
+    ```javascript
+    // ReBAC with relationship graphs
+    // Graph: alice OWNS doc1, bob MEMBER_OF team1, team1 OWNS doc2
+
+    const relationships = [
+      { subject: 'alice', relation: 'owner', object: 'doc1' },
+      { subject: 'bob', relation: 'member', object: 'team1' },
+      { subject: 'team1', relation: 'owner', object: 'doc2' },
+    ];
+
+    function canAccess(user, resource, action) {
+      // Direct ownership
+      if (hasRelation(user, 'owner', resource)) {
+        return action === 'delete' || action === 'edit';
+      }
+
+      // Team membership + team ownership
+      const teams = getRelations(user, 'member');
+      for (const team of teams) {
+        if (hasRelation(team, 'owner', resource)) {
+          return action === 'edit' || action === 'read';
+        }
+      }
+
+      return false;
+    }
+
+    canAccess('alice', 'doc1', 'delete'); // true
+    canAccess('bob', 'doc2', 'edit'); // true
+    ```
+  </TabItem>
+
+  <TabItem value="pbac" label="PBAC Example">
+    ```json
+    {
+      "policies": [
+        {
+          "name": "finance_read_ledger",
+          "effect": "Allow",
+          "principal": { "attribute": "user.dept", "equals": "finance" },
+          "resource": { "attribute": "doc.type", "equals": "ledger" },
+          "actions": ["read"],
+          "conditions": [
+            { "type": "time", "rule": "business_hours" },
+            { "attribute": "user.license_valid", "equals": true }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use RBAC When",
+    points: [
+      "Simple permission structure",
+      "Roles map to org structure",
+      "Few roles needed",
+      "Admin/editor/viewer pattern",
+      "Simplicity preferred over granularity"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use ABAC When",
+    points: [
+      "Fine-grained control needed",
+      "Many attributes vary (time, location, data sensitivity)",
+      "Dynamic attribute evaluation required",
+      "Few users but complex rules",
+      "Willing to invest in policy engine"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use ReBAC When",
+    points: [
+      "Collaborative, owner-based access",
+      "Sharing (users, teams, orgs)",
+      "Graph-like relationships",
+      "Google Docs-style permissions",
+      "Scalable relationship queries needed"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use PBAC When",
+    points: [
+      "Explicit, auditable policies needed",
+      "Cloud platforms (AWS, GCP)",
+      "Fine-grained cross-cutting conditions",
+      "Regulatory requirements",
+      "Willing to manage policy lifecycle"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+**Pattern**: Start with RBAC; evolve to ABAC or ReBAC as needs grow.
+
+**Pitfall**: Role explosion. Instead of admin, admin_finance, admin_hr, admin_sales → use ABAC (admin + dept attribute).
+
+**Pattern**: Least privilege by default. Deny all, whitelist access. ("default deny")
+
+**Pattern**: Separate "who decides?" from "who executes?". Admin approves deletion; system enforces it.
+
+**Pitfall**: Authorization checks scattered in code. Centralize in middleware or policy service.
+
+**Pattern**: Test authorization rules. Example: "user X with role Y should access resource Z" → automated test.
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "Authorization model chosen (RBAC, ABAC, ReBAC, PBAC)",
+    "Least privilege principle applied",
+    "All sensitive resources require explicit authorization",
+    "Separation of duties enforced (check/approve/execute)",
+    "Default deny policy in place",
+    "Authorization decisions centralized (not scattered)",
+    "Audit logs capture authorization decisions",
+    "Regular access reviews conducted",
+    "Role/permission definitions documented",
+    "Tests validate authorization rules"
+  ]}
+/>
+
+## Self-Check
+
+- When would RBAC alone be insufficient?
+- How would you model "user can edit only their own posts" in RBAC?
+- Why is ReBAC powerful for sharing systems?
+
+:::info One Takeaway
+Choose authorization model based on complexity: start RBAC (simple), evolve to ABAC/ReBAC (flexible), use PBAC for explicit audit trail.
+
+:::
+
+## Next Steps
+
+- Read **Session & Token Management** for enforcing authorization in stateless systems
+- Study **Least Privilege** for detailed access control principles
+- Explore **Audit Logging** for verifying authorization compliance
+
+## References
+
+- NIST SP 800-192: Access Control (RBAC, ABAC)
+- ABAC in Cloud Identity (AWS IAM, GCP Identity & Access)
+- Google Zanzibar: Rethinking Authorization (ReBAC foundation)
+- OWASP Authorization Cheat Sheet

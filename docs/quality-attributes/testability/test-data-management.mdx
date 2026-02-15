@@ -1,0 +1,403 @@
+---
+sidebar_position: 2
+title: "Test Data Management"
+description: "Manage test data effectively using fixtures, factories, and synthetic data."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 28
+lastReviewed: 2025-02-14
+personas: [engineer, qa]
+keywords: [test data, fixtures, factories, synthetic data, test databases, data masking, gdpr]
+image: /img/archman-social-card.webp
+tags: [quality-attributes, testability, testing, test-data]
+hide_title: true
+---
+
+<Hero title="Test Data Management" subtitle="Create and maintain test data efficiently without compromising privacy or realism." size="large" />
+
+## TL;DR
+
+Test data is expensive to create and maintain. Use **fixtures** (static, pre-built data), **factories** (dynamic generation), and **synthetic data** (fake but realistic). Never use production data in tests (GDPR risk). Mask sensitive fields when copying production data. Keep test databases small and fast. Seed databases consistently so tests are repeatable. Use **fixture factories** to generate variation quickly (100 users with different patterns). Data isolation: each test creates own data, cleans up after (even on failure).
+
+## Learning Objectives
+
+- Design efficient test data strategies
+- Use fixtures and factories to generate test data
+- Create realistic synthetic data
+- Mask sensitive data for GDPR compliance
+- Maintain test database performance
+- Ensure data isolation and repeatability
+
+## Motivating Scenario
+
+A test requires 100 realistic users, but creating them manually takes hours. A factory generates 100 users with varied attributes programmatically in seconds. A test touches production data; a user's SSN leaks. Proper data masking prevents this. Tests run in parallel; they share database state. Test A creates user "Alice", Test B modifies "Alice", Test A fails. Solution: data isolation.
+
+## Core Concepts
+
+<Tabs>
+  <TabItem value="strategies" label="Test Data Strategies">
+
+| Strategy | Use When | Pros | Cons |
+|----------|----------|------|------|
+| **Fixtures** | Small, stable data | Fast, reproducible | Brittle to changes |
+| **Factories** | Dynamic variation | Flexible, quick | Overhead of generation |
+| **Synthetic Data** | Realistic but fake | Safe, realistic patterns | Time to generate |
+| **Production Snapshot** | Complex real scenarios | Realistic | GDPR risk, slow |
+
+### Fixtures (Static Data)
+
+```yaml
+# users.yaml - pre-built test data
+users:
+  - id: 1
+    name: "Alice"
+    email: "alice@example.com"
+    created_at: "2025-01-01T00:00:00Z"
+  - id: 2
+    name: "Bob"
+    email: "bob@example.com"
+    created_at: "2025-01-02T00:00:00Z"
+```
+
+### Factories (Dynamic Generation)
+
+```python
+from factory import Factory, Sequence
+from faker import Faker
+
+fake = Faker()
+
+class UserFactory(Factory):
+    class Meta:
+        model = User
+
+    id = Sequence(lambda n: n)
+    name = fake.name()
+    email = fake.email()
+    created_at = fake.date_time()
+
+# Generate test users
+user1 = UserFactory()  # Auto-generated data
+users = UserFactory.create_batch(100)  # 100 users instantly
+```
+
+### Synthetic Data
+
+```python
+from faker import Faker
+
+fake = Faker()
+
+# Realistic fake data (GDPR safe)
+users = [
+    {
+        "id": i,
+        "name": fake.name(),
+        "email": fake.email(),
+        "phone": fake.phone_number(),
+        "address": fake.address(),
+        "created_at": fake.date_time()
+    }
+    for i in range(100)
+]
+```
+
+### Data Masking (Production Snapshot Anonymization)
+
+```python
+import re
+import hashlib
+
+def mask_production_data(user: dict) -> dict:
+    """Mask sensitive fields for testing."""
+    return {
+        "id": user["id"],
+        "name": fake.name(),  # Replace with fake name
+        "email": f"test+{user['id']}@example.com",  # Anonymize email
+        "ssn": None,  # Remove SSN entirely
+        "phone": fake.phone_number(),  # Replace with fake phone
+        "created_at": user["created_at"],  # Keep timestamp (non-sensitive)
+    }
+
+# Load production users, mask sensitive fields
+prod_users = fetch_production_users()
+masked_users = [mask_production_data(u) for u in prod_users]
+# Now safe to use in tests
+```
+
+  </TabItem>
+
+  <TabItem value="factory-example" label="Factory Pattern (Detailed)">
+
+```python
+# Python: factory_boy
+
+import factory
+from faker import Faker
+from datetime import datetime, timedelta
+
+fake = Faker()
+
+class UserFactory(factory.Factory):
+    """Generate test users dynamically."""
+
+    class Meta:
+        model = User
+
+    id = factory.Sequence(lambda n: n + 1)
+    name = factory.LazyFunction(fake.name)
+    email = factory.LazyFunction(fake.email)
+    age = factory.Faker('random_int', min=18, max=80)
+    created_at = factory.LazyFunction(lambda: datetime.now() - timedelta(days=factory.Faker('random_int', min=1, max=365)))
+    is_active = True
+
+class OrderFactory(factory.Factory):
+    """Generate test orders."""
+
+    class Meta:
+        model = Order
+
+    id = factory.Sequence(lambda n: n + 1000)
+    user = factory.SubFactory(UserFactory)  # Nested factory
+    total = factory.Faker('pydecimal', left_digits=3, right_digits=2, positive=True)
+    status = factory.Faker('random_element', elements=['pending', 'completed', 'cancelled'])
+    created_at = factory.LazyFunction(datetime.now)
+
+# Usage
+user = UserFactory()  # Single user with random data
+users = UserFactory.create_batch(100)  # 100 users
+user_with_custom = UserFactory(name="Bob", age=30)  # Override specific fields
+
+order = OrderFactory()  # Auto-generates user + order
+orders = OrderFactory.create_batch(50)  # 50 orders with 50 users
+
+# Pytest integration
+@pytest.fixture
+def sample_user():
+    return UserFactory()
+
+@pytest.fixture
+def sample_orders():
+    return OrderFactory.create_batch(10)
+
+def test_user_validation(sample_user):
+    assert sample_user.name is not None
+    assert "@" in sample_user.email
+
+def test_order_total(sample_orders):
+    assert len(sample_orders) == 10
+    for order in sample_orders:
+        assert order.total > 0
+```
+
+  </TabItem>
+
+  <TabItem value="isolation" label="Data Isolation & Cleanup">
+
+```python
+# Ensure test isolation: each test has clean slate
+
+import pytest
+from contextlib import contextmanager
+
+@contextmanager
+def database_transaction():
+    """Wrap test in database transaction, rollback after."""
+    db.begin()
+    try:
+        yield
+    finally:
+        db.rollback()  # Undo all changes, even if test fails
+
+class TestUserCreate:
+    @pytest.fixture(autouse=True)
+    def setup_teardown(self):
+        """Auto-run before/after each test."""
+        # Setup: create fresh database
+        db.create_all()
+        yield
+        # Teardown: clean up (even if test fails)
+        db.drop_all()
+
+    def test_create_user(self):
+        """Test is isolated: own database, own data."""
+        user = UserFactory()
+        db.add(user)
+        db.commit()
+
+        result = db.query(User).filter(User.id == user.id).first()
+        assert result is not None
+
+    def test_list_users(self):
+        """This test starts with clean database."""
+        # Previous test's data is gone
+        users = UserFactory.create_batch(5)
+        db.add_all(users)
+        db.commit()
+
+        count = db.query(User).count()
+        assert count == 5
+
+# Parallel test execution: databases are isolated
+# pytest-xdist: run multiple test workers
+# Each worker has own test database, no interference
+```
+
+  </TabItem>
+
+  <TabItem value="performance" label="Test Database Performance">
+
+```python
+# Keep test database small and fast
+
+# Bad: Full production schema
+db_size = 500GB  # Slow to create, slow to query
+
+# Good: Minimal schema (only what tests need)
+db_size = 100MB  # Fast to create, fast to query
+
+# Bad: Tests use live database
+# All tests queue up, slow serial execution
+
+# Good: In-memory database (SQLite) for unit tests
+db = sqlite3.connect(":memory:")
+
+# Or: Database containers (Docker) for integration tests
+# Fast to spin up, easy to parallelize
+
+# Optimize test queries
+# Bad: test_user() creates 1M users, queries take minutes
+def test_user():
+    users = [UserFactory() for _ in range(1_000_000)]
+    db.add_all(users)
+    db.commit()
+    # Query is slow!
+
+# Good: test_user() creates only needed data
+def test_user():
+    user = UserFactory()
+    db.add(user)
+    db.commit()
+    # Query is instant
+
+# Database indices in test database
+# Add same indices as production
+# Ensures test queries match production performance
+```
+
+  </TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Test Data: Best Practices vs Anti-Patterns"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**DO: Use Factories for Variation**: Generate varied test users (100 different names, ages, emails). Catches edge cases.",
+      "**DO: Mask Production Data**: Copy production schema (realistic), but replace names/emails/SSNs with fakes. GDPR safe.",
+      "**DO: Isolate Test Data**: Each test creates own data, cleans up after. Tests don't interfere.",
+      "**DO: Use Fixtures for Stable Data**: Reference data (countries, currencies) in fixtures. Checked into version control.",
+      "**DO: Keep Test Database Small**: In-memory SQLite for unit tests, Docker containers for integration tests. Fast test runs.",
+      "**DO: Reset Database Consistently**: Each test starts with same initial data. Seeding is reproducible."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**DO: Use Factories for Variation**: Hardcode single user 'Alice'. Tests only cover one scenario.",
+      "**DO: Mask Production Data**: Copy production data as-is. SSNs, emails leak. GDPR violation, lawsuit.",
+      "**DO: Isolate Test Data**: Shared test database. Test A modifies data. Test B gets unexpected state. Fails intermittently.",
+      "**DO: Use Fixtures for Stable Data**: Hardcode reference data. Drift from production when reference changes.",
+      "**DO: Keep Test Database Small**: Full production database. Creates/drops database for each test. Minutes per test.",
+      "**DO: Reset Database Consistently**: Random initial state. Tests pass sometimes, fail other times."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: Production Data in Tests",
+    body: "Copy production database for testing. Real user PII (names, emails, SSNs) in test logs. GDPR leak.",
+  },
+  {
+    label: "Anti-Pattern: Hard-Coded Test Data",
+    body: "Test assumes user ID = 1, name = 'Alice'. When schema changes, tests break.",
+  },
+  {
+    label: "Anti-Pattern: Shared Test Database",
+    body: "All tests use same database. Test A creates user. Test B modifies it. Test A fails unpredictably.",
+  },
+  {
+    label: "Pattern: Factory + Faker",
+    body: "Factories generate realistic, varied data. Each test gets fresh data. Repeatable, isolated.",
+  },
+  {
+    label: "Pattern: Data Masking Pipeline",
+    body: "Snapshot production, mask PII, use for tests. Realistic schema, safe data.",
+  },
+  {
+    label: "Anti-Pattern: Slow Test Database",
+    body: "Test database has production size (10GB, 1B records). Test setup takes 5 minutes.",
+  },
+  {
+    label: "Pattern: In-Memory Database",
+    body: "Unit tests use SQLite :memory:. Setup: 10ms, teardown: 1ms. Fast test runs.",
+  },
+  {
+    label: "Anti-Pattern: Manual Data Cleanup",
+    body: "Tests don't clean up. Old data accumulates. Tests slow down. Database bloats.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Is test data generated programmatically (factories/fixtures, not manual)?",
+  "Are factories used for variation (100s of test cases with different data)?",
+  "Is production data never used in tests (GDPR compliance)?",
+  "Are sensitive fields masked (no real SSNs, emails, passwords)?",
+  "Is each test data isolated (own data, not shared)?",
+  "Does each test clean up after itself (even on failure)?",
+  "Is test database small (MB, not GB)?",
+  "Is test database fast to create/destroy (seconds, not minutes)?",
+  "Are database seeds reproducible (same seed = same data)?",
+  "Are fixtures version-controlled (checked into git)?",
+  "Is synthetic data realistic (matches production patterns)?",
+  "Can tests run in parallel (database isolation)?",
+  "Are test data patterns documented (what data for what test)?",
+  "Is data factory maintenance easy (update in one place)?",
+  "Are GDPR requirements enforced (no real PII in tests)?",
+]} />
+
+## Self-Check
+
+1. **Right now**, how long does it take to create test data for a new test? If > 5 minutes, that's slow.
+2. **Can a test run in isolation** (no shared state)? If not, tests are fragile.
+3. **Do you use production data** in tests? If yes, that's a GDPR risk.
+4. **Can tests run in parallel?** If not, test suite is slow.
+
+## Next Steps
+
+1. **Audit current test data** — How is it created? Is it manual?
+2. **Build factories** — For each major entity (User, Order, Product)
+3. **Add Faker** — Generate realistic fake data
+4. **Implement isolation** — Each test: setup fresh data, teardown after
+5. **Optimize database** — Use in-memory for unit tests
+6. **Mask production data** — If copying prod, anonymize PII
+7. **Document patterns** — What data for what test
+
+## References
+
+1. <a href="https://factoryboy.readthedocs.io/" target="_blank" rel="nofollow noopener noreferrer">Factory Boy: Python Test Data ↗️</a>
+2. <a href="https://faker.readthedocs.io/" target="_blank" rel="nofollow noopener noreferrer">Faker: Generate Fake Data ↗️</a>
+3. <a href="https://www.postgresql.org/docs/current/test-intro.html" target="_blank" rel="nofollow noopener noreferrer">PostgreSQL: Testing ↗️</a>
+4. <a href="https://www.testcontainers.org/" target="_blank" rel="nofollow noopener noreferrer">Testcontainers: Docker for Tests ↗️</a>
+---

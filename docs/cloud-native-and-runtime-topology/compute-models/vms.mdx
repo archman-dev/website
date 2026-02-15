@@ -1,0 +1,680 @@
+---
+sidebar_position: 1
+title: Virtual Machines (VMs)
+description: Full OS isolation, live migration, mixed workloads, and legacy application compatibility
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: 2025-02-14
+personas: ["architect","engineer","platform-lead"]
+keywords: ["vm","hypervisor","isolation","legacy","migration","compliance","kvm","hyperv"]
+image: /img/archman-social-card.webp
+tags: ["compute","architecture","isolation","legacy-applications"]
+hide_title: true
+---
+
+<Hero
+  title="Virtual Machines"
+  description="Full OS isolation, live migration, and mixed workloads—when to use VMs in cloud-native architectures"
+  size="large"
+/>
+
+### TL;DR
+
+Virtual machines offer full OS-level isolation, broad software compatibility, and live migration capabilities. Use VMs for legacy applications, strict tenant isolation, mixed workloads (Windows + Linux), or when container escape risk is unacceptable. Trade longer boot times (seconds to minutes) and higher resource overhead (2-4 GB RAM per VM) for operational simplicity and strong security boundaries. VMs are not obsolete in cloud-native; they solve specific architectural problems.
+
+### Learning Objectives
+
+- Understand hypervisor architectures and isolation mechanisms (Type 1 vs Type 2).
+- Evaluate VM sizing, over-subscription, and noisy-neighbor risks.
+- Design VM placement and live migration strategies for availability.
+- Assess when VMs outweigh containers in security, compliance, or compatibility posture.
+- Optimize VM performance and resource utilization.
+
+### Motivating Scenario
+
+Your organization hosts multi-tenant SaaS serving financial institutions, where strict isolation is non-negotiable (regulatory requirement). A shared container node compromise could leak tenant data. VMs—despite higher overhead—provide hardware-enforced isolation with separate kernels per tenant. With careful sizing, live migration policies, and resource monitoring, you maintain cost efficiency while meeting compliance (SOC 2, HIPAA, PCI-DSS) and security requirements.
+
+## Mental Model
+
+<Figure caption="VM architecture: hypervisor multiplexes physical resources; each VM has independent OS and kernel.">
+
+```mermaid
+graph TB
+  subgraph Physical["Physical Server"]
+    CPU["CPU Cores<br/>16 cores"]
+    RAM["System RAM<br/>256 GB"]
+    Storage["Storage<br/>10 TB SSD"]
+  end
+
+  subgraph Hypervisor["Hypervisor (KVM/Hyper-V)"]
+    direction TB
+    Scheduler["vCPU Scheduler"]
+    MemMgmt["Memory Manager"]
+    IOVirt["I/O Virtualization"]
+  end
+
+  subgraph VM1["VM Instance 1<br/>Tenant A"]
+    OS1["Guest OS<br/>Ubuntu 22.04"]
+    Kernel1["Independent Kernel"]
+    App1["Applications<br/>Isolated"]
+  end
+
+  subgraph VM2["VM Instance 2<br/>Tenant B"]
+    OS2["Guest OS<br/>Ubuntu 22.04"]
+    Kernel2["Independent Kernel"]
+    App2["Applications<br/>Isolated"]
+  end
+
+  subgraph VM3["VM Instance 3<br/>Tenant C"]
+    OS3["Guest OS<br/>Windows Server"]
+    Kernel3["Independent Kernel"]
+    App3["Legacy .NET App"]
+  end
+
+  Physical -->|Allocates| Hypervisor
+  Hypervisor -->|4 vCPU,<br/>16 GB RAM| VM1
+  Hypervisor -->|4 vCPU,<br/>16 GB RAM| VM2
+  Hypervisor -->|4 vCPU,<br/>16 GB RAM| VM3
+```
+
+</Figure>
+
+## Core Concepts
+
+**Isolation**: Each VM runs a complete OS kernel with separate memory, filesystem, and processes. Hypervisor enforces memory isolation via MMU (memory management unit) and CPU protections (privilege rings). Container escape cannot affect other VMs; they're hardware-protected.
+
+**Resource Over-Subscription**: Hypervisors can over-subscribe vCPU to physical cores and RAM to physical memory (with swap). CPU contention causes latency; RAM over-subscription triggers slow swap. Typical over-subscription: 4:1 CPU (safe), 1.5:1 RAM (risky). Over-subscription ratios vary by workload CPU-bound vs I/O-bound).
+
+**Live Migration**: VMs can move between hosts without downtime. Memory pages copied to destination, CPU context transferred. Enables maintenance, load rebalancing, hardware refresh without disrupting tenants. Pre-copy or post-copy strategies; down-time typically < 100ms.
+
+**Snapshot & Restore**: VMs can be paused, snapshotted (memory + disk state), and resumed. Supports disaster recovery, testing workflows, and development/production parity.
+
+**Hypervisor Types**:
+- **Type 1 (Bare-Metal)**: KVM, Hyper-V, ESXi. Runs directly on hardware. Better performance, security.
+- **Type 2 (Hosted)**: VirtualBox, VMware Fusion. Runs on top of OS. Easier to set up, slower.
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="terraform-aws" label="Terraform (AWS EC2)" default>
+```hcl
+# Infrastructure as Code: Define VM instances programmatically
+
+# Fetch latest Ubuntu AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]  # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+}
+
+# EC2 instance (VM) with configuration
+resource "aws_instance" "app_vm" {
+  ami             = data.aws_ami.ubuntu.id
+  instance_type   = "t3.medium"  # 2 vCPU, 4 GB RAM
+  availability_zone = "us-east-1a"
+  key_name        = aws_key_pair.deployer.key_name
+
+  vpc_security_group_ids = [aws_security_group.app.id]
+  subnet_id              = aws_subnet.primary.id
+  iam_instance_profile   = aws_iam_instance_profile.app.name
+
+  # Root volume (OS)
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = 50  # GB
+    delete_on_termination = true
+  }
+
+  # Additional data volume
+  ebs_block_device {
+    device_name = "/dev/sdf"
+    volume_type = "gp3"
+    volume_size = 200
+    delete_on_termination = false
+  }
+
+  # User data (bootstrap script)
+  user_data = base64encode(file("${path.module}/cloud-init.sh"))
+
+  tags = {
+    Name = "app-server-01"
+    Environment = "production"
+    Tenant = "tenant-a"
+    CostCenter = "engineering"
+  }
+
+  # Enable detailed monitoring
+  monitoring = true
+}
+
+# Security group (firewall rules)
+resource "aws_security_group" "app" {
+  name   = "app-sg"
+  vpc_id = aws_vpc.main.id
+
+  # Ingress: HTTPS from load balancer
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lb.id]
+  }
+
+  # Ingress: SSH from bastion only (for debugging)
+  ingress {
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion.id]
+  }
+
+  # Egress: All outbound (default)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Output the instance IP for access
+output "instance_ip" {
+  value = aws_instance.app_vm.public_ip
+}
+```
+  </TabItem>
+
+  <TabItem value="cloud-init" label="Cloud-Init (Bootstrap)">
+```yaml
+#cloud-config
+# Bootstrap script runs once on first boot
+
+# Update system packages
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - git
+  - docker.io
+  - awscli
+  - cloudwatch
+  - monitoring-plugins
+
+# Write configuration files
+write_files:
+  - path: /opt/config/app.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      DATABASE_URL=postgresql://user:pass@db.internal:5432/mydb
+      REDIS_URL=redis://cache.internal:6379
+      API_KEY=secret-value-from-ssm
+      LOG_LEVEL=info
+
+  - path: /opt/scripts/health-check.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      curl -f http://localhost:8080/health || exit 1
+
+# Run commands during boot
+runcmd:
+  # Start Docker
+  - systemctl start docker
+  - systemctl enable docker
+  
+  # Pull and run application
+  - docker pull myapp:latest
+  - docker run -d \
+      --name myapp \
+      --restart always \
+      -p 8080:8080 \
+      --env-file /opt/config/app.env \
+      myapp:latest
+  
+  # Configure CloudWatch logging
+  - |
+    cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json << 'EOF'
+    {
+      "logs": {
+        "logs_collected": {
+          "files": {
+            "collect_list": [
+              {
+                "file_path": "/var/log/docker.log",
+                "log_group_name": "/app/docker",
+                "log_stream_name": "{instance_id}"
+              }
+            ]
+          }
+        }
+      }
+    }
+    EOF
+  
+  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 -s \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+
+# Final message
+final_message: "System boot completed in $UPTIME seconds"
+```
+  </TabItem>
+
+  <TabItem value="kvm-libvirt" label="KVM/libvirt (On-Premises)">
+```xml
+<!-- VM definition for libvirt (on-premises hypervisor) -->
+<domain type='kvm'>
+  <name>tenant-a-vm</name>
+  <uuid>12345678-1234-1234-1234-123456789012</uuid>
+  <memory unit='GiB'>16</memory>
+  <currentMemory unit='GiB'>16</currentMemory>
+  <vcpu placement='static'>4</vcpu>
+
+  <!-- CPU settings -->
+  <cpu mode='host-model'>
+    <model fallback='allow'/>
+  </cpu>
+
+  <!-- OS boot -->
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+    <boot dev='hd'/>
+    <bootmenu enable='no'/>
+  </os>
+
+  <!-- Hypervisor features -->
+  <features>
+    <acpi/>
+    <apic/>
+    <vmport state='off'/>
+  </features>
+
+  <!-- Clock settings -->
+  <clock offset='utc'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+  </clock>
+
+  <!-- Devices -->
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <!-- Disks -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/var/lib/libvirt/images/tenant-a-root.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/var/lib/libvirt/images/tenant-a-data.qcow2'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+
+    <!-- Network -->
+    <interface type='network'>
+      <source network='tenant-a-network'/>
+      <model type='virtio'/>
+    </interface>
+
+    <!-- Console for access -->
+    <console type='pty'>
+      <target type='virtio' port='0'/>
+    </console>
+
+    <!-- RNG (for random numbers) -->
+    <rng model='virtio'>
+      <backend model='random'>/dev/urandom</backend>
+    </rng>
+  </devices>
+</domain>
+```
+  </TabItem>
+</Tabs>
+
+## VM vs Container vs Serverless Decision Matrix
+
+<Vs items={[
+{
+    label: "Virtual Machines",
+    points: [
+      "Full OS isolation (strongest security boundary)",
+      "Legacy app support (Windows, custom OS)",
+      "Live migration (zero-downtime moves)",
+      "Noisy-neighbor risks (resource contention)",
+      "Higher resource overhead (2-4 GB RAM minimum)",
+      "Boot time 30s-2m (slower than containers)",
+      "Use: Strict isolation, multi-OS, stateful workloads"
+    ]
+  },
+{
+    label: "Containers",
+    points: [
+      "Lightweight (process-level isolation)",
+      "Fast startup (100ms-1s)",
+      "Resource efficient (10-100 MB per container)",
+      "Kernel-escape risk (single kernel per host)",
+      "Better density (100s containers per node)",
+      "Cloud-native (Kubernetes, orchestration)",
+      "Use: Microservices, rapid scaling, modern apps"
+    ]
+  },
+{
+    label: "Serverless (Functions)",
+    points: [
+      "No infrastructure management",
+      "Auto-scaling (millisecond response)",
+      "Pay-per-use billing (cost efficient)",
+      "Short-lived executions (stateless)",
+      "Vendor lock-in (AWS Lambda, Google Cloud)",
+      "Cold start latency (100ms-1s)",
+      "Use: Event-driven, APIs, intermittent workloads"
+    ]
+  }
+]} />
+
+## Real-World Production Architectures
+
+### Scenario 1: Multi-Tenant SaaS with Strict Isolation
+
+Each tenant's workload runs in dedicated VMs, isolated at the hypervisor level. Compromised tenant VM cannot access others.
+
+<Figure caption="Multi-tenant architecture using VMs for tenant isolation.">
+
+```mermaid
+graph TB
+  LB["Load Balancer"]
+
+  subgraph T1["Tenant A VM<br/>4 vCPU, 16 GB"]
+    OS1["Ubuntu 22.04"]
+    App1["App Instance"]
+    Cache1["Redis Cache"]
+  end
+
+  subgraph T2["Tenant B VM<br/>8 vCPU, 32 GB"]
+    OS2["Ubuntu 22.04"]
+    App2["App Instance"]
+    Cache2["Redis Cache"]
+  end
+
+  subgraph T3["Tenant C VM<br/>4 vCPU, 16 GB"]
+    OS3["Windows Server 2022"]
+    App3[".NET Application"]
+    Cache3["Windows Cache"]
+  end
+
+  SharedDB["Shared PostgreSQL<br/>with row-level security"]
+  SharedStorage["Shared S3 Bucket<br/>per-tenant prefix"]
+
+  LB -->|Route by Host Header| T1
+  LB -->|Route by Host Header| T2
+  LB -->|Route by Host Header| T3
+
+  T1 -->|Tenant A queries| SharedDB
+  T2 -->|Tenant B queries| SharedDB
+  T3 -->|Tenant C queries| SharedDB
+
+  T1 --> SharedStorage
+  T2 --> SharedStorage
+  T3 --> SharedStorage
+```
+
+</Figure>
+
+### Scenario 2: Mixed Workloads (Linux + Windows)
+
+Legacy Windows application cannot run in containers. Host on dedicated Windows VMs while running modern services in Linux containers on Kubernetes.
+
+```yaml
+# Architecture overview:
+# - Windows VMs: Legacy .NET Framework apps (4 instances for HA)
+# - Linux containers: Microservices (Kubernetes cluster)
+# - Both access shared database, cache
+
+# Load balancer routes:
+# /api/legacy -> Windows VMs (Windows Load Balancer)
+# /api/modern -> Kubernetes services (Ingress)
+```
+
+### Scenario 3: Live Migration for Zero-Downtime Maintenance
+
+Hypervisor maintenance required. Live migrate VMs to other hosts.
+
+```bash
+# Hypervisor A: 8 VMs, 64 GB used RAM
+# Host maintenance window: 2 hour window
+
+# Migrate VMs to Hypervisor B (pre-copy)
+virsh migrate vm-1 qemu+ssh://hypervisor-b/system
+# Down-time < 100ms, memory pages pre-copied before final switchover
+
+# All 8 VMs moved, Hypervisor A maintenance begins
+# Production workload uninterrupted
+```
+
+## Common Patterns and Pitfalls
+
+<Showcase sections={[
+  {
+    title: "Noisy Neighbor Problem",
+    description: "High-load VM steals CPU/disk from neighbors. Solution: CPU/memory limits, I/O QoS, monitoring.",
+    tags: ["performance", "monitoring"]
+  },
+  {
+    title: "VM Resource Over-Allocation",
+    description: "Overcommit CPU (10:1) or RAM (3:1), causing contention and swap. Solution: Size based on peak usage.",
+    tags: ["planning", "operations"]
+  },
+  {
+    title: "Snapshot Proliferation",
+    description: "Snapshots consume disk space; old snapshots pile up. Solution: Snapshot retention policy, regular cleanup.",
+    tags: ["storage", "operations"]
+  },
+  {
+    title: "Live Migration Failures",
+    description: "Shared storage required for live migration; network partitions cause hangs. Solution: Test migration paths.",
+    tags: ["reliability", "operations"]
+  },
+  {
+    title: "Boot Time Unpredictability",
+    description: "VMs boot slowly (30s-2m); slow startup affects scaling. Solution: Pre-warm pools, use containers for fast scaling.",
+    tags: ["performance", "scaling"]
+  },
+  {
+    title: "Guest OS Licensing Costs",
+    description: "Windows licensing expensive for VMs; multiplied at scale. Solution: Minimize Windows VMs, use BYOL.",
+    tags: ["cost", "planning"]
+  }
+]} />
+
+## VM Sizing and Capacity Planning
+
+```yaml
+# Example: E-commerce platform
+
+Small VM (t3.medium - AWS):
+  vCPU: 2
+  RAM: 4 GB
+  Use: Stateless services, web frontends, light processing
+  Cost: ~$0.04/hour
+  Density: 8 per host (16 vCPU, 32 GB physical)
+
+Medium VM (t3.large - AWS):
+  vCPU: 2
+  RAM: 8 GB
+  Use: Database, caching, moderate workloads
+  Cost: ~$0.08/hour
+  Density: 4 per host
+
+Large VM (m5.2xlarge - AWS):
+  vCPU: 8
+  RAM: 32 GB
+  Use: High-traffic services, batch processing
+  Cost: ~$0.38/hour
+  Density: 2 per host (16 vCPU, 64 GB)
+
+# Capacity planning:
+# Physical Host: 16 vCPU, 256 GB RAM
+# Expected workload: 64 small VMs (2 vCPU, 4 GB each)
+# Over-subscription: 128:16 vCPU (8:1 - aggressive, OK for bursty)
+# Over-subscription RAM: 256:256 (1:1 - no over-subscription, safe)
+```
+
+## Decision Checklist
+
+<Checklist items={[
+  { label: "Strict isolation required (multi-tenant, compliance)?", checked: true },
+  { label: "Application incompatible with containers (legacy, custom OS)?", checked: false },
+  { label: "Need to run multiple OS types (Windows, Linux)?", checked: false },
+  { label: "Workload stateful or persistent (databases, caches)?", checked: true },
+  { label: "Hardware-enforced isolation is a compliance mandate?", checked: true },
+  { label: "Live migration needed for maintenance/scaling?", checked: true },
+  { label: "Team familiar with VM operations and lifecycle?", checked: true },
+  { label: "Budget accommodates higher resource overhead?", checked: false },
+  { label: "Workload not bursty (consistent resource usage)?", checked: true },
+  { label: "Storage performance not latency-critical?", checked: true },
+]} />
+
+## Self-Check
+
+- Can you explain how a hypervisor enforces memory isolation between VMs?
+- When would you choose VM isolation over container security policies?
+- How do you plan VM sizing to avoid the noisy-neighbor problem?
+- What are the trade-offs between VM density and isolation strength?
+- How does live migration work, and what's the downtime?
+- Why might Windows licensing be a hidden cost in multi-tenant deployments?
+
+## One Takeaway
+
+VMs are not obsolete in cloud-native architectures; they solve specific problems (strict isolation, legacy compatibility, mixed OS support) that containers cannot. Use them where isolation or compatibility demands warrant the resource overhead. Avoid them for services that scale frequently or are performance-sensitive.
+
+## Next Steps
+
+- Explore [Containers](/docs/cloud-native-and-runtime-topology/compute-models/containers) for lighter-weight compute.
+- Study [Orchestration](/docs/cloud-native-and-runtime-topology/orchestration) to manage VMs and containers at scale.
+- Review [Topologies](/docs/cloud-native-and-runtime-topology/topologies) for distributing VMs across regions.
+- Learn live migration best practices for your hypervisor (KVM, Hyper-V, ESXi).
+
+## References
+
+- NIST SP 800-125: Guide to Security for Full Virtualization
+- KVM Documentation: https://www.kernel.org/doc/html/latest/virt/kvm/
+- AWS EC2 Best Practices: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-best-practices.html
+- Red Hat Virtualization: https://www.redhat.com/en/topics/virtualization
+- Citrix Hypervisor & Resource Management: https://docs.citrix.com/
+
+## Advanced Topics: VM Performance and Optimization
+
+### CPU Over-Subscription and Contention
+
+Modern hypervisors allow oversubscribing CPU: scheduling 4 vCPU VMs on 2 physical cores. This works well for mixed I/O-bound workloads but creates latency issues when multiple VMs are CPU-hungry simultaneously.
+
+**Over-subscription ratios:**
+- Conservative (1:1): No over-subscription, guaranteed performance. Expensive.
+- Balanced (2:1 to 4:1): Safe for mixed workloads. Typical cloud deployments.
+- Aggressive (8:1+): Only for bursty, predictable workloads. High latency variance.
+
+**Detecting contention:**
+```bash
+# In VM: check CPU ready time (VMware)
+esxtop → u → CPUIdle%
+If ready% > 10%: contention, schedule migration
+
+# In AWS: check "CPU Steal Time"
+cat /proc/stat | grep cpu  # If steal_time high, noisy neighbors
+```
+
+### Memory Over-Subscription and Swap
+
+Hypervisors can balloon (compress) or swap memory. When VM uses more RAM than allocated, performance drops dramatically:
+
+**Memory allocation strategies:**
+- Reserve: Allocate upfront, waste memory, guarantee performance
+- Shared: Allow over-subscription, save memory, risk swap
+- Ballooning: Dynamically adjust, middle ground
+
+**Avoiding swap:**
+```bash
+# In VM: monitor swap usage
+free -h
+vmstat 1  # swpd column
+
+# If swapping: either add RAM or reduce workload
+```
+
+### Live Migration Deep Dive
+
+Live migration enables moving VMs between hosts without downtime. How it works:
+
+1. **Pre-copy phase**: Copy memory pages to destination while source VM still runs
+2. **Stop-copy phase**: Pause VM, copy remaining dirty pages, CPU state
+3. **Resume phase**: Resume VM on destination (downtime ~50-100ms)
+
+**Success factors:**
+- Shared storage (NFS, SAN) so VM disk accessible from both hosts
+- Low network latency between hosts (< 5ms RTT)
+- Both hosts support same CPU features
+- VM downtime must be minimized (~100ms acceptable)
+
+**Failure scenarios:**
+- Network partition: VM frozen in limbo (use manual intervention)
+- Storage unavailable: Migration fails, VM needs restart
+- CPU mismatch: Destination CPU missing features source had (crash)
+
+### VM Sizing in the Real World
+
+**Small e-commerce shop:**
+```
+Traffic: 1000 requests/day
+Solution: 1 × t3.large (2 vCPU, 8GB RAM)
+Cost: ~$60/month
+Utilization: ~5% (lots of idle capacity, acceptable for small)
+```
+
+**Mid-market SaaS:**
+```
+Traffic: 10M requests/day, 50 concurrent users
+Solution: 4 × m5.xlarge (4 vCPU, 16GB RAM each)
+Cost: ~$600/month
+Utilization: ~40-60% (good balance)
+Load balancer distributes traffic
+Auto-scaling: +2 VMs at 80% CPU, -2 at 30%
+```
+
+**High-traffic platform:**
+```
+Traffic: 1B requests/day, 10K concurrent users
+Solution: 100 × r5.4xlarge (16 vCPU, 128GB RAM)
+Cost: ~$100K/month
+Utilization: 70-80% (high, efficient)
+Distributed across 3 regions for redundancy
+```
+
+### Disaster Recovery: Backup and Restore
+
+**Snapshot strategy:**
+- Daily snapshots: restore to any point in last 30 days
+- Incremental snapshots: only changes stored (not full copy)
+- Test restores: verify snapshots actually work
+- Encryption: snapshots encrypted, secured
+
+**RPO/RTO targets:**
+- RPO (Recovery Point Objective): How much data loss acceptable? 1 hour of data?
+- RTO (Recovery Time Objective): How long to restore? 1 minute? 1 hour?
+- Higher RPO/RTO = cheaper solutions; lower = more expensive
+
+**Example: High-availability database:**
+- RPO target: 5 minutes (max 5 min of lost data)
+- RTO target: 15 minutes (restored within 15 min)
+- Solution: Continuous replication to standby VM + automated failover
+

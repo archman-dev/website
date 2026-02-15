@@ -1,0 +1,392 @@
+---
+sidebar_position: 2
+title: "Elasticity & Autoscaling Triggers"
+description: "Automatically adjust capacity based on demand while maintaining performance."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: ["elasticity", "&", "autoscaling"]
+image: /img/archman-social-card.webp
+tags: [reliability, performance, patterns, scalability]
+hide_title: true
+---
+
+<Hero title="Elasticity & Autoscaling Triggers" subtitle="Automatically adjust capacity based on demand while maintaining performance." imageAlt="elasticity & autoscaling triggers illustration" size="large" />
+
+## TL;DR
+
+Automatically adjust capacity based on demand while maintaining performance. This pattern is proven in production at scale and requires thoughtful implementation, continuous tuning, and rigorous monitoring to realize its benefits.
+
+## Learning Objectives
+
+- Understand the problem this pattern solves
+- Learn when and how to apply it correctly
+- Recognize trade-offs and failure modes
+- Implement monitoring to validate effectiveness
+- Apply the pattern in your own systems
+
+## Motivating Scenario
+
+Your SaaS platform uses autoscaling to handle demand spikes: when requests exceed 70% CPU utilization, new instances spin up automatically. But on Black Friday, traffic doubles unexpectedly. Without proper scaling triggers and limits, your cloud bill explodes (100 instances instead of 5). With intelligent triggers, you scale only when needed. Furthermore, horizontal scaling alone isn't enough: if a single pod can't handle more than 50 concurrent connections and you have 10 pods, your effective capacity is 500 connections. Scale to 100 pods and you'd serve 5000, but your database connection pool maxes out at 200. You need to scale different components together: web tier + database + cache. Misconfigured elasticity causes overspending or underperformance.
+
+## Core Concepts
+
+### Autoscaling Triggers
+
+Different metrics trigger scaling at different times:
+
+**CPU-based**: Scale when CPU under 30% (scale down) or above 70% (scale up). Simple but reactive; doesn't predict spikes.
+
+**Memory-based**: Scale when memory utilization is high. Good for memory-intensive apps (data processing, in-memory caches).
+
+**Requests per second**: Scale based on RPS (e.g., scale up at 1000 RPS/instance). More predictive than CPU.
+
+**Custom metrics**: Business-level metrics (shopping cart abandonment, checkout latency, API queue depth). Most accurate but requires instrumentation.
+
+**Predictive**: Use historical patterns to anticipate peaks (e.g., Friday afternoon spike). Requires ML; proactive vs reactive.
+
+### Pattern Purpose
+
+Elasticity & Autoscaling Triggers enables systems to handle demand spikes automatically without manual intervention. Right-sizing capacity saves cost; wrong sizing causes outages or overspending.
+
+### Key Principles
+
+1. **Right-size for baseline, scale for peaks:** Baseline capacity covers normal load; autoscaling handles spikes.
+2. **Predictable scaling:** Scale metrics should be stable and responsive (not jittery).
+3. **Bounded scaling:** Set max instances to prevent runaway cloud bills.
+4. **Holistic scaling:** Scale web + database + cache together, not independently.
+
+### When to Use
+
+- Handling variable and unpredictable load
+- Cost optimization (pay for resources only when needed)
+- Maintaining performance under spikes
+- Managing growth over time
+
+### When NOT to Use
+
+- Application is stateful and scaling is complex
+- Load is predictable (can pre-provision)
+- Scaling latency is unacceptable (10min to spin up instance is too slow)
+
+## Practical Examples
+
+<Tabs>
+<TabItem value="k8s" label="Kubernetes HPA">
+
+```yaml
+# Horizontal Pod Autoscaler: scale based on CPU
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-server-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-server
+  minReplicas: 2
+  maxReplicas: 100
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale up at 70% CPU
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale up at 80% memory
+  # Custom metric: requests per second
+  - type: Pods
+    pods:
+      metric:
+        name: requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "1000"  # Scale up at 1000 RPS per pod
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5min before scaling down
+      policies:
+      - type: Percent
+        value: 50  # Scale down by max 50% every 1min
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Scale up immediately
+      policies:
+      - type: Percent
+        value: 100  # Scale up by max 100% every 30s
+        periodSeconds: 30
+      - type: Pods
+        value: 10  # Add at least 10 pods every 30s
+        periodSeconds: 30
+```
+
+</TabItem>
+<TabItem value="aws" label="AWS Auto Scaling">
+
+```yaml
+# AWS EC2 Auto Scaling Group
+Resources:
+  WebServerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: 2
+      MaxSize: 100
+      DesiredCapacity: 5
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      LaunchTemplate:
+        LaunchTemplateId: lt-1234567890abcdef0
+        Version: $Latest
+      TargetGroupARNs:
+        - arn:aws:elasticloadbalancing:...
+
+  # Target tracking: scale based on CPU
+  CPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebServerASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 70.0  # Keep CPU at 70%
+        ScaleOutCooldown: 60  # Min 1min between scale-up
+        ScaleInCooldown: 300  # Min 5min between scale-down
+
+  # Custom metric: scale based on app metrics
+  RequestsPerSecondPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebServerASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        CustomizedMetricSpecification:
+          MetricName: RequestsPerSecond
+          Namespace: MyApp
+          Statistic: Average
+        TargetValue: 1000.0  # Keep at 1000 RPS per instance
+```
+
+</TabItem>
+<TabItem value="pitfalls" label="Common Pitfalls & Solutions">
+
+```yaml
+Pitfall 1: Thrashing
+  Symptom: Instances scale up and down repeatedly
+  Cause: Metrics too jittery or cooldown too short
+  Solution: Increase cooldown (300s), use stabilization window, aggregate metrics over time
+
+Pitfall 2: Cascading Failures
+  Symptom: Scaling can't keep up; queue grows unbounded
+  Cause: Scale-up latency (10min per instance) exceeds queue growth rate
+  Solution: Pre-provision more capacity, use queue-based scaling (scale when queue > 1000 items)
+
+Pitfall 3: Overspending
+  Symptom: Cloud bill unexpectedly high despite autoscaling
+  Cause: Max replicas too high (100 instances × $0.50/hr = $50/hr)
+  Solution: Set reasonable max (e.g., 20 instances), alert when max reached consistently
+
+Pitfall 4: Stateful App Scaling Issues
+  Symptom: Users get 502 errors when instance scales down
+  Cause: Session lost when instance terminating (no graceful shutdown)
+  Solution: Use connection draining, sticky sessions, or store sessions in distributed cache
+
+Pitfall 5: Bottlenecked Downstream
+  Symptom: Scaling web tier doesn't improve latency
+  Cause: Database is the bottleneck (can't handle more connections)
+  Solution: Scale holistically (web + database + cache), or add caching layer
+
+Solution Patterns:
+  Pre-scaling: Scale before demand arrives (predictive, ML-based)
+  Queue-based: Scale based on queue depth, not just CPU
+  Custom metrics: Use business metrics (checkout latency, not CPU)
+  Connection pooling: Limit database connections per instance
+  Request batching: Reduce overhead per request
+```
+
+</TabItem>
+</Tabs>
+
+## Implementation Guide
+
+1. **Identify the Problem:** What specific failure mode are you protecting against?
+2. **Choose the Right Pattern:** Different problems need different solutions
+3. **Implement Carefully:** Half-implemented patterns are worse than nothing
+4. **Configure Based on Data:** Don't copy thresholds from blog posts
+5. **Monitor Relentlessly:** Validate the pattern actually solves your problem
+6. **Tune Continuously:** Thresholds need adjustment as load and systems change
+
+## Characteristics of Effective Implementation
+
+✓ Clear objectives: Can state in one sentence what you're solving
+✓ Proper monitoring: Can see whether pattern is working
+✓ Appropriate thresholds: Based on data from your system
+✓ Graceful failure mode: Unacceptable in production
+✓ Well-tested: Failure scenarios explicitly tested
+✓ Documented: Future maintainers understand why it exists
+
+## Pitfalls to Avoid
+
+❌ Blindly copying patterns: Thresholds from one system don't work for another
+❌ Over-retrying: Making failing service worse by hammering it
+❌ Forgetting timeouts: Retries without timeouts extend the pain
+❌ Silent failures: If circuit breaker opens, someone needs to know
+❌ No monitoring: Deploying patterns without metrics to validate
+❌ Set and forget: Patterns need tuning as load and systems change
+
+## Related Patterns
+
+- **Bulkheads:** Isolate different use cases so failures don't cascade
+- **Graceful Degradation:** Degrade functionality when load is high
+- **Health Checks:** Detect failures requiring retry or circuit breaker
+- **Observability:** Metrics and logs showing whether pattern works
+
+## Checklist: Implementation Readiness
+
+- [ ] Problem clearly identified and measured
+- [ ] Pattern selected is appropriate for the problem
+- [ ] Thresholds based on actual data from your system
+- [ ] Failure mode is explicit and acceptable
+- [ ] Monitoring and alerts configured before deployment
+- [ ] Failure scenarios tested explicitly
+- [ ] Team understands the pattern and trade-offs
+- [ ] Documentation explains rationale and tuning
+
+## Self-Check
+
+1. **Can you state in one sentence why you need this pattern?** If not, you might not need it.
+2. **Have you measured baseline before and after?** If not, you don't know if it helps.
+3. **Did you tune thresholds for your system?** Or copy them from a blog post?
+4. **Can someone on-call understand what triggers and what it does?** If not, document better.
+
+## Takeaway
+
+These patterns are powerful because proven in production. But power comes with complexity. Implement only what you need, tune based on data, and monitor relentlessly. A well-implemented pattern you understand is worth far more than several half-understood patterns copied from examples.
+
+## Next Steps
+
+1. **Identify the problem:** What specific failure mode are you protecting against?
+2. **Gather baseline data:** Measure current behavior before implementing
+3. **Implement carefully:** Start simple, add complexity only if needed
+4. **Monitor and measure:** Validate the pattern actually helps
+5. **Tune continuously:** Adjust thresholds based on production experience
+
+## Autoscaling Case Studies
+
+### Case Study 1: E-Commerce Peak Hours
+
+```yaml
+Scenario: E-commerce site with peak traffic on weekdays 6-10pm
+
+Without Autoscaling:
+  Baseline: 100 instances
+  Peak demand: 500 instances needed
+  Fixed cost: Always pay for 500 instances
+  Result: Overpaying $X/month
+
+With Time-Based Autoscaling:
+  Baseline (off-peak): 100 instances
+  6pm: Scale to 300 instances
+  8pm: Scale to 500 instances (peak)
+  10pm: Scale back to 300 instances
+  10am next day: Back to 100 instances
+  Result: Only pay for what's needed
+
+Metrics Tracked:
+  - Request latency (P50, P95, P99)
+  - Error rate (5xx errors)
+  - CPU utilization per instance
+  - Network throughput
+  - Cost per request
+
+Decision Points:
+  - If P99 latency > 500ms, scale up
+  - If CPU > 80% on all instances, scale up
+  - If error rate > 1%, scale up
+  - If CPU < 20% on all instances, scale down
+```
+
+### Case Study 2: Background Job Processing
+
+```yaml
+Scenario: Image processing service with unpredictable load
+
+Without Queue-Based Autoscaling:
+  Issue: 1000 images arrive suddenly
+  - Try to process all at once
+  - Workers thrash, memory spikes
+  - Some images dropped
+
+With Queue-Based Autoscaling:
+  - 1000 images → Queue
+  - Monitor queue depth
+  - If queue_depth > 500, spin up 10 more workers
+  - Workers process at sustainable rate
+  - New images still arrive, but queue length known
+
+Scaling Policy:
+  queue_depth < 100: 5 workers (overkill, waste money)
+  queue_depth 100-500: 10 workers
+  queue_depth 500-1000: 15 workers
+  queue_depth > 1000: 20 workers (max)
+
+Benefits:
+  - Queue always < 1000 images (predictable latency)
+  - Workers never overloaded
+  - Cost proportional to actual work
+  - Easy to debug (queue visible)
+```
+
+### Avoiding Thrashing
+
+Thrashing: Instances repeatedly scale up/down due to jittery metrics.
+
+```yaml
+Problem:
+  Metrics jump between 70% and 65% CPU
+  → Scale up (goes to 90%)
+  → Scale down (goes to 40%)
+  → Scale up again
+  → Constant churn, wasted startup time
+
+Solution: Stabilization Window
+
+Kubernetes HPA:
+  scaleDownStabilization: 300 seconds
+    → Don't scale down until metrics < threshold for 5min
+    → Prevents hair-trigger downscaling
+
+  scaleUpStabilization: 0 seconds
+    → Scale up immediately (acceptable risk)
+
+Result:
+  - Eager to scale up (responsive)
+  - Reluctant to scale down (avoids waste)
+  - Stable at peak
+
+Example:
+  Spike at 12:00pm → Scale to 100 instances
+  Metric stays high → Keep 100 instances
+  Spike ends at 12:15pm → Start cooling down
+  Wait 5 minutes (stabilization window)
+  12:20pm → Metrics low, scale down to 50
+  (Not scaled up/down 10 times between 12:00-12:20)
+```
+
+## References
+
+1. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+2. <a href="https://www.amazon.com/Site-Reliability-Engineering-Production-Systems/dp/149192912X" target="_blank" rel="nofollow noopener noreferrer">Google SRE Book ↗️</a>
+3. <a href="https://martinfowler.com/bliki/CircuitBreaker.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Circuit Breaker Pattern ↗️</a>
+4. Kubernetes Horizontal Pod Autoscaler Documentation
+5. AWS Auto Scaling Documentation

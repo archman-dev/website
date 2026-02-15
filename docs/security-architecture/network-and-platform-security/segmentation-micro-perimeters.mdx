@@ -1,0 +1,683 @@
+---
+title: "Network Segmentation and Micro-Perimeters"
+sidebar_position: 1
+label: "Network Segmentation and Micro-Perimeters: Zero Trust Boundaries"
+body: "Designing network segmentation strategies, micro-segmentation, and zero-trust architectures to limit lateral movement and enforce principle of least privilege."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 13
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, security-lead, infrastructure]
+keywords: [network-segmentation, zero-trust, lateral-movement, microsegmentation, network-boundaries, east-west-traffic, firewall-rules, service-mesh, least-privilege]
+image: /img/archman-social-card.webp
+tags: [security, network, segmentation, zero-trust, micro-segmentation, lateral-movement, least-privilege, network-architecture, boundaries]
+hide_title: true
+---
+
+<Hero title="Network Segmentation and Micro-Perimeters" subtitle="Zero Trust Boundaries for Lateral Movement Control" imageAlt="illustration" size="large" />
+
+## TL;DR
+
+Network segmentation divides a network into isolated security zones, limiting lateral movement when a breach occurs. Zero-trust architecture extends this by treating every access request as untrusted and verifying identity, device posture, and intent before granting access. Micro-segmentation applies zero-trust principles within data centers and cloud environments, creating fine-grained boundaries around individual workloads.
+
+## Learning Objectives
+
+- Understand traditional network segmentation vs. zero-trust micro-segmentation
+- Design network boundaries that limit blast radius and lateral movement
+- Implement segmentation strategies (perimeter, VPC, service mesh, identity-based)
+- Evaluate and deploy zero-trust access controls
+- Monitor and enforce segmentation policies
+
+## Motivating Scenario
+
+In the 2013 Target breach, attackers initially compromised HVAC vendor credentials. If strict network segmentation existed, the vendor's network access would have been isolated to HVAC systems only. Instead, attackers pivoted from the HVAC system to POS systems where credit cards were stored. The attack succeeded because every system trusted every other system once a single credential was compromised.
+
+Modern approaches implement multiple trust boundaries:
+- Assume breach: assume attacker is inside the network
+- Verify every access request (identity, device, behavior)
+- Minimize lateral movement by isolating workloads
+- Log and alert on all cross-boundary traffic
+
+## Core Concepts
+
+### Traditional Network Segmentation
+
+**Perimeter-based approach**: Divide network into zones with different trust levels
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  Internet                            │
+└──────────────────────────────────────────────────────┘
+                         |
+              ┌──────────┴──────────┐
+              │      Firewall      │
+              └──────────┬──────────┘
+                         |
+     ┌───────────────────┼───────────────────┐
+     │                   │                   │
+┌────▼──────┐    ┌──────▼──────┐    ┌──────▼──────┐
+│ DMZ Zone  │    │ Internal    │    │ Database    │
+│ (Public)  │    │ Apps (Med)  │    │ Zone (High) │
+└───────────┘    └─────────────┘    └─────────────┘
+```
+
+**Limitations**:
+- Trusts all internal traffic equally
+- Difficult to implement in cloud/hybrid environments
+- Doesn't prevent lateral movement
+- Focused on perimeter security only
+
+### Zero-Trust Architecture
+
+**Principles**:
+1. **Verify identity**: Every user and device authenticated
+2. **Verify device posture**: Operating system, patches, antivirus status
+3. **Verify access intent**: What application/resource accessed and why
+4. **Least privilege**: Minimal permissions required for task
+5. **Assume breach**: Monitor and log all traffic as if hostile
+6. **Encrypt everything**: All data in transit and at rest
+
+**Zero-Trust Model**:
+```
+User/Device → Authentication → Device Check → Policy Engine → Resource Access
+                    ↓              ↓               ↓
+             MFA, Certificate   Compliance    RBAC/ABAC
+                                Patches        Rate Limit
+```
+
+### Micro-Segmentation
+
+**Definition**: Network segmentation at granular level—individual workloads, containers, or applications rather than broad zones.
+
+**Implementation Approaches**:
+
+| Approach | Scope | Example | Enforcement |
+|----------|-------|---------|---|
+| **VPC/Subnet** | Cloud networks | AWS security groups | Infrastructure ACLs |
+| **Service Mesh** | Container orchestration | Istio, Linkerd | Sidecar proxies |
+| **Host-based** | Individual servers | iptables, Windows Firewall | Host kernel |
+| **Identity-based** | Users/applications | Okta, Azure AD | Proxy/controller |
+
+## Practical Example
+
+### Implementing Segmentation
+
+<Tabs>
+<TabItem value="aws" label="AWS VPC Segmentation">
+
+```yaml
+VPC: 10.0.0.0/16
+
+Subnets:
+  DMZ (Public):
+    CIDR: 10.0.1.0/24
+    Routes: 0.0.0.0/0 → Internet Gateway
+    Security Group Ingress:
+      - Port 443 from 0.0.0.0/0 (HTTPS only)
+    Security Group Egress:
+      - Restricted to 10.0.2.0/24 (app subnet)
+
+  Application (Private):
+    CIDR: 10.0.2.0/24
+    Routes: 0.0.0.0/0 → NAT Gateway
+    Security Group Ingress:
+      - Port 8080 from 10.0.1.0/24 (from DMZ)
+    Security Group Egress:
+      - Port 5432 to 10.0.3.0/24 (database)
+
+  Database (Private):
+    CIDR: 10.0.3.0/24
+    Security Group Ingress:
+      - Port 5432 from 10.0.2.0/24 (from app)
+    Security Group Egress: None
+```
+
+</TabItem>
+<TabItem value="k8s" label="Kubernetes Network Policy">
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-to-db
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: database
+    ports:
+    - protocol: TCP
+      port: 5432
+```
+
+</TabItem>
+<TabItem value="zero-trust" label="Zero-Trust Policy">
+
+```yaml
+AccessPolicy:
+  Resource: database.prod
+  Allow:
+    Users: data-engineers@company.com
+    MFA: Required
+    Device:
+      Patches: Current
+      Antivirus: Enabled
+    Time: Business Hours
+    Logging: All queries to SIEM
+```
+
+</TabItem>
+</Tabs>
+
+## Segmentation Strategies
+
+### Strategy 1: Business Function Segmentation
+Isolate by application domain: Finance, HR, Customer facing, etc.
+
+### Strategy 2: Sensitivity-Based Segmentation
+Isolate by data classification: Public → Internal → Confidential → Restricted
+
+### Strategy 3: Environment-Based Segmentation
+Separate prod from non-prod with firewall boundary
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0]} items={[
+{
+    label: "Segmentation Best Practices",
+    points: [
+      "Multiple segmentation layers (network, service, identity)",
+      "Identity-based access for cloud and remote workers",
+      "Encrypt all traffic between segments",
+      "Default deny: explicitly allow traffic",
+      "Log all cross-boundary traffic",
+      "Define policies in infrastructure as code",
+      "Test segmentation regularly"
+    ]},
+{
+    label: "Common Mistakes",
+    points: [
+      "Single perimeter boundary only",
+      "Manual firewall rule management",
+      "Default allow between segments",
+      "No logging of cross-boundary traffic",
+      "No testing of segmentation",
+      "Assuming NAT provides security"
+    ]
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Multiple segmentation layers defined?",
+  "Production isolated from non-production?",
+  "Sensitive data in restricted zone?",
+  "DMZ isolated from internal network?",
+  "MFA required for all access?",
+  "Device posture verified?",
+  "Context-aware policies implemented?",
+  "Default deny configured?",
+  "Policies defined in code?",
+  "Rule changes reviewed and audited?",
+  "All cross-boundary traffic logged?",
+  "Denied connections logged?",
+  "Anomaly detection enabled?"
+]} />
+
+## Real-World Segmentation Scenarios
+
+### Scenario 1: Healthcare (HIPAA)
+
+```
+┌─────────────────────────────────────────────┐
+│ Internet                                    │
+└────────────┬────────────────────────────────┘
+             │
+         ┌───▼────────┐
+         │ WAF + DDoS │
+         └───┬────────┘
+             │
+     ┌───────┴──────────┐
+     │                  │
+┌────▼────────┐   ┌────▼─────────┐
+│ Public Zone │   │ Patient Data  │
+│ (static)    │   │ Zone (PHI)    │
+│             │   │ (encrypted)   │
+└─────────────┘   └────┬──────────┘
+                       │
+                   ┌───▼────────────┐
+                   │ Doctor Workstations
+                   │ (MFA + encryption)
+                   └────────────────┘
+
+Rules:
+- Workstations → Patient DB: Allowed (HIPAA audit log)
+- Patient DB → Internet: Blocked
+- Public Zone → Patient DB: Blocked
+- Any breach in Public Zone doesn't reach PHI
+```
+
+### Scenario 2: Financial Services (PCI)
+
+```
+┌──────────────────────────────────────────────┐
+│ Internet/Cardholder Data                     │
+└────────────┬─────────────────────────────────┘
+             │
+         ┌───▼────────────┐
+         │ PCI Firewall   │
+         │ (IDS/IPS)      │
+         └───┬────────────┘
+             │
+     ┌───────┴────────────┐
+     │                    │
+┌────▼────────────┐ ┌────▼──────────────┐
+│ Payment Gateway │ │ Cardholder Data   │
+│ (isolated)      │ │ Zone (encrypted)  │
+│                 │ │ (compliance audit)│
+└─────────────────┘ └────┬──────────────┘
+                         │
+                  ┌──────▼────────┐
+                  │ App Servers   │
+                  │ (no CHD)      │
+                  │ (tokens only) │
+                  └───────────────┘
+
+Rules:
+- Cardholder Data Zone = Maximally restricted
+- App servers only see tokenized data
+- External systems never see raw card numbers
+```
+
+### Scenario 3: Multi-Tenant SaaS
+
+```
+┌────────────────────────────────────┐
+│ Shared Infrastructure              │
+├────────────────────────────────────┤
+│ ┌──────────┐ ┌──────────┐          │
+│ │Customer1 │ │Customer2 │ ...      │
+│ │Namespace │ │Namespace │          │
+│ │(isolated)│ │(isolated)│          │
+│ └────┬─────┘ └────┬─────┘          │
+│      │            │                 │
+│ ┌────▼────────────▼─────┐          │
+│ │ Shared Data Layer     │          │
+│ │ (row-level filtering) │          │
+│ └───────────────────────┘          │
+│      ↓                             │
+│ ┌───────────────────────┐          │
+│ │ Shared Database       │          │
+│ │ (encryption by tenant)│          │
+│ └───────────────────────┘          │
+└────────────────────────────────────┘
+
+Rules:
+- Each tenant = isolated namespace
+- Row-level security on shared DB
+- Customer1 data never visible to Customer2 app
+- Admin console has cross-tenant visibility (audit log every access)
+```
+
+## Zero Trust Verification Checklist
+
+When implementing zero trust, verify:
+
+```
+Identity Verification:
+├─ [ ] All users can authenticate (no shared passwords)
+├─ [ ] MFA mandatory for sensitive access
+├─ [ ] Service accounts have machine credentials (not passwords)
+└─ [ ] Session timeout after inactivity
+
+Device Trust:
+├─ [ ] Inventory of all endpoints
+├─ [ ] EDR installed on all endpoints
+├─ [ ] OS patches current
+├─ [ ] Antivirus/malware protection active
+└─ [ ] Compliance health score required
+
+Access Control:
+├─ [ ] RBAC defined (roles, not individual access)
+├─ [ ] Least privilege enforcement
+├─ [ ] Access reviews quarterly
+├─ [ ] Break-glass procedures documented
+└─ [ ] Privileged access management (PAM)
+
+Encryption:
+├─ [ ] Data at rest encrypted
+├─ [ ] Data in transit encrypted (TLS 1.3)
+├─ [ ] Key management centralized
+├─ [ ] Key rotation configured
+└─ [ ] Encryption enforced (no bypass)
+
+Monitoring:
+├─ [ ] All access logged (identity, resource, timestamp)
+├─ [ ] Logs centralized (SIEM)
+├─ [ ] Alerts on anomalies
+├─ [ ] Incident response playbooks
+└─ [ ] Compliance reporting automated
+```
+
+## Self-Check
+
+- Can you map your network boundaries?
+- What is the blast radius if one segment is compromised?
+- Do you log all cross-boundary traffic?
+- How quickly can you detect lateral movement?
+- What's your break-glass procedure if segmentation causes outage?
+
+:::info One Takeaway
+
+Network segmentation limits lateral movement after a breach. Assume attackers are already inside; segment aggressively to maximize time and visibility.
+
+:::
+
+## Next Steps
+
+1. Map current network topology and data flows
+2. Classify applications and data by sensitivity
+3. Define segmentation boundaries
+4. Implement zero-trust access controls
+5. Automate policies with infrastructure as code
+6. Enable monitoring and anomaly detection
+
+## Implementation Challenges and Solutions
+
+### Challenge 1: Overly Restrictive Policies
+
+Problem: Segmentation so strict that legitimate traffic is blocked, breaking applications.
+
+```yaml
+# WRONG: Too restrictive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  # No rules = nothing can communicate!
+```
+
+Solution: Start permissive, tighten gradually:
+
+```yaml
+# RIGHT: Start with observability
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-to-db-with-logging
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: database
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system  # Allow DNS
+    ports:
+    - protocol: UDP
+      port: 53
+---
+# Monitor violations before blocking
+apiVersion: networking.calico.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-to-db-monitor
+spec:
+  selector: app == "api"
+  types:
+  - Egress
+  egress:
+  - action: Log
+    to:
+    - selector: app == "database"
+```
+
+### Challenge 2: DNS and Service Discovery
+
+Problem: Segmentation breaks DNS resolution or service discovery.
+
+Solution: Explicit DNS allowance:
+
+```yaml
+# Allow DNS for all pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dns-allow
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    - podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+```
+
+### Challenge 3: Management at Scale
+
+Problem: Hundreds of policies across many environments become unmanageable.
+
+Solution: Policy-as-code and templates:
+
+```python
+class SegmentationPolicyGenerator:
+    """Generate consistent policies from templates."""
+
+    def generate_microservice_policies(self, service_name: str,
+                                      dependencies: List[str]):
+        """Auto-generate segmentation policies."""
+
+        # Ingress: Allow from frontend or API gateway
+        ingress_policy = {
+            'name': f'{service_name}-ingress',
+            'selector': {'app': service_name},
+            'rules': [
+                {'from': [{'pod': 'api-gateway'}], 'ports': [80, 443]},
+                {'from': [{'pod': 'frontend'}], 'ports': [8080]}
+            ]
+        }
+
+        # Egress: Allow to dependencies
+        egress_rules = []
+        for dep in dependencies:
+            egress_rules.append({
+                'to': [{'pod': dep}],
+                'ports': [3306]  # Assuming database
+            })
+
+        # Always allow DNS
+        egress_rules.append({
+            'to': [{'pod': 'kube-dns'}],
+            'ports': [53]
+        })
+
+        egress_policy = {
+            'name': f'{service_name}-egress',
+            'selector': {'app': service_name},
+            'rules': egress_rules
+        }
+
+        return [ingress_policy, egress_policy]
+
+# Usage
+generator = SegmentationPolicyGenerator()
+policies = generator.generate_microservice_policies(
+    'user-service',
+    dependencies=['user-db', 'auth-service', 'cache']
+)
+# Generates consistent, testable policies
+```
+
+## Monitoring and Enforcement
+
+```python
+class SegmentationMonitor:
+    """Monitor policy violations and enforce zero-trust."""
+
+    def __init__(self, siem):
+        self.siem = siem
+        self.violations = []
+
+    def detect_violations(self):
+        """Find traffic that violates policies."""
+        # Query network logs for denied connections
+        denied_traffic = self.siem.query(
+            'event_type == "network_denied"',
+            last_hour=True
+        )
+
+        for traffic in denied_traffic:
+            violation = {
+                'src_ip': traffic.source_ip,
+                'dst_ip': traffic.dest_ip,
+                'port': traffic.port,
+                'timestamp': traffic.timestamp,
+                'protocol': traffic.protocol
+            }
+            self.violations.append(violation)
+            self.alert_on_anomaly(violation)
+
+    def alert_on_anomaly(self, violation):
+        """Alert if traffic suggests breach."""
+        # Anomalies: unusual ports, unusual hours, new paths
+        if violation['port'] not in [80, 443, 22]:
+            if violation['timestamp'].hour > 22 or violation['timestamp'].hour < 6:
+                self.siem.create_alert(
+                    'Unusual cross-segment traffic detected',
+                    severity='HIGH',
+                    details=violation
+                )
+
+    def auto_remediate(self, violation):
+        """Automatically block suspicious traffic."""
+        # Revoke temporary access tokens
+        # Isolate affected workload
+        # Add firewall rule
+        self.siem.block_traffic(
+            violation['src_ip'],
+            violation['dst_ip'],
+            violation['port']
+        )
+        self.siem.isolate_workload(violation['src_ip'])
+```
+
+## Real-World Segmentation Strategy
+
+```
+Tier 0 (Critical):
+├── Payment processing (PCI-DSS)
+├── Customer data (encrypted)
+└── Authentication systems
+
+Tier 1 (Internal):
+├── Application servers
+├── Caches
+└── Message queues
+
+Tier 2 (Development):
+├── Test environments
+└── Build systems
+
+Policies:
+Tier 0 ↔ Tier 1: Allowed (authenticated, encrypted)
+Tier 1 ↔ Tier 2: One-way (Tier 2 → Tier 1 allowed, reverse blocked)
+Tier 0 ↔ Tier 2: Blocked (no direct access to prod from dev)
+Internet ↔ Tier 0/1: Whitelist only (through API gateway)
+Internet ↔ Tier 2: Full access for development
+```
+
+## Measuring Segmentation Effectiveness
+
+```python
+class SegmentationMetrics:
+    def __init__(self, network_log_store):
+        self.logs = network_log_store
+
+    def get_blast_radius(self, compromised_workload: str) -> int:
+        """How many workloads could attacker reach from here?"""
+        # Query allowed egress rules
+        allowed_connections = self._get_allowed_destinations(compromised_workload)
+
+        # If attacker pivots to each, how far can they go?
+        reachable = set(allowed_connections)
+        for dest in allowed_connections:
+            transitive = self._get_allowed_destinations(dest)
+            reachable.update(transitive)
+
+        return len(reachable)
+
+    def get_lateral_movement_time(self) -> float:
+        """Average time to move laterally between segments."""
+        lateral_moves = self.logs.query(
+            'cross_segment_traffic == true'
+        )
+
+        if not lateral_moves:
+            return float('inf')  # No lateral movement possible (ideal)
+
+        avg_time = sum(m.duration for m in lateral_moves) / len(lateral_moves)
+        return avg_time
+
+    def test_breach_containment(self):
+        """War game: simulate breach and measure containment."""
+        # Assume web server compromised
+        compromised = 'web-server-1'
+
+        reachable = self._simulate_lateral_movement(compromised)
+
+        # Ideal: can only reach database, not other services
+        return {
+            'can_reach_database': 'database' in reachable,
+            'can_reach_cache': 'cache' in reachable,  # Should be false
+            'can_reach_auth': 'auth-service' in reachable,  # Should be false
+            'blast_radius': len(reachable)
+        }
+```
+
+## References
+
+- [NIST Zero Trust Architecture (SP 800-207)](https://csrc.nist.gov/publications/detail/sp/800-207/final)
+- [Kubernetes Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+- [AWS VPC Security Best Practices](https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Security.html)
+- "Zero Trust Networks" by Gilman & Barth
+- "Forrester Zero Trust eXtended Ecosystem"

@@ -1,0 +1,510 @@
+---
+sidebar_position: 2
+title: "Log Levels and Governance"
+description: "Use log levels strategically, enforce consistency across teams, and optimize storage costs while maintaining debuggability."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [logging, log-levels, governance, storage-costs, retention, performance, consistency, debugging, observability, best-practices]
+image: /img/archman-social-card.webp
+tags: [logging, governance, observability, performance, cost-optimization, debugging, best-practices, logging-strategy, log-management, standards]
+hide_title: true
+---
+
+<Hero title="Log Levels and Governance" subtitle="Use log levels strategically, enforce consistency across teams, and optimize storage costs while maintaining debuggability." imageAlt="Log levels illustration" size="large" />
+
+## TL;DR
+
+Five standard log levels: DEBUG (verbose development info), INFO (normal operations), WARN (recoverable problems), ERROR (failures), FATAL (system shutdown). In production, default to INFO—capture decisions, state changes, errors. DEBUG is expensive; enable selectively for troubleshooting. WARN for deprecated features and correctable errors. ERROR/FATAL for problems requiring attention. Establish team standards: what should be logged at each level, consistency in message format, required fields. Review and adjust levels based on actual production experience—one team's INFO is noise to another. Governance prevents log explosion while preserving debuggability. Use dynamic log level adjustment to enable DEBUG temporarily during incidents without redeploying.
+
+## Learning Objectives
+
+- Understand the standard log levels and their purposes
+- Apply log levels strategically based on severity and frequency
+- Establish logging governance across teams and services
+- Balance verbosity with storage costs and performance
+- Implement dynamic log level adjustment for debugging
+- Design runbooks to guide what to log during incidents
+
+## Motivating Scenario
+
+Your system suddenly generates 10x the logs overnight. Storage costs spike. The log aggregator becomes slow. You investigate: a junior developer added `logger.debug()` calls at every function entry, now enabled in production. Meanwhile, other teams log aggressively at INFO level. Some services log passwords in error messages. There's no standard for what "ERROR" means—one service logs recoverable database glitches as errors; another only logs catastrophic failures. Governance would have prevented this: clear standards for log levels, code review for logging, and periodic audits of log volume.
+
+## Core Concepts
+
+### Log Level Hierarchy
+
+**DEBUG**: Fine-grained information for developers. Function entry/exit, variable values, detailed state. Rarely enabled in production; expensive.
+
+**INFO**: Normal operations and key events. Requests processed, feature flags toggled, services starting. The expected noise of a running system.
+
+**WARN**: Recoverable problems. Retries, deprecated features, degraded modes, missing optional data. Investigate, but system continues.
+
+**ERROR**: Failures. Crashed processes, failed requests, exceptions. Requires investigation and usually human attention.
+
+**FATAL**: System-level failures requiring shutdown. Core dependency unavailable, critical validation failures. Logs before exit.
+
+### Governance Principles
+
+Establish standards: which level for which scenarios, consistent message format, required fields. Document exceptions (why does service X log differently?). Review logging practices during code reviews. Audit log volume and adjust levels as needed. Use dynamic configuration to adjust levels without redeploying.
+
+### Storage and Cost
+
+Logs are expensive to store and query. Each INFO log might cost 1 cent per million entries after a year. DEBUG logs cost 10x more because they're verbose. WARN and above should be rare—a healthy system has few warnings. ERROR logs are valuable; keep them long-term. Balance: log enough to troubleshoot, not so much that you can't find the signal.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - No governance, inconsistent levels, excessive logging
+import logging
+
+logger = logging.getLogger(__name__)
+
+def process_order(order_id, items):
+    # Too verbose
+    logger.debug(f"Processing order {order_id}")
+    logger.debug(f"Items: {items}")
+
+    for item in items:
+        logger.debug(f"Checking item {item}")
+        if item['quantity'] < 0:
+            logger.warn(f"Negative quantity: {item}")  # Should be ERROR
+            return None
+
+    result = charge_card(order_id)
+    if not result:
+        logger.debug("Card charge failed")  # Should be ERROR with details
+        return None
+
+    logger.debug("Order completed")  # Should be INFO
+
+    return result
+
+# Results: 1000+ log lines per order. Chaos.
+
+# ✅ EXCELLENT - Governance with standards
+import logging
+from enum import Enum
+from typing import Optional
+
+class LogLevel(Enum):
+    """Standard log levels with documented purposes."""
+    DEBUG = "DEBUG"      # Function entry/exit, variable inspection
+    INFO = "INFO"        # Key business events, state changes
+    WARN = "WARN"        # Recoverable issues, retries
+    ERROR = "ERROR"      # Failures requiring attention
+    FATAL = "FATAL"      # System shutdown
+
+class LogStandards:
+    """Logging governance documentation."""
+
+    RULES = {
+        # Database operations
+        'database.query': 'INFO - slow queries (>500ms): WARN',
+        'database.error': 'ERROR - connection failures, deadlocks',
+        'database.debug': 'DEBUG - only in development',
+
+        # Business logic
+        'order.created': 'INFO - new order with amount',
+        'order.failed': 'ERROR - why it failed, user/order IDs',
+        'order.retry': 'WARN - attempt N of M with backoff details',
+
+        # Payments
+        'payment.attempt': 'INFO - payment initiation',
+        'payment.fraud_check': 'INFO - result and score',
+        'payment.failed': 'ERROR - processor response and reason',
+
+        # System
+        'startup': 'INFO - version, config summary',
+        'shutdown': 'INFO - graceful or error shutdown',
+        'feature_flag': 'INFO - flag toggled with new value',
+    }
+
+    # Required fields by log level
+    REQUIRED_FIELDS = {
+        'ERROR': ['error_code', 'error_message', 'impact'],
+        'WARN': ['issue', 'action_taken'],
+        'INFO': ['event_type'],
+    }
+
+    @staticmethod
+    def validate(level: str, fields: dict):
+        """Validate log entry against standards."""
+        required = LogStandards.REQUIRED_FIELDS.get(level, [])
+        missing = [f for f in required if f not in fields]
+        if missing:
+            raise ValueError(f"Missing required fields for {level}: {missing}")
+
+# Environment-based log level configuration
+import os
+
+LOG_CONFIG = {
+    'local': logging.DEBUG,
+    'staging': logging.INFO,
+    'production': logging.INFO,
+}
+
+DYNAMIC_LOG_LEVELS = {
+    'payment-service': logging.INFO,
+    'fraud-service': logging.INFO,
+    'worker-pool': logging.WARN,  # Workers are noisy
+}
+
+def get_logger_for_service(service_name: str):
+    """Get logger with governance applied."""
+    logger = logging.getLogger(service_name)
+    base_level = LOG_CONFIG.get(os.getenv('ENV', 'local'), logging.DEBUG)
+    service_level = DYNAMIC_LOG_LEVELS.get(service_name, base_level)
+    logger.setLevel(service_level)
+    return logger
+
+logger = get_logger_for_service('order-service')
+
+def log_event(level: str, event_type: str, **fields):
+    """Log with validation against governance standards."""
+    try:
+        LogStandards.validate(level, fields)
+        fields['event_type'] = event_type
+
+        if level == 'ERROR':
+            logger.error(fields.pop('error_message', ''), extra=fields)
+        elif level == 'WARN':
+            logger.warning(fields.pop('issue', ''), extra=fields)
+        else:
+            logger.info(f"{event_type}", extra=fields)
+    except ValueError as e:
+        logger.error(f"Logging validation failed: {e}")
+
+def process_order(order_id: str, items: list) -> Optional[dict]:
+    """Process order with proper log levels."""
+
+    # INFO - order received
+    log_event('INFO', 'order.created', order_id=order_id, item_count=len(items))
+
+    # Validate items - ERROR if invalid
+    for item in items:
+        if item['quantity'] <= 0:
+            log_event('ERROR', 'order.invalid_item',
+                     error_code='INVALID_QUANTITY',
+                     error_message=f"Item {item['id']} has qty {item['quantity']}",
+                     impact='order_rejected',
+                     item_id=item['id'],
+                     order_id=order_id)
+            return None
+
+    # Try to charge - ERROR if failed
+    for attempt in range(3):
+        try:
+            result = charge_card(order_id)
+            if result['success']:
+                log_event('INFO', 'order.completed',
+                         order_id=order_id,
+                         transaction_id=result['id'],
+                         amount=result['amount'])
+                return result
+
+            if attempt < 2:
+                log_event('WARN', 'order.retry',
+                         attempt=attempt + 1,
+                         total_attempts=3,
+                         last_error=result.get('error'),
+                         backoff_seconds=2 ** attempt)
+        except Exception as e:
+            log_event('ERROR', 'order.failed',
+                     error_code='PAYMENT_ERROR',
+                     error_message=str(e),
+                     impact='order_failed',
+                     attempt=attempt + 1,
+                     order_id=order_id)
+            return None
+
+    return None
+
+# Dynamic log level adjustment
+def set_debug_mode_for_service(service_name: str, enable: bool):
+    """Enable DEBUG temporarily for troubleshooting."""
+    logger = logging.getLogger(service_name)
+    logger.setLevel(logging.DEBUG if enable else logging.INFO)
+    log_event('INFO', 'debug_mode_changed',
+             service=service_name,
+             debug_enabled=enable,
+             reason='incident_investigation')
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - Inconsistent levels, no governance
+package order
+
+import (
+    "log"
+)
+
+func ProcessOrder(orderID string, items []Item) error {
+    log.Printf("Processing order %s", orderID)
+    log.Printf("Items: %v", items)
+
+    for i, item := range items {
+        log.Printf("Checking item %d: %v", i, item)
+        if item.Quantity < 0 {
+            log.Printf("WARN: Negative quantity")  // Just a log.Printf
+            return fmt.Errorf("invalid quantity")
+        }
+    }
+
+    err := chargeCard(orderID)
+    if err != nil {
+        log.Printf("Error: %v", err)  // No severity
+        return err
+    }
+
+    log.Printf("Order completed")
+    return nil
+}
+
+// ✅ EXCELLENT - Governed logging with standards
+package order
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log/slog"
+    "os"
+    "time"
+)
+
+type LogLevel string
+
+const (
+    DEBUG LogLevel = "DEBUG"
+    INFO  LogLevel = "INFO"
+    WARN  LogLevel = "WARN"
+    ERROR LogLevel = "ERROR"
+    FATAL LogLevel = "FATAL"
+)
+
+type LogGovernance struct {
+    level            LogLevel
+    requiredFieldsBy map[LogLevel][]string
+}
+
+var governance = LogGovernance{
+    level: INFO,
+    requiredFieldsBy: map[LogLevel][]string{
+        ERROR: {"error_code", "error_message", "impact"},
+        WARN:  {"issue", "action_taken"},
+        INFO:  {"event_type"},
+    },
+}
+
+func getLogLevel(env string) slog.Level {
+    switch env {
+    case "production":
+        return slog.LevelInfo
+    case "staging":
+        return slog.LevelInfo
+    default:
+        return slog.LevelDebug
+    }
+}
+
+var logger *slog.Logger
+
+func init() {
+    env := os.Getenv("ENV")
+    if env == "" {
+        env = "local"
+    }
+
+    opts := &slog.HandlerOptions{
+        Level: getLogLevel(env),
+    }
+    logger = slog.New(slog.NewJSONHandler(os.Stdout, opts))
+}
+
+type LogEntry struct {
+    Timestamp time.Time
+    Level     LogLevel
+    EventType string
+    Fields    map[string]interface{}
+}
+
+func logEvent(ctx context.Context, level LogLevel, eventType string, fields map[string]interface{}) {
+    // Validate required fields
+    required := governance.requiredFieldsBy[level]
+    for _, field := range required {
+        if _, ok := fields[field]; !ok {
+            logger.ErrorContext(ctx, "Missing required field",
+                slog.String("level", string(level)),
+                slog.String("field", field),
+                slog.String("event_type", eventType))
+            return
+        }
+    }
+
+    fields["event_type"] = eventType
+
+    switch level {
+    case ERROR:
+        logger.ErrorContext(ctx, fields["error_message"].(string), fields)
+    case WARN:
+        logger.WarnContext(ctx, fields["issue"].(string), fields)
+    case INFO:
+        logger.InfoContext(ctx, fmt.Sprintf("%s", eventType), fields)
+    case DEBUG:
+        logger.DebugContext(ctx, fmt.Sprintf("%s", eventType), fields)
+    }
+}
+
+type Item struct {
+    ID       string
+    Quantity int
+    Price    float64
+}
+
+func ProcessOrder(ctx context.Context, orderID string, items []Item) error {
+    // INFO - order received
+    logEvent(ctx, INFO, "order.created", map[string]interface{}{
+        "order_id":   orderID,
+        "item_count": len(items),
+    })
+
+    // Validate - ERROR if invalid
+    for _, item := range items {
+        if item.Quantity <= 0 {
+            logEvent(ctx, ERROR, "order.invalid_item", map[string]interface{}{
+                "error_code":    "INVALID_QUANTITY",
+                "error_message": fmt.Sprintf("Item %s has qty %d", item.ID, item.Quantity),
+                "impact":        "order_rejected",
+                "item_id":       item.ID,
+                "order_id":      orderID,
+            })
+            return fmt.Errorf("invalid quantity")
+        }
+    }
+
+    // Try to charge - WARN on retries, ERROR on failure
+    for attempt := 0; attempt < 3; attempt++ {
+        result, err := chargeCard(ctx, orderID)
+        if err == nil && result.Success {
+            logEvent(ctx, INFO, "order.completed", map[string]interface{}{
+                "order_id":      orderID,
+                "transaction_id": result.ID,
+                "amount":        result.Amount,
+            })
+            return nil
+        }
+
+        if attempt < 2 {
+            logEvent(ctx, WARN, "order.retry", map[string]interface{}{
+                "issue":          "payment_failed",
+                "action_taken":   "retry_scheduled",
+                "attempt":        attempt + 1,
+                "total_attempts": 3,
+                "backoff_seconds": 1 << uint(attempt),
+                "last_error":     err.Error(),
+            })
+            time.Sleep(time.Duration(1<<uint(attempt)) * time.Second)
+        } else {
+            logEvent(ctx, ERROR, "order.failed", map[string]interface{}{
+                "error_code":    "PAYMENT_ERROR",
+                "error_message": err.Error(),
+                "impact":        "order_rejected",
+                "order_id":      orderID,
+                "attempt":       attempt + 1,
+            })
+            return err
+        }
+    }
+
+    return fmt.Errorf("payment failed after retries")
+}
+
+// Dynamic log level adjustment
+func SetDebugMode(serviceName string, enable bool) {
+    var level slog.Level
+    if enable {
+        level = slog.LevelDebug
+    } else {
+        level = slog.LevelInfo
+    }
+
+    opts := &slog.HandlerOptions{
+        Level: level,
+    }
+    logger = slog.New(slog.NewJSONHandler(os.Stdout, opts))
+
+    logEvent(context.Background(), INFO, "debug_mode_changed", map[string]interface{}{
+        "event_type":   "debug_mode_changed",
+        "service":      serviceName,
+        "debug_enabled": enable,
+    })
+}
+```
+</TabItem>
+</Tabs>
+
+## Governance Policies
+
+### Log Level Standards by Category
+
+| Category | DEBUG | INFO | WARN | ERROR |
+|----------|-------|------|------|-------|
+| **API requests** | Yes, rarely | Entry/exit only | Slow >500ms | Failed requests |
+| **Database** | Queries | Conn pool events | Retries | Connection failures |
+| **Business logic** | State changes | Decisions | Recoverable issues | Critical failures |
+| **External APIs** | Never | Success summaries | Rate limits | Failures |
+| **Security** | Never | Auth events | Unusual patterns | Breach attempts |
+
+### Storage Cost Optimization
+
+```
+Estimate: Processing 100,000 orders/day
+- DEBUG enabled: 50 logs/order = 5M logs/day = $1500/month storage
+- INFO only: 5 logs/order = 500K logs/day = $150/month storage
+- INFO + selective DEBUG: 10 logs/order = 1M logs/day = $300/month storage
+```
+
+Enable DEBUG selectively: by service, by user (debug headers), or during incidents.
+
+## Design Review Checklist
+
+- Have you defined log levels for this service's key operations?
+- Are ERROR logs reserved for actual failures, not info disguised as errors?
+- Do your WARN logs indicate recoverable issues that need attention?
+- Is DEBUG logging disabled or very sparse in production?
+- Can you explain why a log is at its chosen level?
+- Are there governance standards documented for the team?
+- Is log volume monitored, with alerts for 10x spikes?
+- Can log levels be adjusted without redeploying?
+
+## Self-Check
+
+1. Review a day's logs from one of your services. What percentage are DEBUG, INFO, WARN, ERROR? Is the distribution healthy?
+
+2. Design a logging standard for a payment processing service that processes 1 million requests daily. How would you balance debuggability with storage costs?
+
+3. How would you implement temporary debug logging during a production incident without redeploying?
+
+<Admonition type="info" title="One Takeaway">
+Log levels are governance tools, not just severity labels. Establish standards: INFO for routine operations and key decisions, WARN for recoverable issues, ERROR for failures. Enforce these in code review. Monitor log volume and adjust dynamically. This prevents log explosion while keeping debuggability intact.
+</Admonition>
+
+## Next Steps
+
+- Learn <a href="./retention-and-privacy">log retention and privacy ↗</a> for managing sensitive data
+- Study <a href="../metrics">metrics ↗</a> for aggregated views of system behavior
+- Explore <a href="../alerting">alerting ↗</a> to act on log patterns
+- Review <a href="../tracing">distributed tracing ↗</a> for request-level visibility
+
+## References
+
+1. Google Cloud Logging Severity Levels. (2024). Retrieved from https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#severity
+2. RFC 5424 - The Syslog Protocol. (2009). Retrieved from https://tools.ietf.org/html/rfc5424
+3. Sentry Best Practices. (2024). Retrieved from https://docs.sentry.io/product/
+4. Datadog Logging Best Practices. (2024). Retrieved from https://docs.datadoghq.com/logs/guide/best-practices/

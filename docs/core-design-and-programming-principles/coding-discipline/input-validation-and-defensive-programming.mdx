@@ -1,0 +1,407 @@
+---
+sidebar_position: 3
+title: "Input Validation and Defensive Programming"
+description: "Protect systems through rigorous input validation and defensive programming practices."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [validation, defensive-programming, input-validation, security, boundaries, contracts, preconditions, assertions]
+image: /img/archman-social-card.webp
+tags: [security, validation, defensive-programming, best-practices, input-handling, boundary-checking, trust-boundaries, reliability, code-robustness, attack-surface]
+hide_title: true
+---
+
+<Hero title="Input Validation and Defensive Programming" subtitle="Protect systems through rigorous input validation and defensive programming practices." imageAlt="Input validation illustration" size="large" />
+
+## TL;DR
+
+Never trust input. Whether data comes from users, APIs, databases, or configuration files, validate at every boundary. Validate early, validate often, and validate at multiple layers. Use whitelisting (explicitly allow known-good values) rather than blacklisting (trying to exclude bad values). Add assertions to catch violations of internal assumptions. Design functions with explicit contracts about what they accept. Defensive programming isn't paranoia—it's how you build reliable systems that degrade gracefully when things go wrong.
+
+## Learning Objectives
+
+- Understand validation at system boundaries versus internal contracts
+- Apply whitelisting and schema-based validation techniques
+- Design function contracts with explicit preconditions
+- Implement defensive checks that catch invalid state early
+- Balance defensive programming with code clarity
+- Distinguish between validation errors and programming errors
+
+## Motivating Scenario
+
+A user registration system accepts email addresses without validation. A developer later assumes emails are valid and uses them to construct database queries. When an attacker submits `admin'--`, the unvalidated email creates a SQL injection vulnerability. Meanwhile, a payment processor receives a negative amount because the code assumes amounts are always positive. These aren't exotic bugs—they're preventable with basic validation discipline.
+
+## Core Concepts
+
+### Trust Boundaries
+
+Code at system boundaries (API endpoints, file uploads, database reads) receives untrusted data. Code inside the system can make stronger assumptions. Validate data crossing trust boundaries and maintain contracts within the system.
+
+### Whitelisting vs Blacklisting
+
+Whitelisting says "only these values are valid." Blacklisting says "everything except these values is valid." Whitelisting is far more secure because you can't predict all possible attacks. Explicitly define what you accept.
+
+### Schema Validation
+
+Validate the structure and types of data. A JSON object should have required fields with correct types. An email should match a valid format. An amount should be a positive number. Define schemas and validate against them.
+
+### Preconditions and Assertions
+
+Functions can declare preconditions (what must be true before calling) and assertions (what must be true within the function). These catch programming errors and invalid state early, before they cascade.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+# ❌ POOR - No validation, vulnerable to abuse
+def register_user(email, age):
+    # Assumes email is valid, age is positive
+    user = User(email=email, age=age)
+    db.add(user)
+    return user
+
+# ❌ POOR - Blacklisting dangerous values
+def sanitize_email(email):
+    # What about SQL injection in email?
+    return email.replace("--", "").replace(";", "")
+
+# ✅ EXCELLENT - Schema validation with whitelisting
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class UserInput:
+    email: str
+    age: int
+    name: str
+
+def validate_email(email: str) -> bool:
+    """Validate email format using RFC 5322 simplified pattern."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email)) and len(email) <= 254
+
+def validate_age(age: int) -> bool:
+    """Age must be positive integer between 13 and 150."""
+    return isinstance(age, int) and 13 <= age <= 150
+
+def validate_name(name: str) -> bool:
+    """Name must be non-empty string, max 100 chars."""
+    return isinstance(name, str) and 1 <= len(name) <= 100
+
+def register_user(user_input: UserInput) -> dict:
+    """Register user with validation."""
+    # Validate at boundary
+    if not validate_email(user_input.email):
+        raise ValueError(f"Invalid email: {user_input.email}")
+    if not validate_age(user_input.age):
+        raise ValueError(f"Invalid age: {user_input.age}")
+    if not validate_name(user_input.name):
+        raise ValueError(f"Invalid name: {user_input.name}")
+
+    # After validation, make stronger assumptions
+    user = User(
+        email=user_input.email,
+        age=user_input.age,
+        name=user_input.name
+    )
+    db.add(user)
+    return {"id": user.id, "email": user.email}
+
+def process_payment(amount: float) -> dict:
+    """Process payment with defensive checks."""
+    assert isinstance(amount, (int, float)), "Amount must be numeric"
+    assert amount > 0, "Amount must be positive"
+    assert amount <= 1000000, "Amount exceeds maximum"
+
+    transaction = Transaction(amount=amount)
+    db.add(transaction)
+    return {"status": "success", "amount": amount}
+```
+</TabItem>
+<TabItem value="go" label="Go">
+```go
+// ❌ POOR - No validation
+func RegisterUser(email string, age int) (*User, error) {
+    user := &User{Email: email, Age: age}
+    return user, db.Add(user)
+}
+
+// ✅ EXCELLENT - Comprehensive validation
+package users
+
+import (
+    "fmt"
+    "regexp"
+    "unicode/utf8"
+)
+
+type RegisterUserInput struct {
+    Email string
+    Age   int
+    Name  string
+}
+
+// ValidateEmail checks email format and length
+func ValidateEmail(email string) error {
+    if len(email) == 0 || len(email) > 254 {
+        return fmt.Errorf("email length must be between 1 and 254 chars, got %d", len(email))
+    }
+
+    pattern := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+    if !pattern.MatchString(email) {
+        return fmt.Errorf("invalid email format: %s", email)
+    }
+    return nil
+}
+
+// ValidateAge checks age is in valid range
+func ValidateAge(age int) error {
+    const minAge, maxAge = 13, 150
+    if age < minAge || age > maxAge {
+        return fmt.Errorf("age must be between %d and %d, got %d", minAge, maxAge, age)
+    }
+    return nil
+}
+
+// ValidateName checks name is non-empty and reasonable length
+func ValidateName(name string) error {
+    runeCount := utf8.RuneCountInString(name)
+    if runeCount == 0 || runeCount > 100 {
+        return fmt.Errorf("name must be between 1 and 100 chars, got %d", runeCount)
+    }
+    return nil
+}
+
+// RegisterUser creates a new user with input validation
+func RegisterUser(input RegisterUserInput) (*User, error) {
+    // Validate at boundary
+    if err := ValidateEmail(input.Email); err != nil {
+        return nil, fmt.Errorf("email validation failed: %w", err)
+    }
+    if err := ValidateAge(input.Age); err != nil {
+        return nil, fmt.Errorf("age validation failed: %w", err)
+    }
+    if err := ValidateName(input.Name); err != nil {
+        return nil, fmt.Errorf("name validation failed: %w", err)
+    }
+
+    user := &User{
+        Email: input.Email,
+        Age:   input.Age,
+        Name:  input.Name,
+    }
+
+    if err := db.Add(user); err != nil {
+        return nil, fmt.Errorf("failed to store user: %w", err)
+    }
+
+    return user, nil
+}
+
+// ProcessPayment handles payment with defensive assertions
+func ProcessPayment(amount float64) (string, error) {
+    // Preconditions
+    if amount <= 0 {
+        return "", fmt.Errorf("amount must be positive, got %f", amount)
+    }
+    if amount > 1000000 {
+        return "", fmt.Errorf("amount exceeds maximum of $1,000,000")
+    }
+
+    // Create transaction
+    tx := &Transaction{Amount: amount}
+    if err := db.Add(tx); err != nil {
+        return "", err
+    }
+
+    // Postcondition assertion
+    if tx.ID == "" {
+        panic("Transaction stored without ID—database contract violated")
+    }
+
+    return tx.ID, nil
+}
+```
+</TabItem>
+<TabItem value="js" label="Node.js">
+```javascript
+// ❌ POOR - No validation, trusting input
+function registerUser(email, age) {
+    const user = { email, age };
+    db.add(user);
+    return user;
+}
+
+// ✅ EXCELLENT - Schema validation with clear contracts
+class ValidationError extends Error {
+    constructor(field, message) {
+        super(`${field} validation failed: ${message}`);
+        this.field = field;
+        this.name = 'ValidationError';
+    }
+}
+
+function validateEmail(email) {
+    if (typeof email !== 'string') {
+        throw new ValidationError('email', 'must be a string');
+    }
+    if (email.length === 0 || email.length > 254) {
+        throw new ValidationError('email', `length must be 1-254 chars, got ${email.length}`);
+    }
+    const pattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!pattern.test(email)) {
+        throw new ValidationError('email', `invalid format: ${email}`);
+    }
+}
+
+function validateAge(age) {
+    if (!Number.isInteger(age)) {
+        throw new ValidationError('age', 'must be an integer');
+    }
+    const [MIN_AGE, MAX_AGE] = [13, 150];
+    if (age < MIN_AGE || age > MAX_AGE) {
+        throw new ValidationError('age', `must be ${MIN_AGE}-${MAX_AGE}, got ${age}`);
+    }
+}
+
+function validateName(name) {
+    if (typeof name !== 'string') {
+        throw new ValidationError('name', 'must be a string');
+    }
+    if (name.length === 0 || name.length > 100) {
+        throw new ValidationError('name', `length must be 1-100 chars, got ${name.length}`);
+    }
+}
+
+function registerUser(input) {
+    // Validate all fields at boundary
+    validateEmail(input.email);
+    validateAge(input.age);
+    validateName(input.name);
+
+    // After validation, proceed with confidence
+    const user = {
+        email: input.email,
+        age: input.age,
+        name: input.name,
+        createdAt: new Date()
+    };
+
+    db.add(user);
+    return { id: user.id, email: user.email };
+}
+
+// Defensive checks with explicit contracts
+function processPayment(amount) {
+    // Preconditions
+    console.assert(typeof amount === 'number', 'amount must be numeric');
+    console.assert(amount > 0, 'amount must be positive');
+    console.assert(amount <= 1000000, 'amount exceeds maximum');
+
+    const transaction = { amount, status: 'pending' };
+    const stored = db.add(transaction);
+
+    // Postcondition
+    console.assert(stored.id, 'Transaction must have ID after storage');
+    return { status: 'success', transactionId: stored.id };
+}
+```
+</TabItem>
+</Tabs>
+
+## Validation Patterns
+
+### Whitelist Pattern
+
+```javascript
+// Define what's allowed
+const VALID_STATUSES = ['pending', 'active', 'archived'];
+const VALID_ROLES = new Set(['user', 'admin', 'moderator']);
+
+function setUserStatus(userId, status) {
+    if (!VALID_STATUSES.includes(status)) {
+        throw new Error(`Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`);
+    }
+    db.updateUser(userId, { status });
+}
+```
+
+### Schema Validation
+
+```javascript
+// Use schema validation libraries
+const userSchema = {
+    email: { type: 'string', pattern: /^.+@.+\..+$/, required: true },
+    age: { type: 'number', minimum: 0, maximum: 150, required: true },
+    phone: { type: 'string', pattern: /^\d{10}$/ }
+};
+
+function validateUser(data) {
+    for (const [field, rules] of Object.entries(userSchema)) {
+        if (rules.required && !(field in data)) {
+            throw new Error(`Missing required field: ${field}`);
+        }
+        if (field in data && rules.type && typeof data[field] !== rules.type) {
+            throw new Error(`Field ${field} must be ${rules.type}`);
+        }
+        if (rules.pattern && !rules.pattern.test(data[field])) {
+            throw new Error(`Field ${field} failed validation`);
+        }
+    }
+}
+```
+
+### Explicit Preconditions
+
+```javascript
+function calculateDiscount(purchaseAmount, percentDiscount) {
+    // Document preconditions clearly
+    if (purchaseAmount < 0) {
+        throw new Error('purchaseAmount must be non-negative');
+    }
+    if (percentDiscount < 0 || percentDiscount > 100) {
+        throw new Error('percentDiscount must be 0-100');
+    }
+
+    return purchaseAmount * (1 - percentDiscount / 100);
+}
+```
+
+## Design Review Checklist
+
+- Are API endpoints, file uploads, and external data validated immediately upon receipt?
+- Does validation use whitelisting (explicitly allow good values) rather than blacklisting?
+- Are validation error messages specific about what went wrong?
+- Do functions document their preconditions and postconditions?
+- Are defensive assertions present to catch programming errors?
+- Is there a clear distinction between data validation (user input) and contract assertion (internal code)?
+- Are security boundaries identified and validated accordingly?
+
+## Self-Check
+
+1. Find a function in your codebase that accepts input and doesn't validate it. What assumptions does it make about that input? How would you add validation?
+
+2. What trust boundaries exist in your system? At which points does untrusted data enter?
+
+3. Review an error message in your system. Does it tell users what format or values are expected?
+
+<Admonition type="info" title="One Takeaway">
+Defensive programming isn't excessive paranoia—it's acknowledging that systems fail and interfaces change. Validate at boundaries and document contracts within. Whitelisting is more secure than blacklisting because you explicitly define what's acceptable rather than trying to enumerate all possible attacks. Validation and assertions catch problems early, before they propagate and become expensive to debug.
+</Admonition>
+
+## Next Steps
+
+- Learn about <a href="../error-handling-and-exceptions">error handling ↗</a> for responding to validation failures
+- Review <a href="../naming-readability-intent">clear naming ↗</a> to make contracts obvious
+- Explore <a href="../../general-principles/fail-fast">fail-fast principle ↗</a> for catching errors immediately
+- Study <a href="../../solid/open-closed">Open/Closed Principle ↗</a> for extending validation without modifying existing code
+
+## References
+
+1. Martin, R. C. (2008). Clean Code: A Handbook of Agile Software Craftsmanship. Prentice Hall.
+2. McConnell, S. (2004). Code Complete: A Practical Handbook of Software Construction. Microsoft Press.
+3. OWASP Top 10. (2021). A03:2021 – Injection. Retrieved from https://owasp.org/Top10/
+4. Young, A. L., & Yong, M. (2004). Malicious Cryptography: Exposing Cryptovirology. Wiley.

@@ -1,0 +1,367 @@
+---
+sidebar_position: 1
+title: "Environment Strategy: Dev, Test, Stage, Prod"
+description: "Design environments that catch problems early without slowing development."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 15
+lastReviewed: "2025-02-14"
+personas: [engineer, architect, lead]
+keywords: [environments, dev, test, staging, production, strategy, testing, quality-gates]
+image: /img/archman-social-card.webp
+tags: [environments, testing, staging, production, quality-gates, strategy, workflow, best-practices]
+hide_title: true
+---
+
+<Hero title="Environment Strategy: Dev, Test, Stage, Prod" subtitle="Design environments that catch problems early without slowing development." imageAlt="Environments illustration" size="large" />
+
+## TL;DR
+
+**Development**: Local laptop or shared dev server. Deploy on every commit. Fast feedback (&lt;5 minutes). Unit + integration tests. Failures expected; fail fast and fix.
+
+**Test**: Shared environment. Full integration tests. Can be shared with QA. Slower tests acceptable (1-30 minutes).
+
+**Staging**: Production-like infrastructure. Replica of prod without real customer data. Full test suite runs here. Final validation before prod.
+
+**Production**: Real users. Highest safety bar. Deployments approved by humans. This progression catches problems early (dev), validates thoroughly (staging), then rolls to production with confidence.
+
+## Learning Objectives
+
+- Design environment progression matching your risk profile
+- Implement fast feedback loops for developers
+- Manage data safely across environments
+- Control secrets per environment
+- Deploy consistently across environments
+- Balance speed and safety
+
+## Motivating Scenario
+
+Your company has one shared environment. All developers deploy there. Tests take 30 minutes. When Alice breaks something, Bob's work is blocked. QA can't test because the environment is unstable. Deployments to prod are risky because staging doesn't match production. You lose a day per week to environment conflicts.
+
+You need environments that let developers work fast without blocking each other.
+
+## Core Concepts
+
+<Figure caption="Environment Progression Flow">
+```mermaid
+flowchart TB
+    A["Developer<br/>commits code"] --> B["Dev Environment<br/>Auto-deploy<br/>Fast tests"]
+    B --> C{Tests<br/>pass?}
+    C -->|No| D["Developer fixes<br/>and retries"]
+    D --> B
+    C -->|Yes| E["Merge to main"]
+    E --> F["Test Environment<br/>Integration tests<br/>QA validation"]
+    F --> G{Ready for<br/>prod?}
+    G -->|No| H["Fix issues"]
+    H --> F
+    G -->|Yes| I["Staging<br/>Production-like<br/>Final checks"]
+    I --> J{Approved<br/>for prod?}
+    J -->|No| K["Rollback or fix"]
+    K --> I
+    J -->|Yes| L["Production<br/>Real users"]
+```
+</Figure>
+
+### Development Environment
+
+**Purpose**: Rapid feedback. Developer can test changes in seconds.
+
+**Characteristics**: Local laptop or shared dev server. Auto-deploy on every commit. Fast tests (unit + quick integration) &lt;10 min. May be unstable (developers iterating). Data is dummy/synthetic.
+
+**Failures**: Expected. Developer sees error, fixes, redeploys immediately.
+
+### Test Environment
+
+**Purpose**: Integration testing. Find problems unit tests miss.
+
+**Characteristics**: Shared among developers. Full integration tests. 30 minutes for full suite. Closer to prod (but not identical). Data from templates or anonymized prod copies.
+
+**QA**: Can manually test here. Feedback: "I found a bug" or "Feature works."
+
+### Staging Environment
+
+**Purpose**: Final validation. Will this work in production?
+
+**Characteristics**: Production-like infrastructure (same instance types, database, load balancer setup). Real customer data? No—use scrubbed/anonymized copy. Full test suite + performance tests. Closely matches prod except no real traffic.
+
+### Production Environment
+
+**Purpose**: Serve real users. Highest safety bar.
+
+**Characteristics**: Real customer data. Real traffic. Deployments require human approval. Monitoring and alerting critical. Rollback capability essential.
+
+## Practical Examples
+
+<Tabs>
+<TabItem value="docker-dev" label="Local Development (Docker Compose)">
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://user:pass@postgres:5432/myapp_dev
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: debug
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: myapp_dev
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+```
+
+Developer workflow: `docker-compose up`, tests run on every save, < 1 minute feedback.
+</TabItem>
+<TabItem value="ci-pipeline" label="CI/CD Environment Promotion">
+```yaml
+# .github/workflows/pipeline.yml
+name: Build Test Deploy
+
+on: [push, pull_request]
+
+jobs:
+  build-and-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build & Unit Tests
+        run: pytest tests/unit --cov
+
+  integration-tests:
+    needs: build-and-unit-tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+    steps:
+      - uses: actions/checkout@v3
+      - name: Integration Tests
+        run: pytest tests/integration
+
+  deploy-to-staging:
+    needs: integration-tests
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Deploy to Staging
+        run: ./scripts/deploy.sh staging
+      - name: Smoke Tests
+        run: pytest tests/smoke -v --tb=short
+
+  manual-approval:
+    needs: deploy-to-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Approval Required
+        run: echo "Awaiting manual approval to deploy to production"
+
+  deploy-to-prod:
+    needs: manual-approval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Deploy to Production
+        run: ./scripts/deploy.sh prod
+      - name: Health Check
+        run: curl -f https://api.example.com/health
+```
+</TabItem>
+<TabItem value="config" label="Environment Configuration">
+```python
+# config.py - Environment-specific configuration
+
+import os
+
+class Config:
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
+    CACHE_TTL = int(os.getenv("CACHE_TTL", "300"))
+    MAX_CONNECTIONS = int(os.getenv("MAX_CONNECTIONS", "10"))
+
+class DevelopmentConfig(Config):
+    DEBUG = True
+    LOG_LEVEL = "debug"
+    DATABASE_URL = "postgresql://localhost/myapp_dev"
+    CACHE_TTL = 60
+
+class TestingConfig(Config):
+    DATABASE_URL = "postgresql://localhost/myapp_test"
+    CACHE_TTL = 0
+
+class StagingConfig(Config):
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    LOG_LEVEL = "info"
+    MAX_CONNECTIONS = 50
+
+class ProductionConfig(Config):
+    DEBUG = False
+    LOG_LEVEL = "warning"
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    MAX_CONNECTIONS = 100
+
+# Load configuration
+env = os.getenv("ENVIRONMENT", "development")
+if env == "production":
+    config = ProductionConfig()
+elif env == "staging":
+    config = StagingConfig()
+elif env == "testing":
+    config = TestingConfig()
+else:
+    config = DevelopmentConfig()
+```
+</TabItem>
+<TabItem value="data-anonymization" label="Data Anonymization Script">
+```bash
+#!/bin/bash
+# anonymize_prod_data.sh - Prep production data for test/staging
+
+set -e
+
+SOURCE_DB="production_db"
+TARGET_DB="staging_db"
+
+# Create fresh database from production backup
+createdb "$TARGET_DB" < "$SOURCE_DB.backup"
+
+# Anonymize sensitive data
+psql "$TARGET_DB" <<EOF
+-- Anonymize users
+UPDATE users SET
+  email = 'user' || id || '@test.example.com',
+  phone = '555-0000',
+  first_name = 'Test',
+  last_name = 'User'
+WHERE true;
+
+-- Clear payment information
+DELETE FROM payment_methods;
+
+-- Truncate audit logs older than 90 days
+DELETE FROM audit_logs WHERE created_at < now() - interval '90 days';
+
+-- Reset authentication tokens
+UPDATE sessions SET token = NULL, expires_at = now();
+
+-- Update company addresses
+UPDATE companies SET
+  street = '123 Test St',
+  city = 'Test City',
+  state = 'TS',
+  zip = '12345'
+WHERE true;
+
+-- Vacuum to reclaim space
+VACUUM;
+EOF
+
+echo "Anonymization complete. Database: $TARGET_DB"
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0,0]} items={[
+{
+    label: "Use 4-Environment Strategy When:",
+    points: [
+      "Multiple teams working on the same product",
+      "Complex deployments (database migrations, infrastructure changes)",
+      "Compliance requires staging to mirror production",
+      "Mature product with many users and uptime requirements",
+      "Manual QA testing needed"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Simplify to 2 Environments When:",
+    points: [
+      "Small team working closely together",
+      "Continuous deployment is safe (feature flags, canary deployments)",
+      "Automated tests provide confidence",
+      "Infrastructure is simple (serverless, single region)"
+    ]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase title="Patterns and Pitfalls" sections={[
+  {
+    label: "All Developers Share One Environment",
+    body: "Anti-pattern: One dev environment; all developers deploy there. Conflicts block work. Better: Local development for fast feedback. Shared test environment only for integration."
+  },
+  {
+    label: "Staging Doesn't Match Production",
+    body: "Anti-pattern: Staging uses smaller instances, different database version, missing load balancer. Issues found in staging don't show in prod. Better: Infrastructure as code ensures staging mirrors prod (except maybe scale for cost)."
+  },
+  {
+    label: "Real Data in Staging",
+    body: "Anti-pattern: Copy production database to staging for testing. Now PII is in staging where multiple people have access. Compliance violation. Better: Anonymize sensitive fields. Generate realistic but fake data."
+  },
+  {
+    label: "Manual Environment Setup",
+    body: "Anti-pattern: Wiki documents steps to set up an environment. New developer spends 2 days. Better: Automate with scripts or Docker. New developer runs one command."
+  },
+  {
+    label: "Different Secrets Per Environment",
+    body: "Good practice: Each environment has different database passwords, API keys. But anti-pattern: Storing them in code. Better: Use a vault or CI/CD secrets. Application loads at runtime."
+  }
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Can developers test changes locally without manual setup?",
+  "Do test failures appear in less than 10 minutes?",
+  "Does staging exactly mirror production infrastructure?",
+  "Is data properly anonymized in non-prod environments?",
+  "Can you deploy from staging to prod easily?",
+  "Are secrets different per environment and stored securely?",
+  "Do all tests pass before promotion to next environment?",
+  "Is there a clear definition of 'environment ready'?",
+  "Can you reproduce production issues in staging?",
+  "Are environment configurations version controlled (except secrets)?"
+]} />
+
+## Self-Check Questions
+
+1. **Local Development**: Can a new developer set up locally in &lt; 30 minutes?
+2. **Feedback Speed**: How long between code change and test results?
+3. **Staging Parity**: Does staging match prod configuration?
+4. **Data Safety**: Is sensitive data anonymized in non-prod?
+5. **Promotion Path**: Clear progression from dev to prod?
+
+## Next Steps
+
+1. Define which environments you need (likely: local dev + test + staging + prod)
+2. Automate environment setup (Docker, Infrastructure as Code)
+3. Ensure staging mirrors production
+4. Implement data anonymization for non-prod
+5. Create clear deployment process between environments
+
+## References
+
+1. Humble, J., & Farley, D. (2010). Continuous Delivery. Addison-Wesley.
+2. <a href="https://www.docker.com/" target="_blank" rel="nofollow noopener noreferrer">Docker ↗️</a>
+3. <a href="https://kubernetes.io/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes ↗️</a>

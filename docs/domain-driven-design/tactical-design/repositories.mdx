@@ -1,0 +1,1087 @@
+---
+sidebar_position: 10
+title: "Repositories"
+description: "Implement repository pattern for aggregate persistence and querying."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 16
+lastReviewed: 2025-02-14
+personas: [engineer, architect]
+keywords: [repository, persistence, DDD, aggregate, data access]
+image: /img/archman-social-card.webp
+tags: [domain-driven-design, tactical-design, persistence]
+hide_title: true
+---
+
+<Hero title="Repositories" subtitle="Abstract persistence logic using the repository pattern." size="large" />
+
+## TL;DR
+
+Repository: Abstraction for persisting and retrieving aggregates. Looks like in-memory collection: `repo.save(order)`, `repo.get(order_id)`. Hides database details. One repository per aggregate root. Repositories know about aggregates, not entities or value objects. Avoid anemic repositories (just CRUD). Implement rich queries (find orders by status, date, etc.). Use in-memory repositories for testing; swap with real DB in production. Never leak SQL/database abstractions to domain logic.
+
+## Learning Objectives
+
+- Understand repository pattern and its purpose
+- Implement repositories for aggregates
+- Design rich query methods
+- Use repositories in application services
+- Test repositories with in-memory implementations
+- Avoid N+1 queries
+- Implement efficient pagination
+- Choose between repository and query object patterns
+
+## Motivating Scenario
+
+Code calls SQL directly in service: `SELECT * FROM orders WHERE status = 'pending' AND created_at > date-30days`. Tight coupling to database. Hard to test (need database). Query changes = service changes. Switch to repository: `repo.find_pending_orders_last_30_days()`. Service doesn't know SQL. Test with in-memory repo. Change query = only repo changes.
+
+## Core Concepts
+
+### Repository vs. DAO vs. Query Objects
+
+| Pattern | Scope | Method | Use Case |
+|---------|-------|--------|----------|
+| **Repository** | Aggregate | `save(agg)`, `get(id)`, `find_by(spec)` | DDD, rich domain |
+| **DAO** | Entity | `insert()`, `update()`, `delete()`, `select()` | Anemic domains |
+| **Query Object** | Complex queries | `get_high_value_customers()` | CQRS, read models |
+
+### One Repository Per Aggregate
+
+```
+Aggregate: Order
+├── Entity: OrderItem (part of aggregate, not retrieved separately)
+├── Value Object: Money (part of aggregate)
+└── Repository: OrderRepository (manages Order aggregate)
+
+NOT:
+├── OrderRepository (for Order)
+├── OrderItemRepository (NO! OrderItem is part of aggregate)
+├── MoneyRepository (NO! Value object, not persisted separately)
+```
+
+### Query Methods
+
+```python
+# ✓ GOOD: Domain language
+repo.find_pending_orders()
+repo.find_orders_by_customer(customer_id)
+repo.find_orders_over_amount(1000)
+repo.find_high_value_customers(min_lifetime_value=10000)
+
+# ❌ BAD: SQL-like
+repo.find(status='pending')
+repo.find_where({'status': 'pending', 'created_at': '2024-01-01'})
+repo.execute_sql("SELECT * FROM orders WHERE ...")
+```
+
+## Implementation
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Optional
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+# Domain models
+@dataclass(frozen=True)
+class OrderId:
+    value: str
+
+@dataclass(frozen=True)
+class CustomerId:
+    value: str
+
+@dataclass(frozen=True)
+class Money:
+    amount: float
+    currency: str
+
+class Order:
+    def __init__(self, order_id: OrderId, customer_id: CustomerId, 
+                 items: List['OrderItem'], total: Money, 
+                 status: str, created_at: datetime):
+        self.order_id = order_id
+        self.customer_id = customer_id
+        self.items = items
+        self.total = total
+        self.status = status
+        self.created_at = created_at
+    
+    def is_pending(self):
+        return self.status == 'pending'
+    
+    def confirm(self):
+        self.status = 'confirmed'
+    
+    def cancel(self):
+        self.status = 'cancelled'
+
+@dataclass
+class OrderItem:
+    sku: str
+    quantity: int
+    price: Money
+
+# Repository abstraction (interface)
+class OrderRepository(ABC):
+    @abstractmethod
+    def save(self, order: Order) -> None:
+        """Save order to persistence"""
+        pass
+    
+    @abstractmethod
+    def get(self, order_id: OrderId) -> Optional[Order]:
+        """Get order by ID"""
+        pass
+    
+    @abstractmethod
+    def find_pending_orders(self) -> List[Order]:
+        """Find all pending orders"""
+        pass
+    
+    @abstractmethod
+    def find_by_customer(self, customer_id: CustomerId) -> List[Order]:
+        """Find orders by customer"""
+        pass
+    
+    @abstractmethod
+    def find_orders_over_amount(self, amount: float) -> List[Order]:
+        """Find orders exceeding amount"""
+        pass
+    
+    @abstractmethod
+    def find_recent_orders(self, days: int) -> List[Order]:
+        """Find orders from last N days"""
+        pass
+
+# In-memory implementation (for testing)
+class InMemoryOrderRepository(OrderRepository):
+    def __init__(self):
+        self.orders = {}
+    
+    def save(self, order: Order) -> None:
+        self.orders[order.order_id.value] = order
+    
+    def get(self, order_id: OrderId) -> Optional[Order]:
+        return self.orders.get(order_id.value)
+    
+    def find_pending_orders(self) -> List[Order]:
+        return [o for o in self.orders.values() if o.is_pending()]
+    
+    def find_by_customer(self, customer_id: CustomerId) -> List[Order]:
+        return [o for o in self.orders.values() 
+                if o.customer_id == customer_id]
+    
+    def find_orders_over_amount(self, amount: float) -> List[Order]:
+        return [o for o in self.orders.values() 
+                if o.total.amount > amount]
+    
+    def find_recent_orders(self, days: int) -> List[Order]:
+        cutoff = datetime.now() - timedelta(days=days)
+        return [o for o in self.orders.values() 
+                if o.created_at > cutoff]
+
+# SQL implementation (production)
+class SQLOrderRepository(OrderRepository):
+    def __init__(self, db_connection):
+        self.db = db_connection
+    
+    def save(self, order: Order) -> None:
+        """Save order to SQL database"""
+        # Insert or update order
+        sql = """
+            INSERT INTO orders (id, customer_id, status, total, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT(id) DO UPDATE SET
+                status=EXCLUDED.status, total=EXCLUDED.total
+        """
+        self.db.execute(sql, [
+            order.order_id.value,
+            order.customer_id.value,
+            order.status,
+            order.total.amount,
+            order.created_at
+        ])
+        
+        # Insert order items
+        for item in order.items:
+            item_sql = """
+                INSERT INTO order_items (order_id, sku, quantity, price)
+                VALUES (%s, %s, %s, %s)
+            """
+            self.db.execute(item_sql, [
+                order.order_id.value,
+                item.sku,
+                item.quantity,
+                item.price.amount
+            ])
+    
+    def get(self, order_id: OrderId) -> Optional[Order]:
+        """Reconstruct aggregate from database"""
+        sql = "SELECT * FROM orders WHERE id = %s"
+        order_row = self.db.fetchone(sql, [order_id.value])
+        
+        if not order_row:
+            return None
+        
+        # Load items
+        items_sql = "SELECT * FROM order_items WHERE order_id = %s"
+        items_rows = self.db.fetchall(items_sql, [order_id.value])
+        
+        items = [OrderItem(
+            sku=row['sku'],
+            quantity=row['quantity'],
+            price=Money(row['price'], 'USD')
+        ) for row in items_rows]
+        
+        return Order(
+            order_id=OrderId(order_row['id']),
+            customer_id=CustomerId(order_row['customer_id']),
+            items=items,
+            total=Money(order_row['total'], 'USD'),
+            status=order_row['status'],
+            created_at=order_row['created_at']
+        )
+    
+    def find_pending_orders(self) -> List[Order]:
+        """Query domain logic: pending orders"""
+        sql = "SELECT id FROM orders WHERE status = 'pending'"
+        rows = self.db.fetchall(sql, [])
+        
+        return [self.get(OrderId(row['id'])) for row in rows]
+    
+    def find_by_customer(self, customer_id: CustomerId) -> List[Order]:
+        sql = "SELECT id FROM orders WHERE customer_id = %s"
+        rows = self.db.fetchall(sql, [customer_id.value])
+        
+        return [self.get(OrderId(row['id'])) for row in rows]
+    
+    def find_orders_over_amount(self, amount: float) -> List[Order]:
+        sql = "SELECT id FROM orders WHERE total > %s"
+        rows = self.db.fetchall(sql, [amount])
+        
+        return [self.get(OrderId(row['id'])) for row in rows]
+    
+    def find_recent_orders(self, days: int) -> List[Order]:
+        sql = "SELECT id FROM orders WHERE created_at > NOW() - INTERVAL %s DAY"
+        rows = self.db.fetchall(sql, [days])
+        
+        return [self.get(OrderId(row['id'])) for row in rows]
+
+# Application service (uses repository abstraction)
+class ConfirmOrderService:
+    def __init__(self, order_repo: OrderRepository):
+        self.order_repo = order_repo
+    
+    def execute(self, order_id: OrderId):
+        """Confirm a pending order"""
+        # Fetch aggregate
+        order = self.order_repo.get(order_id)
+        if not order:
+            raise OrderNotFound()
+        
+        # Business logic
+        if not order.is_pending():
+            raise OrderAlreadyConfirmed()
+        
+        order.confirm()
+        
+        # Persist
+        self.order_repo.save(order)
+
+# Testable service
+class TestConfirmOrder:
+    def test_confirm_pending_order(self):
+        # Use in-memory repository for testing
+        repo = InMemoryOrderRepository()
+        
+        # Setup
+        order = Order(
+            order_id=OrderId('123'),
+            customer_id=CustomerId('cust-1'),
+            items=[OrderItem('SKU-1', 1, Money(99.99, 'USD'))],
+            total=Money(99.99, 'USD'),
+            status='pending',
+            created_at=datetime.now()
+        )
+        repo.save(order)
+        
+        # Execute
+        service = ConfirmOrderService(repo)
+        service.execute(OrderId('123'))
+        
+        # Verify
+        confirmed_order = repo.get(OrderId('123'))
+        assert confirmed_order.status == 'confirmed'
+
+# Pagination support
+class OrderRepository(ABC):
+    @abstractmethod
+    def find_pending_orders_paginated(self, page: int, page_size: int) -> dict:
+        """Find pending orders with pagination"""
+        pass
+
+class SQLOrderRepository(OrderRepository):
+    def find_pending_orders_paginated(self, page: int, page_size: int) -> dict:
+        offset = (page - 1) * page_size
+        
+        # Count total
+        count_sql = "SELECT COUNT(*) as total FROM orders WHERE status = 'pending'"
+        total = self.db.fetchone(count_sql, [])['total']
+        
+        # Fetch page
+        sql = """
+            SELECT id FROM orders WHERE status = 'pending'
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        rows = self.db.fetchall(sql, [page_size, offset])
+        
+        orders = [self.get(OrderId(row['id'])) for row in rows]
+        
+        return {
+            'orders': orders,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total + page_size - 1) // page_size
+        }
+```
+
+</TabItem>
+<TabItem value="go" label="Go">
+
+```go
+package domain
+
+import (
+	"context"
+	"time"
+)
+
+// Value Objects
+type OrderID string
+type CustomerID string
+type Money struct {
+	Amount   float64
+	Currency string
+}
+
+// Order Aggregate
+type Order struct {
+	ID        OrderID
+	CustomerID CustomerID
+	Items     []OrderItem
+	Total     Money
+	Status    string
+	CreatedAt time.Time
+}
+
+func (o *Order) IsPending() bool {
+	return o.Status == "pending"
+}
+
+func (o *Order) Confirm() {
+	o.Status = "confirmed"
+}
+
+// Repository Interface
+type OrderRepository interface {
+	Save(ctx context.Context, order *Order) error
+	Get(ctx context.Context, id OrderID) (*Order, error)
+	FindPendingOrders(ctx context.Context) ([]*Order, error)
+	FindByCustomer(ctx context.Context, customerID CustomerID) ([]*Order, error)
+	FindOrdersOverAmount(ctx context.Context, amount float64) ([]*Order, error)
+	FindRecentOrders(ctx context.Context, days int) ([]*Order, error)
+}
+
+// In-memory implementation
+type InMemoryOrderRepository struct {
+	orders map[string]*Order
+}
+
+func (r *InMemoryOrderRepository) Save(ctx context.Context, order *Order) error {
+	r.orders[string(order.ID)] = order
+	return nil
+}
+
+func (r *InMemoryOrderRepository) Get(ctx context.Context, id OrderID) (*Order, error) {
+	if order, exists := r.orders[string(id)]; exists {
+		return order, nil
+	}
+	return nil, ErrOrderNotFound
+}
+
+func (r *InMemoryOrderRepository) FindPendingOrders(ctx context.Context) ([]*Order, error) {
+	var pending []*Order
+	for _, order := range r.orders {
+		if order.IsPending() {
+			pending = append(pending, order)
+		}
+	}
+	return pending, nil
+}
+
+func (r *InMemoryOrderRepository) FindByCustomer(ctx context.Context, customerID CustomerID) ([]*Order, error) {
+	var result []*Order
+	for _, order := range r.orders {
+		if order.CustomerID == customerID {
+			result = append(result, order)
+		}
+	}
+	return result, nil
+}
+
+func (r *InMemoryOrderRepository) FindOrdersOverAmount(ctx context.Context, amount float64) ([]*Order, error) {
+	var result []*Order
+	for _, order := range r.orders {
+		if order.Total.Amount > amount {
+			result = append(result, order)
+		}
+	}
+	return result, nil
+}
+
+func (r *InMemoryOrderRepository) FindRecentOrders(ctx context.Context, days int) ([]*Order, error) {
+	cutoff := time.Now().AddDate(0, 0, -days)
+	var result []*Order
+	for _, order := range r.orders {
+		if order.CreatedAt.After(cutoff) {
+			result = append(result, order)
+		}
+	}
+	return result, nil
+}
+
+// SQL Implementation
+type SQLOrderRepository struct {
+	db DB
+}
+
+func (r *SQLOrderRepository) Save(ctx context.Context, order *Order) error {
+	const query = `
+		INSERT INTO orders (id, customer_id, status, total, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT(id) DO UPDATE SET status=$3, total=$4
+	`
+	
+	return r.db.ExecContext(ctx, query,
+		order.ID, order.CustomerID, order.Status, order.Total.Amount, order.CreatedAt,
+	)
+}
+
+func (r *SQLOrderRepository) Get(ctx context.Context, id OrderID) (*Order, error) {
+	const query = `SELECT id, customer_id, status, total, created_at FROM orders WHERE id = $1`
+	
+	row := r.db.QueryRowContext(ctx, query, id)
+	
+	order := &Order{}
+	err := row.Scan(&order.ID, &order.CustomerID, &order.Status, &order.Total.Amount, &order.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	
+	return order, nil
+}
+
+func (r *SQLOrderRepository) FindPendingOrders(ctx context.Context) ([]*Order, error) {
+	const query = `SELECT id, customer_id, status, total, created_at FROM orders WHERE status = 'pending'`
+	
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var orders []*Order
+	for rows.Next() {
+		order := &Order{}
+		err := rows.Scan(&order.ID, &order.CustomerID, &order.Status, &order.Total.Amount, &order.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	
+	return orders, rows.Err()
+}
+
+// Application Service
+type ConfirmOrderService struct {
+	repo OrderRepository
+}
+
+func (s *ConfirmOrderService) Execute(ctx context.Context, orderID OrderID) error {
+	order, err := s.repo.Get(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	
+	if !order.IsPending() {
+		return ErrOrderNotPending
+	}
+	
+	order.Confirm()
+	
+	return s.repo.Save(ctx, order)
+}
+```
+
+</TabItem>
+<TabItem value="nodejs" label="Node.js">
+
+```javascript
+// Value Objects
+class OrderId {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+class CustomerId {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+class Money {
+  constructor(amount, currency) {
+    this.amount = amount;
+    this.currency = currency;
+  }
+}
+
+// Order Aggregate
+class Order {
+  constructor(orderId, customerId, items, total, status, createdAt) {
+    this.orderId = orderId;
+    this.customerId = customerId;
+    this.items = items;
+    this.total = total;
+    this.status = status;
+    this.createdAt = createdAt;
+  }
+
+  isPending() {
+    return this.status === 'pending';
+  }
+
+  confirm() {
+    this.status = 'confirmed';
+  }
+}
+
+// Repository Interface (abstract)
+class OrderRepository {
+  async save(order) {
+    throw new Error('Not implemented');
+  }
+
+  async get(orderId) {
+    throw new Error('Not implemented');
+  }
+
+  async findPendingOrders() {
+    throw new Error('Not implemented');
+  }
+
+  async findByCustomer(customerId) {
+    throw new Error('Not implemented');
+  }
+
+  async findOrdersOverAmount(amount) {
+    throw new Error('Not implemented');
+  }
+}
+
+// In-memory implementation (testing)
+class InMemoryOrderRepository extends OrderRepository {
+  constructor() {
+    super();
+    this.orders = new Map();
+  }
+
+  async save(order) {
+    this.orders.set(order.orderId.value, order);
+  }
+
+  async get(orderId) {
+    return this.orders.get(orderId.value) || null;
+  }
+
+  async findPendingOrders() {
+    return Array.from(this.orders.values()).filter(o => o.isPending());
+  }
+
+  async findByCustomer(customerId) {
+    return Array.from(this.orders.values()).filter(
+      o => o.customerId.value === customerId.value
+    );
+  }
+
+  async findOrdersOverAmount(amount) {
+    return Array.from(this.orders.values()).filter(
+      o => o.total.amount > amount
+    );
+  }
+}
+
+// SQL implementation (production)
+class SQLOrderRepository extends OrderRepository {
+  constructor(db) {
+    super();
+    this.db = db;
+  }
+
+  async save(order) {
+    const sql = `
+      INSERT INTO orders (id, customer_id, status, total, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT(id) DO UPDATE SET status=$3, total=$4
+    `;
+
+    await this.db.run(sql, [
+      order.orderId.value,
+      order.customerId.value,
+      order.status,
+      order.total.amount,
+      order.createdAt,
+    ]);
+  }
+
+  async get(orderId) {
+    const sql = 'SELECT * FROM orders WHERE id = $1';
+    const row = await this.db.get(sql, [orderId.value]);
+
+    if (!row) return null;
+
+    return new Order(
+      new OrderId(row.id),
+      new CustomerId(row.customer_id),
+      [],
+      new Money(row.total, row.currency),
+      row.status,
+      row.created_at
+    );
+  }
+
+  async findPendingOrders() {
+    const sql = 'SELECT id FROM orders WHERE status = $1';
+    const rows = await this.db.all(sql, ['pending']);
+
+    const orders = [];
+    for (const row of rows) {
+      orders.push(await this.get(new OrderId(row.id)));
+    }
+
+    return orders;
+  }
+
+  async findByCustomer(customerId) {
+    const sql = 'SELECT id FROM orders WHERE customer_id = $1';
+    const rows = await this.db.all(sql, [customerId.value]);
+
+    const orders = [];
+    for (const row of rows) {
+      orders.push(await this.get(new OrderId(row.id)));
+    }
+
+    return orders;
+  }
+}
+
+// Application Service
+class ConfirmOrderService {
+  constructor(orderRepository) {
+    this.orderRepository = orderRepository;
+  }
+
+  async execute(orderId) {
+    const order = await this.orderRepository.get(orderId);
+
+    if (!order) {
+      throw new Error('Order not found');
+    }
+
+    if (!order.isPending()) {
+      throw new Error('Order not pending');
+    }
+
+    order.confirm();
+    await this.orderRepository.save(order);
+  }
+}
+
+// Test
+async function testConfirmOrder() {
+  const repo = new InMemoryOrderRepository();
+  const order = new Order(
+    new OrderId('123'),
+    new CustomerId('cust-1'),
+    [],
+    new Money(99.99, 'USD'),
+    'pending',
+    new Date()
+  );
+
+  await repo.save(order);
+
+  const service = new ConfirmOrderService(repo);
+  await service.execute(new OrderId('123'));
+
+  const confirmed = await repo.get(new OrderId('123'));
+  console.assert(confirmed.status === 'confirmed');
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Real-World Examples
+
+### Example 1: Rich Query Methods
+
+Instead of:
+```python
+repo.find({'status': 'pending', 'created_at': {'$gt': yesterday}})
+```
+
+Do:
+```python
+repo.find_pending_orders_created_after(days=1)
+```
+
+Benefits:
+- Domain language (readable)
+- Testable (can mock)
+- Implementation hidden (SQL → MongoDB → cache)
+
+### Example 2: Specification Pattern
+
+```python
+class OrderSpecification:
+    def is_satisfied_by(self, order):
+        """Predicate for filtering"""
+        pass
+
+class PendingOrdersSpecification(OrderSpecification):
+    def is_satisfied_by(self, order):
+        return order.status == 'pending'
+
+# Use in repository
+repo.find_by_spec(PendingOrdersSpecification())
+```
+
+## Common Mistakes
+
+### Mistake 1: Leaking Database Details
+
+```python
+# ❌ BAD: SQL leaks to service
+orders = repo.find_where({'status': 'pending'})
+
+# ✓ GOOD: Domain language
+orders = repo.find_pending_orders()
+```
+
+### Mistake 2: Repositories for Everything
+
+```python
+# ❌ BAD: Repository for each entity
+UserRepository, AddressRepository, PhoneRepository
+
+# ✓ GOOD: One repository per aggregate
+UserRepository (manages User + Address + Phone)
+```
+
+### Mistake 3: N+1 Queries
+
+```python
+# ❌ BAD: Separate query per item
+orders = repo.find_all()  # 1 query
+for order in orders:
+    items = repo.find_items(order.id)  # N queries
+
+# ✓ GOOD: Aggregate loading
+orders = repo.find_all_with_items()  # 1 query with JOIN
+```
+
+## Design Checklist
+
+<Checklist items={[
+  "One repository per aggregate root?",
+  "Rich query methods (domain language)?",
+  "In-memory implementation for testing?",
+  "No N+1 queries?",
+  "Pagination support?",
+  "Transaction management?",
+  "Error handling clear?",
+  "Database details hidden?",
+  "Application services use abstraction?",
+  "No entity repositories?",
+  "Specifications implemented?",
+  "Performance optimized (indexes, eager loading)?"
+]} />
+
+## Next Steps
+
+1. Identify aggregate roots
+2. Define repository interface
+3. Implement in-memory version
+4. Write repository tests
+5. Implement SQL version
+6. Optimize queries (N+1, indexes)
+7. Add pagination support
+
+## References
+
+- <a href="https://martinfowler.com/eaaCatalog/repository.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Repository Pattern ↗</a>
+- <a href="https://vaughnvernon.com/book-ddd-distilled/" target="_blank" rel="nofollow noopener noreferrer">Domain-Driven Design Distilled ↗</a>
+
+## Advanced Repository Patterns
+
+### Specification Pattern
+
+Complex queries can be represented as specifications:
+
+```python
+class Specification(ABC):
+    @abstractmethod
+    def is_satisfied_by(self, item):
+        pass
+
+class PendingOrdersOlderThan(Specification):
+    def __init__(self, days):
+        self.days = days
+    
+    def is_satisfied_by(self, order):
+        cutoff = datetime.now() - timedelta(days=self.days)
+        return order.status == 'pending' and order.created_at < cutoff
+
+class HighValueOrdersFrom(Specification):
+    def __init__(self, customer_id, min_value):
+        self.customer_id = customer_id
+        self.min_value = min_value
+    
+    def is_satisfied_by(self, order):
+        return order.customer_id == self.customer_id and order.total.amount > self.min_value
+
+# Composite specification
+class AndSpecification(Specification):
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+    
+    def is_satisfied_by(self, item):
+        return self.left.is_satisfied_by(item) and self.right.is_satisfied_by(item)
+
+# Usage
+spec = AndSpecification(
+    PendingOrdersOlderThan(7),
+    HighValueOrdersFrom('cust-1', 1000)
+)
+
+orders = repo.find_by_spec(spec)
+# Returns: pending orders > 7 days old AND from customer AND > $1000
+```
+
+### Query Objects
+
+Separate read-heavy queries from repositories:
+
+```python
+class OrderQueries:
+    def __init__(self, db):
+        self.db = db
+    
+    def revenue_by_date(self, start_date, end_date):
+        """Report: Revenue by date"""
+        sql = """
+            SELECT DATE(created_at), SUM(total)
+            FROM orders
+            WHERE created_at BETWEEN %s AND %s
+            GROUP BY DATE(created_at)
+        """
+        return self.db.execute(sql, [start_date, end_date])
+    
+    def top_customers(self, limit=10):
+        """Report: Top customers by revenue"""
+        sql = """
+            SELECT customer_id, SUM(total) as revenue
+            FROM orders
+            GROUP BY customer_id
+            ORDER BY revenue DESC
+            LIMIT %s
+        """
+        return self.db.execute(sql, [limit])
+    
+    def orders_by_status(self, status):
+        """Report: Count orders by status"""
+        sql = "SELECT COUNT(*) FROM orders WHERE status = %s"
+        return self.db.execute(sql, [status])
+
+# Usage
+queries = OrderQueries(db)
+revenue = queries.revenue_by_date(date(2024,1,1), date(2024,12,31))
+top_10 = queries.top_customers(10)
+```
+
+### CQRS (Command Query Responsibility Segregation)
+
+Separate write (command) and read (query) models:
+
+```python
+# Commands (writes)
+class CreateOrderCommand:
+    def __init__(self, customer_id, items, total):
+        self.customer_id = customer_id
+        self.items = items
+        self.total = total
+
+class CreateOrderCommandHandler:
+    def __init__(self, order_repo, event_bus):
+        self.order_repo = order_repo
+        self.event_bus = event_bus
+    
+    def handle(self, command):
+        order = Order.create(command.customer_id, command.items, command.total)
+        self.order_repo.save(order)
+        
+        # Publish event for read model update
+        self.event_bus.publish(OrderCreatedEvent(order))
+        
+        return order.order_id
+
+# Queries (reads) - separate read model
+class OrderReadModel:
+    """Optimized for reading, denormalized"""
+    def __init__(self, db):
+        self.db = db
+    
+    def get_orders_by_customer(self, customer_id):
+        # Simple query, no joins
+        sql = "SELECT * FROM orders_read WHERE customer_id = %s"
+        return self.db.execute(sql, [customer_id])
+    
+    def get_customer_summary(self, customer_id):
+        # Pre-aggregated data
+        sql = "SELECT * FROM customer_summary WHERE id = %s"
+        return self.db.execute(sql, [customer_id])
+
+# When OrderCreatedEvent published:
+# - Update orders_read table
+# - Update customer_summary aggregates
+```
+
+Benefits:
+- Write model optimized for consistency
+- Read model optimized for queries
+- Independent scaling
+
+### Pagination Patterns
+
+Handle large result sets efficiently:
+
+```python
+class OrderRepository:
+    def find_all_paginated(self, page=1, page_size=20):
+        offset = (page - 1) * page_size
+        
+        # Get total count
+        count_sql = "SELECT COUNT(*) FROM orders"
+        total = self.db.execute(count_sql)
+        
+        # Get page
+        sql = "SELECT * FROM orders LIMIT %s OFFSET %s"
+        items = self.db.execute(sql, [page_size, offset])
+        
+        return {
+            'items': items,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'pages': (total + page_size - 1) // page_size
+        }
+    
+    def find_all_keyset_pagination(self, last_id=None, limit=20):
+        """Keyset pagination (more efficient for large tables)"""
+        sql = "SELECT * FROM orders WHERE id > %s LIMIT %s"
+        items = self.db.execute(sql, [last_id or 0, limit + 1])
+        
+        has_more = len(items) > limit
+        items = items[:limit]
+        last_item_id = items[-1].id if items else None
+        
+        return {
+            'items': items,
+            'has_more': has_more,
+            'next_cursor': last_item_id
+        }
+```
+
+## Performance Optimization
+
+### N+1 Query Prevention
+
+**Eager Loading**:
+```python
+# ❌ N+1 problem
+orders = repo.find_all()  # 1 query
+for order in orders:
+    for item in order.items:  # N queries!
+        print(item.sku)
+
+# ✅ Eager loading with joins
+sql = """
+    SELECT o.*, oi.* FROM orders o
+    JOIN order_items oi ON o.id = oi.order_id
+"""
+orders = self._reconstruct_aggregates(sql)
+```
+
+### Caching Layers
+
+```python
+class CachedOrderRepository:
+    def __init__(self, db_repo, cache):
+        self.db_repo = db_repo
+        self.cache = cache
+    
+    def get(self, order_id):
+        # Try cache first
+        cached = self.cache.get(f'order:{order_id}')
+        if cached:
+            return cached
+        
+        # Fall through to DB
+        order = self.db_repo.get(order_id)
+        
+        # Cache for 1 hour
+        self.cache.set(f'order:{order_id}', order, ttl=3600)
+        
+        return order
+    
+    def save(self, order):
+        self.db_repo.save(order)
+        # Invalidate cache
+        self.cache.delete(f'order:{order.order_id}')
+```
+
+## Conclusion
+
+Repositories are powerful abstraction for persistence:
+- Service doesn't know database details
+- Easy to test (in-memory implementation)
+- Easy to change (SQL → NoSQL)
+- Rich domain language (find_pending_orders)
+
+Key principles:
+- One repository per aggregate root
+- No N+1 queries (eager load)
+- Specifications for complex queries
+- Separate read-heavy queries (Query Objects)
+
+Don't overuse: Simple CRUD apps don't need repositories.
+

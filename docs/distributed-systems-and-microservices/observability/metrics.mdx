@@ -1,0 +1,522 @@
+---
+sidebar_position: 2
+title: "Metrics and Monitoring"
+description: "Measure system behavior with metrics using RED and USE methods to identify performance issues."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [metrics, monitoring, red-method, use-method, golden-signals, prometheus, time-series-data, alerting]
+image: /img/archman-social-card.webp
+tags: [observability, monitoring, metrics, performance, reliability, operational-excellence, alerting, troubleshooting, best-practices, advanced-patterns]
+hide_title: true
+---
+
+<Hero title="Metrics and Monitoring" subtitle="Measure system behavior with metrics using RED and USE methods to identify performance issues." imageAlt="Metrics and monitoring illustration" size="large" />
+
+## TL;DR
+
+Metrics measure system behavior: requests per second, latency, error rates, CPU usage, memory. The RED method focuses on services: Rate (requests/sec), Errors (error rate), Duration (latency). The USE method focuses on resources: Utilization (% busy), Saturation (queue depth), Errors. Combine both for complete visibility. Export metrics to time-series databases (Prometheus, InfluxDB) and visualize with Grafana. Set up alerts on key metrics: alert when error rate spikes, when latency exceeds SLO, when resource utilization nears limits. Metrics enable proactive monitoring: catch problems before users notice.
+
+## Learning Objectives
+
+- Instrument services to emit metrics
+- Understand RED method (Rate, Errors, Duration) for services
+- Understand USE method (Utilization, Saturation, Errors) for resources
+- Set up metric collection and storage
+- Create effective dashboards and alerts
+- Use metrics to identify performance issues
+
+## Motivating Scenario
+
+A service has a performance problem. Users report slowness. You have no metrics. Is it a code issue? Database issue? Network? Deployed without instrumentation, you're blind. With proper metrics, you see: request rate constant, error rate normal, but latency increasing and database connection pool saturation increasing. You've identified the problem: database contention.
+
+## Core Concepts
+
+### RED Method
+
+Rate: How many requests per second? Errors: What percentage fail? Duration: What's the response time? Track these for each service/endpoint. Alert when error rate spikes or latency exceeds targets.
+
+### USE Method
+
+Utilization: What percentage of capacity is in use? Saturation: How many requests are queued? Errors: How many operations fail? Apply to resources: CPU, memory, disk, network, database connections.
+
+### Golden Signals
+
+Google's four golden signals: latency (response time), traffic (request volume), errors (failure rate), saturation (capacity used). Monitor all four for each service.
+
+### Time-Series Metrics
+
+Store metrics over time in systems designed for time-series data. Enable trending: is latency getting worse? Is traffic increasing? Historical data enables capacity planning.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="py" label="Python">
+```python
+from prometheus_client import Counter, Histogram, Gauge
+import time
+
+# RED metrics for service
+request_count = Counter(
+    'service_requests_total',
+    'Total requests',
+    ['service', 'endpoint', 'status']
+)
+
+request_duration = Histogram(
+    'service_request_duration_seconds',
+    'Request duration',
+    ['service', 'endpoint']
+)
+
+request_errors = Counter(
+    'service_errors_total',
+    'Total errors',
+    ['service', 'endpoint', 'error_type']
+)
+
+# USE metrics for resources
+db_pool_utilization = Gauge(
+    'db_pool_utilization',
+    'Database connection pool utilization',
+    ['service']
+)
+
+db_pool_saturation = Gauge(
+    'db_pool_saturation',
+    'Database connection pool queue depth',
+    ['service']
+)
+
+def handle_request(service, endpoint, request_func):
+    """Instrument request with RED metrics"""
+    start = time.time()
+    status = 'success'
+    error_type = None
+
+    try:
+        result = request_func()
+        return result
+    except Exception as e:
+        status = 'error'
+        error_type = type(e).__name__
+        request_errors.labels(
+            service=service,
+            endpoint=endpoint,
+            error_type=error_type
+        ).inc()
+        raise
+    finally:
+        duration = time.time() - start
+        request_count.labels(
+            service=service,
+            endpoint=endpoint,
+            status=status
+        ).inc()
+        request_duration.labels(
+            service=service,
+            endpoint=endpoint
+        ).observe(duration)
+
+def monitor_database_pool(pool):
+    """Report database pool health"""
+    # Utilization
+    connections = pool.size()
+    capacity = pool.max_size()
+    utilization = (connections / capacity) * 100
+    db_pool_utilization.labels(service='order-service').set(utilization)
+
+    # Saturation
+    queue_depth = pool.waiting_count()
+    db_pool_saturation.labels(service='order-service').set(queue_depth)
+```
+</TabItem>
+
+<TabItem value="go" label="Go">
+```go
+import "github.com/prometheus/client_golang/prometheus"
+
+// RED metrics
+var (
+    requestCount = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "service_requests_total",
+            Help: "Total requests",
+        },
+        []string{"service", "endpoint", "status"},
+    )
+
+    requestDuration = prometheus.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name: "service_request_duration_seconds",
+            Help: "Request duration",
+        },
+        []string{"service", "endpoint"},
+    )
+
+    requestErrors = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "service_errors_total",
+            Help: "Total errors",
+        },
+        []string{"service", "endpoint", "error_type"},
+    )
+)
+
+// USE metrics
+var (
+    dbPoolUtilization = prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "db_pool_utilization",
+            Help: "Database connection pool utilization",
+        },
+        []string{"service"},
+    )
+
+    dbPoolSaturation = prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "db_pool_saturation",
+            Help: "Database connection queue depth",
+        },
+        []string{"service"},
+    )
+)
+
+func HandleRequest(service, endpoint string, handler func() error) error {
+    start := time.Now()
+    status := "success"
+    errorType := ""
+
+    err := handler()
+    if err != nil {
+        status = "error"
+        errorType = reflect.TypeOf(err).String()
+        requestErrors.WithLabelValues(service, endpoint, errorType).Inc()
+    }
+
+    duration := time.Since(start).Seconds()
+    requestCount.WithLabelValues(service, endpoint, status).Inc()
+    requestDuration.WithLabelValues(service, endpoint).Observe(duration)
+
+    return err
+}
+
+func MonitorDatabasePool(pool *sql.DB) {
+    stats := pool.Stats()
+    utilization := float64(stats.OpenConnections) / float64(10) * 100
+    dbPoolUtilization.WithLabelValues("order-service").Set(utilization)
+}
+```
+</TabItem>
+
+<TabItem value="js" label="Node.js">
+```javascript
+const prometheus = require('prom-client');
+
+// RED metrics
+const requestCounter = new prometheus.Counter({
+    name: 'service_requests_total',
+    help: 'Total requests',
+    labelNames: ['service', 'endpoint', 'status']
+});
+
+const requestDurationHistogram = new prometheus.Histogram({
+    name: 'service_request_duration_seconds',
+    help: 'Request duration',
+    labelNames: ['service', 'endpoint'],
+    buckets: [0.1, 0.5, 1, 2, 5]
+});
+
+const errorCounter = new prometheus.Counter({
+    name: 'service_errors_total',
+    help: 'Total errors',
+    labelNames: ['service', 'endpoint', 'error_type']
+});
+
+// USE metrics
+const dbPoolUtilization = new prometheus.Gauge({
+    name: 'db_pool_utilization',
+    help: 'Database connection pool utilization',
+    labelNames: ['service']
+});
+
+async function handleRequest(service, endpoint, handler) {
+    const start = Date.now();
+    let status = 'success';
+    let errorType = null;
+
+    try {
+        return await handler();
+    } catch (error) {
+        status = 'error';
+        errorType = error.constructor.name;
+        errorCounter.labels(service, endpoint, errorType).inc();
+        throw error;
+    } finally {
+        const duration = (Date.now() - start) / 1000;
+        requestCounter.labels(service, endpoint, status).inc();
+        requestDurationHistogram.labels(service, endpoint).observe(duration);
+    }
+}
+```
+</TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs items={[
+{
+    label: "When Detailed Metrics Are Essential",
+    points: ["Production systems with high traffic", "Systems where performance is critical", "Distributed services with many endpoints", "Systems requiring SLO/SLA compliance"]
+  },
+{
+    label: "When Basic Monitoring Suffices",
+    points: ["Development and testing environments", "Simple applications with few endpoints", "Systems with lenient SLOs"]
+  }
+]} />
+
+## Patterns and Pitfalls
+
+<Showcase  sections={[{
+      title: "Cardinality Explosion",
+      description: "Too many label combinations create millions of metrics, overwhelming systems. Use bounded labels.",
+      icon: "⚠️"
+    }, {
+      title: "RED Method",
+      description: "Track Rate, Errors, Duration for every service. These three metrics catch most problems.",
+      icon: "✓"
+    }, {
+      title: "USE Method",
+      description: "Track Utilization, Saturation, Errors for resources. Identify capacity issues early.",
+      icon: "✓"
+    }]}
+/>
+
+## Design Review Checklist
+
+<Checklist
+  items={[
+    "All services emit RED metrics (Rate, Errors, Duration)",
+    "Resource metrics (USE) are collected for critical resources",
+    "Metrics have reasonable label cardinality (not millions of combinations)",
+    "Dashboards display key metrics (latency, error rate, utilization)",
+    "Alerts are configured for SLO violations",
+    "Metrics retention policies align with requirements"
+  ]}
+/>
+
+## Self-Check
+
+- What are the RED metrics and why are they important?
+- How do you detect resource saturation using metrics?
+- What metrics would you use to assess database health?
+
+:::info One Takeaway
+Metrics make systems observable. RED method for services, USE method for resources. Combine both and you understand your system's health.
+
+:::
+
+## Advanced Metrics Topics
+
+### Cardinality and Label Design
+
+High cardinality metrics (many unique label combinations) can overwhelm time-series databases. Design labels carefully:
+
+```python
+# Bad: High cardinality label (unbounded user IDs)
+user_requests = Counter(
+    'requests_by_user',
+    'Requests per user',
+    ['user_id']  # Can have millions of unique values
+)
+
+# Good: Bounded label (user tier or segment)
+user_requests = Counter(
+    'requests_by_tier',
+    'Requests per tier',
+    ['user_tier']  # Only: free, premium, enterprise
+)
+
+# Bad: Request path (100s of unique paths)
+path_latency = Histogram(
+    'request_latency_seconds',
+    'Latency by path',
+    ['path']  # /users/1, /users/2, /users/3... millions
+)
+
+# Good: Endpoint pattern (grouped)
+path_latency = Histogram(
+    'request_latency_seconds',
+    'Latency by endpoint',
+    ['endpoint']  # /users/:id, /posts/:id (bounded)
+)
+```
+
+### Alerting Rules
+
+Define alerting rules based on metrics to catch problems early:
+
+```yaml
+# Prometheus alerting rules (alerting.yaml)
+groups:
+  - name: service_health
+    rules:
+      # Alert if error rate exceeds 1%
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(service_errors_total[5m]) /
+            rate(service_requests_total[5m])
+          ) > 0.01
+        for: 5m
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      # Alert if latency p95 exceeds 500ms
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            rate(service_request_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+
+      # Alert if service is down (no metrics for 2 minutes)
+      - alert: ServiceDown
+        expr: up{job="api-service"} == 0
+        for: 2m
+
+      # Alert on saturation (queue depth > 1000)
+      - alert: QueueSaturation
+        expr: job_queue_depth > 1000
+        for: 1m
+```
+
+### Observability Anti-Patterns
+
+Common mistakes to avoid:
+
+```python
+# Anti-pattern: Logging instead of metrics
+# BAD
+log.info(f"Request processed in {latency}ms")
+
+# GOOD
+request_latency.labels(endpoint="/users").observe(latency)
+
+# Anti-pattern: Aggregating in application instead of database
+# BAD
+def average_latency():
+    return sum(latencies) / len(latencies)  # Only current running instance
+
+# GOOD: Let time-series DB aggregate
+# Query: avg(rate(request_duration_seconds_sum[5m])) / avg(rate(request_duration_seconds_count[5m]))
+
+# Anti-pattern: Metrics without context (no service/endpoint labels)
+# BAD
+response_time = Gauge('response_time_ms')
+
+# GOOD: Always add identifying labels
+response_time = Gauge(
+    'response_time_ms',
+    'Response time in milliseconds',
+    ['service', 'endpoint', 'method']
+)
+```
+
+## Metrics in Practice: Case Studies
+
+### E-commerce Platform Monitoring
+
+Metrics strategy for an online store:
+
+```yaml
+# Service-level (RED)
+- api_requests_total[service, endpoint, status]
+- api_request_duration_seconds[service, endpoint]
+- api_errors_total[service, endpoint, error_type]
+
+# Resource-level (USE)
+- database_connection_pool_active[database]
+- database_query_duration_seconds_bucket[database, query_type]
+- cache_hit_ratio[cache_name]
+- kafka_consumer_lag[topic, partition]
+
+# Business metrics
+- orders_created_total[region, product_category]
+- checkout_abandonment_rate[region]
+- product_search_latency_p95[region]
+- inventory_allocation_failures_total[warehouse]
+```
+
+### Microservices Monitoring
+
+Metrics for a distributed system:
+
+```python
+# Every service should emit these baseline metrics
+baseline_metrics = {
+    # Traffic
+    'requests_total': 'Counter[service, endpoint, method, status]',
+    'request_duration_seconds': 'Histogram[service, endpoint]',
+
+    # Errors
+    'errors_total': 'Counter[service, error_type]',
+    'exception_rate': 'Rate[service, exception_class]',
+
+    # Saturation
+    'queue_depth': 'Gauge[queue_name]',
+    'threadpool_active_threads': 'Gauge[pool_name]',
+    'connection_pool_active': 'Gauge[pool_name]',
+
+    # Dependencies
+    'downstream_call_duration_seconds': 'Histogram[service, downstream, endpoint]',
+    'downstream_call_errors_total': 'Counter[service, downstream]',
+}
+```
+
+## Metrics vs Logs vs Traces
+
+Understanding when to use each:
+
+```
+Metrics: "How much?" "How fast?" "How many errors?"
+- Structured, aggregated, time-series
+- Good for: trends, alerting, dashboards
+- Example: 50 requests/sec, p99 latency 200ms
+
+Logs: "What happened?"
+- Detailed, unstructured, event-based
+- Good for: debugging, investigation, audit
+- Example: "User 123 logged in from 192.168.1.1"
+
+Traces: "Why is it slow?"
+- Distributed call path, timing breakdown
+- Good for: performance debugging, understanding flow
+- Example: Request took 200ms: 100ms in service A, 80ms in DB, 20ms in service B
+
+Best practice: Use all three together
+- Metrics trigger alerts
+- Alerts lead to logs for investigation
+- Traces show the exact flow for debugging
+```
+
+## Next Steps
+
+- Instrument all services with RED metrics
+- Set up metric collection (Prometheus)
+- Create dashboards (Grafana)
+- Configure alerts on SLO violations
+- Implement tracing (Jaeger, Zipkin) for distributed debugging
+- Design runbooks for common alerts
+
+## References
+
+- Tom Wilkie, RED Method for Distributed Systems
+- Brendan Gregg, USE Method for Performance Analysis
+- Google Cloud: The Four Golden Signals
+- "Observability Engineering" by Charity Majors, Liz Fong-Jones, George Miranda
+- Prometheus Best Practices: https://prometheus.io/docs/practices/

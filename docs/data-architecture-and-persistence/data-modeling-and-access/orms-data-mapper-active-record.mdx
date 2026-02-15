@@ -1,0 +1,734 @@
+---
+sidebar_position: 2
+title: "ORMs: Active Record vs Data Mapper"
+description: "Abstraction patterns for database persistence with trade-offs in coupling and control"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [ORM, Active Record, Data Mapper, persistence, abstraction, coupling, SQLAlchemy, TypeORM]
+image: /img/archman-social-card.webp
+tags: [ORMs, persistence, Active-Record, Data-Mapper, abstraction, patterns, database-abstraction]
+hide_title: true
+---
+
+<Hero title="ORMs: Active Record vs Data Mapper" subtitle="Abstraction patterns for database persistence with different trade-offs" size="large" />
+
+## TL;DR
+
+**Active Record**: Objects know how to persist themselves (User.save(), Post.find(id)). Simpler, more intuitive, but tightly couples entities to database. Better for CRUD-heavy applications with straightforward domains.
+
+**Data Mapper**: Separate objects from persistence logic (UserRepository.save(user)). More testable, cleaner architecture, enables complex domains. Higher upfront complexity. Better for larger systems with intricate business logic.
+
+Choose based on domain complexity: simple CRUD → Active Record; complex domains with lots of business logic → Data Mapper.
+
+## Learning Objectives
+
+- Understand Active Record and Data Mapper patterns deeply
+- Recognize trade-offs in coupling vs simplicity vs testability
+- Design persistence layers that match your domain complexity
+- Know when each pattern excels and when to avoid it
+- Optimize query patterns and avoid common pitfalls
+
+## Core Concepts
+
+<Figure caption="Active Record vs Data Mapper architecture">
+
+```mermaid
+graph TB
+  subgraph AR["Active Record Pattern"]
+    direction TB
+    Entity["User Entity<br/>(with persistence methods)"]
+    Entity -->|save()| DB["Database"]
+    Entity -->|find()| DB
+  end
+
+  subgraph DM["Data Mapper Pattern"]
+    direction TB
+    POJ["User POJO<br/>(plain object)"]
+    Mapper["UserRepository<br/>(mapper/DAO)"]
+    POJ -->|passed to| Mapper
+    Mapper -->|save/find| DB2["Database"]
+  end
+```
+
+</Figure>
+
+## Pattern Comparison
+
+<Vs items={[
+{
+    label: "Active Record",
+    points: [
+      "Entity objects contain persistence logic",
+      "Example: User.save(), Post.find(id), user.destroy()",
+      "Tight coupling to database schema",
+      "Simpler for CRUD operations",
+      "Less testable (must mock database)",
+      "Frameworks: Rails, Laravel, ASP.NET MVC, Django",
+      "Best for: Small to medium CRUD apps, rapid prototyping"
+    ]
+  },
+{
+    label: "Data Mapper",
+    points: [
+      "Entities are plain objects (POJOs/DTOs)",
+      "Example: UserRepository.save(user), userRepository.findById(id)",
+      "Loose coupling to persistence",
+      "Better for complex domain logic",
+      "Highly testable (mock repository easily)",
+      "Frameworks: SQLAlchemy, TypeORM, JPA, Hibernate",
+      "Best for: Large systems, complex domains, testing-first development"
+    ]
+  }
+]} />
+
+## Practical Examples
+
+<Tabs>
+<TabItem value="active-record" label="Active Record (Rails)">
+
+```ruby
+# Active Record: Entity knows how to persist itself
+
+class User < ApplicationRecord
+  # Associations
+  has_many :posts
+  has_many :comments
+  
+  # Validations (business logic mixed with persistence)
+  validates :email, presence: true, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }
+  validates :name, presence: true, length: { minimum: 2, maximum: 100 }
+  
+  # Scopes (queries)
+  scope :active, -> { where(active: true) }
+  scope :recent, -> { order(created_at: :desc) }
+  
+  # Methods (business logic)
+  def send_welcome_email
+    WelcomeMailer.deliver_now(self)
+  end
+  
+  def full_name
+    "#{first_name} #{last_name}"
+  end
+end
+
+# Usage - very intuitive
+user = User.new(email: "alice@example.com", name: "Alice")
+user.save  # Calls database
+
+# Find queries
+user = User.find(1)
+user = User.find_by(email: "alice@example.com")
+active_users = User.active.recent.limit(10)
+
+# Update
+user.update(email: "alice.smith@example.com")
+
+# Delete
+user.destroy
+
+# Associations are lazy-loaded by default (N+1 risk!)
+users = User.all
+users.each do |u|
+  puts u.posts.count  # Separate query per user!
+end
+
+# Fix: Use eager loading
+users = User.includes(:posts).all  # Loads all posts in 1 extra query
+```
+
+**Pitfalls of Active Record**:
+- N+1 query problem (forgot to eager load relations)
+- Business logic mixed with persistence logic
+- Difficult to test (requires database or mocking entire AR)
+- Scope pollution (many scopes make model hard to understand)
+- Cannot reuse object without persistence concern
+
+</TabItem>
+
+<TabItem value="data-mapper-py" label="Data Mapper (SQLAlchemy/Python)">
+
+```python
+from typing import Optional, List
+from dataclasses import dataclass
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, select
+from sqlalchemy.orm import Session, DeclarativeBase, relationship
+
+# Plain entity - no persistence methods
+@dataclass
+class User:
+    id: Optional[int] = None
+    email: str = ""
+    name: str = ""
+    active: bool = True
+    created_at: Optional[datetime] = None
+    posts: List['Post'] = None
+
+# Database model (mapping layer)
+class UserModel(DeclarativeBase):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True)
+    email = Column(String(255), nullable=False, unique=True)
+    name = Column(String(255), nullable=False)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationship (lazy by default in SQLAlchemy)
+    posts = relationship('PostModel', back_populates='user')
+
+# Repository pattern (Data Mapper)
+class UserRepository:
+    def __init__(self, session: Session):
+        self.session = session
+    
+    def save(self, user: User) -> User:
+        """Save or update a user"""
+        if user.id:
+            # Update existing
+            db_user = self.session.query(UserModel).filter(UserModel.id == user.id).first()
+            if db_user:
+                db_user.email = user.email
+                db_user.name = user.name
+                db_user.active = user.active
+        else:
+            # Create new
+            db_user = UserModel(email=user.email, name=user.name, active=user.active)
+            self.session.add(db_user)
+        
+        self.session.commit()
+        return self._to_domain(db_user)
+    
+    def find_by_id(self, user_id: int) -> Optional[User]:
+        """Find user by ID"""
+        db_user = self.session.query(UserModel).filter(UserModel.id == user_id).first()
+        return self._to_domain(db_user) if db_user else None
+    
+    def find_by_email(self, email: str) -> Optional[User]:
+        """Find user by email"""
+        db_user = self.session.query(UserModel).filter(UserModel.email == email).first()
+        return self._to_domain(db_user) if db_user else None
+    
+    def find_all(self, active_only: bool = False) -> List[User]:
+        """Find all users"""
+        query = self.session.query(UserModel)
+        if active_only:
+            query = query.filter(UserModel.active == True)
+        return [self._to_domain(u) for u in query.all()]
+    
+    def find_active_recent(self, limit: int = 10) -> List[User]:
+        """Find recent active users"""
+        users = (self.session.query(UserModel)
+                .filter(UserModel.active == True)
+                .order_by(UserModel.created_at.desc())
+                .limit(limit)
+                .all())
+        return [self._to_domain(u) for u in users]
+    
+    def delete(self, user_id: int) -> bool:
+        """Delete user"""
+        result = self.session.query(UserModel).filter(UserModel.id == user_id).delete()
+        self.session.commit()
+        return result > 0
+    
+    def _to_domain(self, db_user: UserModel) -> User:
+        """Convert database model to domain object"""
+        return User(
+            id=db_user.id,
+            email=db_user.email,
+            name=db_user.name,
+            active=db_user.active,
+            created_at=db_user.created_at
+        )
+
+# Business logic layer (separate from persistence)
+class UserService:
+    def __init__(self, user_repo: UserRepository):
+        self.user_repo = user_repo
+    
+    def register_user(self, email: str, name: str) -> User:
+        """Business logic: validate and create user"""
+        if not self._valid_email(email):
+            raise ValueError("Invalid email format")
+        
+        existing = self.user_repo.find_by_email(email)
+        if existing:
+            raise ValueError("User already exists")
+        
+        user = User(email=email, name=name)
+        return self.user_repo.save(user)
+    
+    def _valid_email(self, email: str) -> bool:
+        return "@" in email and "." in email.split("@")[1]
+
+# Usage
+session = Session()
+user_repo = UserRepository(session)
+user_service = UserService(user_repo)
+
+# Register (business logic + persistence separated)
+user = user_service.register_user("alice@example.com", "Alice")
+
+# Query (explicit, no N+1 surprises)
+user = user_repo.find_by_email("alice@example.com")
+recent = user_repo.find_active_recent(limit=5)
+
+# Update
+user.name = "Alice Smith"
+user_repo.save(user)
+
+# Delete
+user_repo.delete(user.id)
+
+# Testing is easy (mock repository)
+class MockUserRepository:
+    def find_by_email(self, email: str) -> Optional[User]:
+        if email == "existing@example.com":
+            return User(id=1, email=email, name="Existing")
+        return None
+
+# Test register_user without database
+mock_repo = MockUserRepository()
+service = UserService(mock_repo)
+# Now can test business logic in isolation
+```
+
+**Advantages of Data Mapper**:
+- Business logic separated from persistence
+- Plain objects easier to test (no database needed)
+- Repository can be mocked easily
+- Query logic centralized in repository
+- Entity objects reusable across layers
+
+</TabItem>
+
+<TabItem value="typeorm" label="Data Mapper (TypeORM/TypeScript)">
+
+```typescript
+import { Entity, PrimaryGeneratedColumn, Column, Repository, getRepository, In } from "typeorm";
+import { Injectable } from "@nestjs/common";
+
+// Plain entity (just data structure + metadata)
+@Entity("users")
+class User {
+  @PrimaryGeneratedColumn()
+  id: number;
+  
+  @Column({ unique: true })
+  email: string;
+  
+  @Column()
+  name: string;
+  
+  @Column({ default: true })
+  active: boolean;
+  
+  @Column({ type: "timestamp", default: () => "CURRENT_TIMESTAMP" })
+  createdAt: Date;
+}
+
+// Repository pattern (Data Mapper)
+@Injectable()
+class UserRepository {
+  private repo: Repository<User>;
+  
+  constructor() {
+    this.repo = getRepository(User);
+  }
+  
+  async save(user: User): Promise<User> {
+    return this.repo.save(user);
+  }
+  
+  async findById(id: number): Promise<User | null> {
+    return this.repo.findOne({ where: { id } });
+  }
+  
+  async findByEmail(email: string): Promise<User | null> {
+    return this.repo.findOne({ where: { email } });
+  }
+  
+  async findAll(): Promise<User[]> {
+    return this.repo.find();
+  }
+  
+  async findActive(limit: number = 10): Promise<User[]> {
+    return this.repo.find({
+      where: { active: true },
+      order: { createdAt: "DESC" },
+      take: limit
+    });
+  }
+  
+  async delete(id: number): Promise<boolean> {
+    const result = await this.repo.delete(id);
+    return (result.affected ?? 0) > 0;
+  }
+  
+  // Bulk operations (efficient)
+  async findByIds(ids: number[]): Promise<User[]> {
+    return this.repo.find({ where: { id: In(ids) } });
+  }
+  
+  async updateActive(ids: number[], active: boolean): Promise<void> {
+    await this.repo.update({ id: In(ids) }, { active });
+  }
+}
+
+// Service layer (business logic)
+@Injectable()
+class UserService {
+  constructor(private userRepo: UserRepository) {}
+  
+  async registerUser(email: string, name: string): Promise<User> {
+    if (!this.isValidEmail(email)) {
+      throw new Error("Invalid email");
+    }
+    
+    const existing = await this.userRepo.findByEmail(email);
+    if (existing) {
+      throw new Error("User already exists");
+    }
+    
+    const user = new User();
+    user.email = email;
+    user.name = name;
+    user.active = true;
+    
+    return this.userRepo.save(user);
+  }
+  
+  private isValidEmail(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+}
+
+// Testing (easy mocking)
+class MockUserRepository {
+  async findByEmail(email: string): Promise<User | null> {
+    if (email === "existing@example.com") {
+      const user = new User();
+      user.id = 1;
+      user.email = email;
+      user.name = "Existing User";
+      return user;
+    }
+    return null;
+  }
+  
+  async save(user: User): Promise<User> {
+    if (!user.id) user.id = Math.random();
+    return user;
+  }
+}
+
+// Test
+describe("UserService", () => {
+  it("should prevent duplicate registration", async () => {
+    const mockRepo = new MockUserRepository();
+    const service = new UserService(mockRepo);
+    
+    try {
+      await service.registerUser("existing@example.com", "Someone");
+      fail("Should throw");
+    } catch (e) {
+      expect(e.message).toContain("already exists");
+    }
+  });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Common ORM Problems and Solutions
+
+<Showcase sections={[
+  {
+    title: "N+1 Query Problem",
+    description: "Loading related entities naively causes 1 + N queries (one for parent, one per child). Kills performance.",
+    tags: ["performance", "queries"]
+  },
+  {
+    title: "Lazy Loading Outside Session",
+    description: "Accessing lazy-loaded relations after session closes causes error (DetachedInstanceError). Use eager loading.",
+    tags: ["queries", "design"]
+  },
+  {
+    title: "Bulk Operations Performance",
+    description: "Loading 1000 entities to delete is slow. Use bulk delete queries (DELETE WHERE id IN (...))",
+    tags: ["performance", "optimization"]
+  },
+  {
+    title: "Transaction Management",
+    description: "Holding database connections/transactions long causes locks. Understand session/transaction lifecycle.",
+    tags: ["reliability", "performance"]
+  },
+  {
+    title: "Testing Without Database",
+    description: "Active Record requires database/test DB. Data Mapper enables mocking repositories for unit tests.",
+    tags: ["testing", "architecture"]
+  },
+  {
+    title: "Complex Domain Logic Contamination",
+    description: "Active Record mixes domain logic with persistence. Hard to reuse entities, test logic.",
+    tags: ["architecture", "design"]
+  }
+]} />
+
+## Design Patterns: Query Optimization
+
+<Tabs>
+  <TabItem value="n-plus-one" label="N+1 Query Problem">
+```python
+# WRONG: N+1 queries
+users = session.query(User).all()  # 1 query
+for user in users:
+    print(user.posts)  # N additional queries (1 per user)
+
+# RIGHT: Eager loading (join)
+users = session.query(User).options(joinedload(User.posts)).all()  # 2 queries (1 join)
+
+# RIGHT: Explicit join with select_related
+users = (session.query(User)
+    .join(Post)
+    .options(contains_eager(User.posts))
+    .distinct()
+    .all())
+```
+  </TabItem>
+
+  <TabItem value="bulk-ops" label="Bulk Operations">
+```python
+# WRONG: Load all entities to delete (slow, memory intensive)
+users = session.query(User).filter(User.active == False).all()
+for user in users:
+    session.delete(user)
+session.commit()
+
+# RIGHT: Bulk delete (single query)
+session.query(User).filter(User.active == False).delete()
+session.commit()
+
+# WRONG: Update one-by-one
+for user in users:
+    user.active = True
+    session.commit()
+
+# RIGHT: Bulk update
+session.query(User).update({User.active: True})
+session.commit()
+
+# RIGHT: Use batch updates for complex logic
+from sqlalchemy import update
+stmt = update(User).where(User.created_at < cutoff_date).values(archived=True)
+session.execute(stmt)
+```
+  </TabItem>
+
+  <TabItem value="query-patterns" label="Common Query Patterns">
+```python
+# Pagination (common pattern)
+page = 2
+page_size = 20
+offset = (page - 1) * page_size
+
+users = (session.query(User)
+    .filter(User.active == True)
+    .order_by(User.created_at.desc())
+    .offset(offset)
+    .limit(page_size)
+    .all())
+
+# Aggregation
+from sqlalchemy import func
+
+count = session.query(func.count(User.id)).scalar()
+total_posts = session.query(func.sum(Post.content_length)).scalar()
+
+# GROUP BY
+user_post_counts = (session.query(
+    User.id,
+    User.name,
+    func.count(Post.id).label('post_count')
+)
+.outerjoin(Post)
+.group_by(User.id)
+.all())
+
+# Filtering with IN clause
+user_ids = [1, 2, 3, 4, 5]
+users = session.query(User).filter(User.id.in_(user_ids)).all()
+```
+  </TabItem>
+</Tabs>
+
+## Decision Checklist
+
+<Checklist
+  items={[
+    "Domain complexity: simple CRUD or complex business logic?",
+    "Team experience: familiar with pattern choice?",
+    "Testing strategy: need isolated unit tests or integration tests?",
+    "Query patterns identified and optimized?",
+    "N+1 query problem acknowledged and addressed?",
+    "Eager loading strategy planned (joins vs separate queries)?",
+    "Transaction boundaries clear?",
+    "Bulk operations use batch queries?",
+    "Testing approach supports chosen pattern?",
+    "Lazy loading gotchas documented?",
+    "Query performance monitored (logging slow queries)?",
+    "Migration strategy for schema changes planned?"
+  ]}
+/>
+
+## Self-Check
+
+- What's the N+1 query problem and how do you solve it?
+- When would you choose Active Record over Data Mapper?
+- How do lazy loading and eager loading differ, and what are the tradeoffs?
+- What testing advantages does Data Mapper provide?
+- How do you efficiently delete/update hundreds of entities?
+- Why might mixing business logic into entities be problematic?
+
+:::info
+Active Record is simpler but couples entities to the database; Data Mapper separates concerns at the cost of extra code. Choose based on your domain complexity and testing needs. Larger systems almost always benefit from Data Mapper.
+:::
+
+## One Takeaway
+
+Choose your ORM pattern based on domain complexity and testing requirements. Simple CRUD apps: Active Record (faster to build). Large systems with complex business logic: Data Mapper (easier to test and maintain). Either way, master query optimization (eager loading, bulk operations) to avoid performance pitfalls.
+
+## Next Steps
+
+- Explore **Query Patterns** for optimal data retrieval strategies
+- Learn **Indexing Strategies** for query performance
+- Study **Caching Patterns** for ORM optimization (query result caching)
+- Dive into **Performance Optimization** for ORMs (profiling, monitoring)
+- Master **Transaction Management** and ACID properties
+
+## References
+
+- Martin Fowler - ORM Patterns: https://martinfowler.com/bliki/ORM.html
+- SQLAlchemy ORM Tutorial: https://docs.sqlalchemy.org/
+- TypeORM Documentation: https://typeorm.io/
+- "Enterprise Integration Patterns" by Gregor Hohpe
+- Hibernate Best Practices: https://hibernate.org/
+
+## Real-World ORM Problems and Solutions
+
+### The N+1 Query Problem in Detail
+
+**Scenario**: Display list of blog posts with author names.
+
+```python
+# WRONG: N+1 queries (1 for posts + 1 per post for author)
+posts = session.query(Post).all()  # Query 1: SELECT * FROM posts
+for post in posts:
+    print(f"{post.title} by {post.author.name}")  # Queries 2-N: SELECT * FROM users WHERE id = ?
+
+# 100 posts = 101 SQL queries! 😱
+
+# RIGHT: Eager loading with join (2 queries total)
+posts = session.query(Post).join(Author).options(contains_eager(Post.author)).all()
+# Query 1: SELECT posts.*, users.* FROM posts JOIN users ON ...
+# Query 2: Not needed!
+# 100 posts = 2 SQL queries ✓
+
+# RIGHT: Lazy loading with options (2 queries)
+posts = session.query(Post).options(selectinload(Post.author)).all()
+# Query 1: SELECT * FROM posts
+# Query 2: SELECT * FROM users WHERE id IN (1, 2, 3, 4, 5)
+# Smarter: loads all authors in one IN() query, not individual queries
+```
+
+### Lazy Loading vs Eager Loading
+
+| Strategy | Query Count | Latency | Suitable For |
+|----------|------------|---------|--------------|
+| Lazy | N+1 | High but distributed | Single object (not lists) |
+| Join Eager | 1 | Low, predictable | Small relations |
+| Subquery Eager | 2 | Low, predictable | Most cases (recommended) |
+| Explicit | Variable | Depends | Complex queries |
+
+### Memory Leaks in ORMs
+
+**Common cause**: Sessions not closed, objects accumulate in memory.
+
+```python
+# WRONG: Memory leak (session keeps all objects)
+session = Session()
+for i in range(1000000):
+    user = User(email=f"user{i}@example.com")
+    session.add(user)
+    session.commit()
+    # After 1M iterations: session holds 1M users in memory (GBs!)
+
+# RIGHT: Bulk insert with periodic cleanup
+session = Session()
+for i in range(1000000):
+    user = User(email=f"user{i}@example.com")
+    session.add(user)
+    
+    if i % 10000 == 0:
+        session.commit()  # Flush every 10K
+        session.expunge_all()  # Clear memory
+        
+session.commit()
+```
+
+### Transaction Deadlocks
+
+**Problem**: Two transactions lock each other.
+
+```python
+# Transaction 1           # Transaction 2
+update_account(A)        # update_account(B)
+update_account(B)        # update_account(A)  ← DEADLOCK!
+
+# RIGHT: Always acquire locks in same order
+def transfer_money(account_a_id, account_b_id, amount):
+    # Sort IDs: ensure same order always
+    id1, id2 = min(account_a_id, account_b_id), max(account_a_id, account_b_id)
+    
+    with db.transaction():
+        acc1 = session.query(Account).filter(Account.id == id1).with_for_update().first()
+        acc2 = session.query(Account).filter(Account.id == id2).with_for_update().first()
+        
+        acc1.balance -= amount
+        acc2.balance += amount
+    # No deadlock: always A then B
+```
+
+### Query Performance Tuning
+
+**Index strategies:**
+
+```python
+# SLOW: Full table scan
+users = session.query(User).filter(User.email == 'alice@example.com').all()  # O(n)
+
+# FAST: Index on email
+# In schema: CREATE INDEX idx_users_email ON users(email)
+users = session.query(User).filter(User.email == 'alice@example.com').all()  # O(log n)
+
+# SLOW: Multiple conditions, no index
+posts = session.query(Post).filter(
+    Post.author_id == 1,
+    Post.created_at > '2025-01-01',
+    Post.status == 'PUBLISHED'
+).all()
+
+# FAST: Composite index
+# CREATE INDEX idx_posts_author_date_status ON posts(author_id, created_at DESC, status)
+posts = session.query(Post).filter(
+    Post.author_id == 1,
+    Post.created_at > '2025-01-01',
+    Post.status == 'PUBLISHED'
+).all()  # Uses index efficiently
+```
+

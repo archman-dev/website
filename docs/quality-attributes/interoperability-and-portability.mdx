@@ -1,0 +1,564 @@
+---
+sidebar_position: 8
+title: "Interoperability and Portability"
+description: "Design systems that work across platforms and integrate with other systems."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 30
+lastReviewed: 2025-02-14
+personas: [engineer, architect]
+keywords: [interoperability, portability, multi-cloud, data portability, api standards, integration]
+image: /img/archman-social-card.webp
+tags: [quality-attributes, interoperability, portability, integration, multi-cloud]
+hide_title: true
+---
+
+<Hero title="Interoperability and Portability" subtitle="Design systems that work across platforms and integrate easily with other systems." size="large" />
+
+## TL;DR
+
+**Interoperability**: Your system works with other systems (different teams, vendors, services). Use standard formats (JSON, REST, gRPC), standard protocols (HTTP, gRPC, AMQP), and clear contracts (OpenAPI). **Portability**: Your system runs on different platforms (AWS, GCP, Azure, on-prem). Use containers (Docker), standard runtimes, avoid cloud-specific APIs, and treat infrastructure as code. Decoupling from specific infrastructure and vendors means you can switch providers, avoid vendor lock-in, and adapt to new platforms easily.
+
+## Learning Objectives
+
+- Design APIs that integrate seamlessly with other systems
+- Use standard data formats and protocols for interoperability
+- Achieve cloud-agnostic architecture for portability
+- Implement data portability (export/import)
+- Test portability across cloud providers
+- Manage dependencies to minimize lock-in
+
+## Motivating Scenario
+
+A company uses AWS-specific APIs (S3 for storage, DynamoDB for DB, Lambda for functions). When AWS pricing increases 30%, they want to switch to GCP. But rewriting would take 6 months and cost $1M. With portable architecture using standard APIs (REST, PostgreSQL, containers), switching would take 2 weeks and cost $100K.
+
+## Core Concepts
+
+### Interoperability Patterns
+
+<Tabs>
+<TabItem value="interop" label="Interoperability Principles">
+
+1. **Standard Formats**
+   - JSON: human-readable, widely supported
+   - XML: verbose, but extensible
+   - Protocol Buffers: compact, schema-driven
+   - Avoid: custom binary formats (not portable)
+
+2. **Standard Protocols**
+   - HTTP/REST: universal, stateless, cacheable
+   - gRPC: fast, bi-directional, type-safe
+   - GraphQL: flexible, client-driven queries
+   - AMQP: reliable pub/sub messaging
+   - Avoid: custom TCP protocols (not portable)
+
+3. **API Contracts**
+   - OpenAPI/Swagger: REST API specification
+   - AsyncAPI: async message specification
+   - gRPC proto files: service contracts
+   - Version APIs: /v1/, /v2/ for evolution
+
+Example: OpenAPI contract
+
+```yaml
+openapi: 3.0.0
+info:
+  title: User API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      summary: List users
+      responses:
+        '200':
+          description: Array of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    name:
+                      type: string
+                    email:
+                      type: string
+    post:
+      summary: Create user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+      responses:
+        '201':
+          description: User created
+```
+
+</TabItem>
+
+<TabItem value="portability" label="Portability Principles">
+
+1. **Containerization**
+   - Docker packages app + dependencies
+   - Runs same everywhere: laptop, data center, cloud
+   - No "works on my machine" problems
+
+2. **Configuration, Not Code**
+   - Environment variables for settings
+   - Config maps for non-secrets
+   - Secrets manager for credentials
+   - Avoid: hardcoded hostnames, API keys, cloud regions
+
+3. **Standard Runtimes**
+   - Use official base images (node:18, python:3.11)
+   - Avoid cloud-specific runtimes (AWS Lambda, Google Cloud Run specific)
+   - Or use functions-as-a-service adapters for portability
+
+4. **Infrastructure as Code**
+   - Terraform: cloud-agnostic IaC
+   - CloudFormation: AWS-specific
+   - ARM: cloud-agnostic, CNCF standard
+   - Define infrastructure in code, versioned like code
+
+Example: Dockerfile (portable)
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+ENV PORT=3000
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "src/index.js"]
+
+# Runs on AWS ECS, GCP Cloud Run, Kubernetes, Docker Compose, anywhere
+```
+
+Example: What NOT to do (AWS lock-in)
+
+```javascript
+// BAD: AWS-specific
+const s3 = new AWS.S3();
+const data = await s3.getObject({ Bucket: 'my-bucket', Key: 'file.txt' }).promise();
+
+// GOOD: Abstracted, can use S3 or GCS or MinIO
+const storage = new StorageClient(process.env.STORAGE_BACKEND);
+const data = await storage.get('file.txt');
+```
+
+</TabItem>
+</Tabs>
+
+## Practical Example
+
+<Tabs>
+<TabItem value="api-design" label="Interoperable API Design">
+
+```python
+# API design for interoperability
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+import os
+
+app = FastAPI(
+    title="User Service",
+    version="1.0.0",
+    description="OpenAPI-compliant user management"
+)
+
+# Standard data model
+class User(BaseModel):
+    id: Optional[int] = None
+    name: str
+    email: str
+    age: int
+
+# Standard CRUD operations
+@app.get("/users", response_model=List[User])
+async def list_users(skip: int = 0, limit: int = 10):
+    """List all users. Pagination via skip/limit."""
+    # Returns JSON, widely understood
+    pass
+
+@app.get("/users/{user_id}", response_model=User)
+async def get_user(user_id: int):
+    """Get user by ID."""
+    pass
+
+@app.post("/users", response_model=User, status_code=201)
+async def create_user(user: User):
+    """Create new user."""
+    pass
+
+@app.put("/users/{user_id}", response_model=User)
+async def update_user(user_id: int, user: User):
+    """Update user."""
+    pass
+
+@app.delete("/users/{user_id}", status_code=204)
+async def delete_user(user_id: int):
+    """Delete user."""
+    pass
+
+# ANY client can call these endpoints:
+# curl -X GET http://localhost:3000/users
+# Python: requests.get("http://localhost:3000/users")
+# JavaScript: fetch("http://localhost:3000/users")
+# Java: RestTemplate.getForObject("http://localhost:3000/users", List.class)
+```
+
+**Interoperability benefits:**
+- Language-agnostic (any language can call)
+- Protocol-agnostic (HTTP is universal)
+- Format-agnostic (JSON is standard)
+- Versioning (can evolve API with /v2)
+
+</TabItem>
+
+<TabItem value="portable-deployment" label="Portable Deployment">
+
+```yaml
+# Kubernetes: portable, works on any cloud
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myapp:1.0.0  # No cloud registry lock-in
+        env:
+        # Configuration, not code
+        - name: PORT
+          value: "3000"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: url
+        - name: STORAGE_BACKEND
+          value: "s3"  # Can be s3, gcs, azure, minio
+        - name: STORAGE_BUCKET
+          value: "my-data"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+spec:
+  selector:
+    app: myapp
+  ports:
+  - port: 3000
+    targetPort: 3000
+
+# This YAML runs on:
+# - AWS EKS: kubectl apply -f deployment.yaml
+# - GCP GKE: kubectl apply -f deployment.yaml
+# - Azure AKS: kubectl apply -f deployment.yaml
+# - On-prem Kubernetes: kubectl apply -f deployment.yaml
+# - Docker Compose (development): docker-compose up
+# Same configuration, different clouds!
+```
+
+</TabItem>
+
+<TabItem value="data-portability" label="Data Portability">
+
+```python
+# Export/import for data portability (GDPR compliance)
+
+import json
+from typing import List, Dict
+import datetime
+
+class DataPortability:
+    """Export/import user data for portability."""
+
+    def export_user_data(self, user_id: int) -> Dict:
+        """Export all user data in standard format."""
+        # Fetch all user data from all systems
+        user = self.get_user(user_id)
+        orders = self.get_orders(user_id)
+        profile = self.get_profile(user_id)
+        preferences = self.get_preferences(user_id)
+
+        # Export as standard JSON (can import elsewhere)
+        export = {
+            "export_date": datetime.datetime.now().isoformat(),
+            "format_version": "1.0",
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "created_at": user.created_at.isoformat(),
+            },
+            "orders": [
+                {
+                    "id": o.id,
+                    "total": o.total,
+                    "created_at": o.created_at.isoformat(),
+                    "items": [
+                        {"product_id": i.product_id, "quantity": i.quantity}
+                        for i in o.items
+                    ]
+                }
+                for o in orders
+            ],
+            "profile": {
+                "bio": profile.bio,
+                "avatar_url": profile.avatar_url,
+            },
+            "preferences": {
+                "email_notifications": preferences.email_notifications,
+                "theme": preferences.theme,
+            }
+        }
+
+        return export
+
+    def import_user_data(self, export: Dict) -> int:
+        """Import data from another system (format conversion)."""
+        # Validate format version
+        if export.get("format_version") != "1.0":
+            raise ValueError("Unsupported format version")
+
+        # Create user
+        user_data = export["user"]
+        new_user = self.create_user(
+            name=user_data["name"],
+            email=user_data["email"]
+        )
+
+        # Import orders
+        for order_data in export.get("orders", []):
+            new_order = self.create_order(
+                user_id=new_user.id,
+                total=order_data["total"]
+            )
+            for item_data in order_data.get("items", []):
+                self.add_order_item(
+                    order_id=new_order.id,
+                    product_id=item_data["product_id"],
+                    quantity=item_data["quantity"]
+                )
+
+        # Import preferences
+        prefs = export.get("preferences", {})
+        self.set_preferences(
+            user_id=new_user.id,
+            email_notifications=prefs.get("email_notifications"),
+            theme=prefs.get("theme")
+        )
+
+        return new_user.id
+
+# Usage
+exporter = DataPortability()
+
+# User requests their data (GDPR)
+user_data = exporter.export_user_data(user_id=123)
+with open("my_data.json", "w") as f:
+    json.dump(user_data, f)
+
+# User switches providers, imports data
+with open("my_data.json", "r") as f:
+    data = json.load(f)
+new_user_id = exporter.import_user_data(data)
+print(f"Data imported, new user ID: {new_user_id}")
+```
+
+</TabItem>
+
+<TabItem value="testing-portability" label="Test Portability">
+
+```bash
+#!/bin/bash
+# Test that system works on multiple clouds
+
+set -e
+
+# Test 1: Local (Docker)
+echo "=== Testing Portability on Docker (local) ==="
+docker build -t myapp:test .
+docker run -d -p 3000:3000 \
+  -e DATABASE_URL="postgres://localhost/test" \
+  -e STORAGE_BACKEND="s3" \
+  myapp:test
+sleep 2
+curl http://localhost:3000/health || exit 1
+docker stop $(docker ps -q --filter ancestor=myapp:test)
+
+# Test 2: AWS EKS
+echo "=== Testing Portability on AWS EKS ==="
+export KUBECONFIG=~/.kube/aws-eks-config
+kubectl apply -f deployment.yaml
+kubectl rollout status deployment/myapp
+kubectl run -it --rm test-client --image=curlimages/curl --restart=Never \
+  -- curl http://myapp:3000/health
+kubectl delete -f deployment.yaml
+
+# Test 3: GCP GKE
+echo "=== Testing Portability on GCP GKE ==="
+export KUBECONFIG=~/.kube/gcp-gke-config
+kubectl apply -f deployment.yaml
+kubectl rollout status deployment/myapp
+kubectl run -it --rm test-client --image=curlimages/curl --restart=Never \
+  -- curl http://myapp:3000/health
+kubectl delete -f deployment.yaml
+
+# Test 4: Azure AKS
+echo "=== Testing Portability on Azure AKS ==="
+export KUBECONFIG=~/.kube/azure-aks-config
+kubectl apply -f deployment.yaml
+kubectl rollout status deployment/myapp
+kubectl run -it --rm test-client --image=curlimages/curl --restart=Never \
+  -- curl http://myapp:3000/health
+kubectl delete -f deployment.yaml
+
+echo "✓ All portability tests passed!"
+```
+
+</TabItem>
+</Tabs>
+
+### When to Use / When NOT to Use
+
+<Vs highlight={[0,1]} title="Interoperability & Portability: Best Practices"
+  items={[
+{
+      label: "Best Practices",
+      points: [
+      "**DO: Use Standard APIs and Formats**: REST/HTTP for APIs, JSON for data, OpenAPI for contracts. Any team/vendor can integrate.",
+      "**DO: Abstract Cloud Services**: Use adapters/interfaces for storage, databases, messaging. Swap implementations without code changes.",
+      "**DO: Containerize Everything**: Docker package app + dependencies. Runs on laptop, data center, cloud. Consistent deployment.",
+      "**DO: Use Infrastructure as Code**: Terraform/ARM for cloud-agnostic provisioning. Same IaC on AWS/GCP/Azure.",
+      "**DO: Make Data Portable**: Export/import in standard formats (JSON, CSV). Users can export data (GDPR).",
+      "**DO: Test on Multiple Platforms**: Quarterly: deploy to AWS, GCP, Azure, on-prem. Verify all work identically."
+      ],
+      highlightTone: "positive"
+    },
+{
+      label: "Anti-Patterns",
+      points: [
+      "**DO: Use Standard APIs and Formats**: Custom binary formats, custom TCP protocols. Forces consumers to reverse-engineer.",
+      "**DO: Abstract Cloud Services**: Call AWS SDK directly (s3.getObject). Hard to test, AWS lock-in.",
+      "**DO: Containerize Everything**: System-level dependencies (apt-get, yum). 'Works on my machine' syndrome.",
+      "**DO: Use Infrastructure as Code**: Manual cloud console clicks. Drift, unreproducible, hard to migrate.",
+      "**DO: Make Data Portable**: Proprietary data formats. Users locked in, can't export.",
+      "**DO: Test on Multiple Platforms**: Assume if it works on AWS, it works everywhere. Test catches platform-specific bugs."
+      ],
+      highlightTone: "warning"
+    }
+]}
+  highlight={[0, 1]}
+/>
+
+## Patterns & Pitfalls
+
+<Showcase sections={[
+  {
+    label: "Anti-Pattern: Tight Cloud Coupling",
+    body: "Heavy use of S3 SDK, DynamoDB, Lambda-specific features. Switching clouds requires rewrite.",
+  },
+  {
+    label: "Anti-Pattern: Hardcoded Configuration",
+    body: "Database hostname, API keys, regions hardcoded. Can't change without recompile.",
+  },
+  {
+    label: "Anti-Pattern: Binary Data Format",
+    body: "Serialize data in custom binary format. No other system can read it.",
+  },
+  {
+    label: "Pattern: Adapter Pattern for Services",
+    body: "Interface StorageBackend &123; get(), put() &125;. Implementations for S3, GCS, MinIO. Swap without code change.",
+  },
+  {
+    label: "Pattern: Standard API Contracts",
+    body: "OpenAPI specification defines all APIs. Clients can be generated automatically.",
+  },
+  {
+    label: "Pattern: Multi-Cloud Testing",
+    body: "CI/CD deploys to 3 clouds in parallel. Catches platform-specific bugs early.",
+  },
+  {
+    label: "Anti-Pattern: Data Lock-In",
+    body: "No export feature. Users can't take their data. GDPR violation.",
+  },
+  {
+    label: "Pattern: Portable Infrastructure as Code",
+    body: "Terraform modules for networking, databases, apps. Deploy to AWS, GCP, on-prem identically.",
+  },
+]} />
+
+## Design Review Checklist
+
+<Checklist items={[
+  "Are APIs defined with OpenAPI/AsyncAPI spec?",
+  "Are data formats standard (JSON, Protocol Buffers, not proprietary)?",
+  "Are protocols standard (HTTP/REST, gRPC, AMQP)?",
+  "Is application containerized (Docker)?",
+  "Are cloud-specific APIs abstracted (adapters/interfaces)?",
+  "Is configuration external (environment variables, not hardcoded)?",
+  "Is infrastructure defined as code (Terraform, CloudFormation)?",
+  "Can data be exported in standard format (JSON, CSV)?",
+  "Have you tested on multiple cloud providers?",
+  "Are documentation and contracts kept in sync?",
+  "Do API versions exist for backward compatibility?",
+  "Are dependencies documented (external APIs, services)?",
+  "Can the system run on-premises (not cloud-only)?",
+  "Are third-party integrations loosely coupled?",
+  "Is licensing vendor-agnostic (not tied to one cloud)?",
+]} />
+
+## Self-Check
+
+1. **Right now**, if your primary cloud provider raised prices 50%, could you migrate in 1 month?
+2. **Can you export your data** in a standard format (not proprietary)?
+3. **Do you use cloud-specific APIs** (SDK calls)? If yes, what would it take to migrate?
+4. **Is your Dockerfile portable** (runs on any Docker-compatible runtime)?
+5. **Can you deploy the same app** on AWS, GCP, and on-prem without code changes?
+
+## Next Steps
+
+1. **Audit cloud coupling** — Find AWS/GCP/Azure-specific API calls
+2. **Create abstractions** — Interface/adapter for storage, databases, messaging
+3. **Containerize** — Dockerfile for each service
+4. **Extract configuration** — Move secrets/URLs to environment variables
+5. **Write IaC** — Terraform/CloudFormation for reproducible infrastructure
+6. **Add data export** — Allow users to download their data (JSON)
+7. **Test multi-cloud** — Deploy to 2+ clouds, verify identical behavior
+8. **Document APIs** — OpenAPI/AsyncAPI specs for all services
+
+## References
+
+1. <a href="https://www.terraform.io/" target="_blank" rel="nofollow noopener noreferrer">Terraform: Infrastructure as Code ↗️</a>
+2. <a href="https://www.openapis.org/" target="_blank" rel="nofollow noopener noreferrer">OpenAPI Specification ↗️</a>
+3. <a href="https://12factor.net/" target="_blank" rel="nofollow noopener noreferrer">12-Factor App: Portable Applications ↗️</a>
+4. <a href="https://www.docker.com/" target="_blank" rel="nofollow noopener noreferrer">Docker: Container Portability ↗️</a>
+5. <a href="https://kubernetes.io/" target="_blank" rel="nofollow noopener noreferrer">Kubernetes: Cloud-Agnostic Orchestration ↗️</a>
+---

@@ -1,0 +1,367 @@
+---
+sidebar_position: 2
+title: "Encryption at Rest: Envelope Encryption"
+description: "Encrypt data stored in databases, files, and backups using envelope encryption"
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 12
+lastReviewed: "2025-09-10"
+personas: [engineer, architect, lead]
+keywords: [encryption at rest, envelope encryption, DEK, KEK, database encryption, file encryption]
+image: /img/archman-social-card.webp
+tags: [encryption, at-rest, envelope-encryption, security-architecture, compliance]
+hide_title: true
+---
+
+<Hero title="Encryption at Rest" subtitle="Protect stored data with envelope encryption" imageAlt="encryption at rest illustration" size="large" />
+
+## TL;DR
+
+**Encryption at Rest** protects data stored in databases, disks, backups. **Envelope Encryption** separates two keys: **DEK (Data Encryption Key)** encrypts data, **KEK (Key Encryption Key)** encrypts DEK. DEK stored alongside encrypted data; KEK stored in vault/KMS. If database stolen, encrypted data useless without KEK. Enables rotation: new KEK decrypts old DEK, encrypts with new DEK.
+
+## Learning Objectives
+
+- Understand envelope encryption architecture
+- Encrypt database columns and tables
+- Design key rotation without re-encrypting data
+- Implement transparent encryption (TDE)
+- Balance security with performance and searchability
+
+## Motivating Scenario
+
+**Problem**: Database backup stolen (accidentally exposed on AWS S3). Contains plaintext customer credit cards, SSNs. Attackers sell data. Compliance violation (PCI, GDPR).
+
+**Solution**: Credit card column encrypted. Data in backup is ciphertext. Without KEK (stored in vault), ciphertext useless. Even if attacker has all data, can't decrypt. KEK rotated monthly; old backup data auto-decryptable with old key.
+
+## Core Concepts
+
+### Envelope Encryption Architecture
+
+```
+Application
+    ↓ wants to encrypt data
+    ↓
+Generate DEK (Data Encryption Key) = random 256-bit key
+    ↓
+Encrypt data: ciphertext = AES-256(data, DEK)
+    ↓
+Encrypt DEK: encrypted_dek = RSA(DEK, KEK_public)
+    ↓
+Store in database:
+{
+  encrypted_data: "p9k2x...",
+  encrypted_dek: "jk3l2...",  // KEK encrypted this DEK
+  metadata: { alg: "AES-256-GCM", key_version: "2025-02" }
+}
+
+Later, to decrypt:
+    ↓
+Fetch encrypted record
+    ↓
+Request KEK from KMS (supply encrypted_dek)
+    ↓
+KMS decrypts DEK: DEK = RSA_decrypt(encrypted_dek, KEK_private)
+    ↓
+Decrypt data: data = AES-256-decrypt(encrypted_data, DEK)
+    ↓
+Return plaintext to app (only in memory, never persisted)
+```
+
+**Why this matters**:
+- DEK varies per record; KEK shared
+- If DEK compromised, only that record affected
+- If KEK compromised, all data at risk (but KEK in vault, hard to compromise)
+- Rotate KEK every 90 days; no need to re-encrypt all data
+
+### Transparent Data Encryption (TDE)
+
+Database-level encryption. Transparent to application.
+
+```
+Application writes: data = "secret"
+    ↓
+Database encrypts: encrypted_data = AES(data, DEK)
+    ↓
+Database stores: encrypted_data (on disk)
+    ↓
+Application reads: Database decrypts, returns data = "secret"
+
+App doesn't know encryption happened.
+```
+
+**Supported by**:
+- Oracle Database TDE
+- Microsoft SQL Server TDE
+- MySQL (InnoDB Transparent Encryption)
+- PostgreSQL (pgcrypto, or encryption extensions)
+
+### Field-Level Encryption
+
+Encrypt specific columns. App controls which data encrypted.
+
+```sql
+CREATE TABLE customers (
+  id INT PRIMARY KEY,
+  name VARCHAR(100),  -- plaintext
+  ssn VARBINARY(256), -- encrypted
+  email VARCHAR(100)  -- plaintext
+);
+
+-- Encrypt SSN
+INSERT INTO customers VALUES (1, 'Alice', AES_ENCRYPT('123-45-6789', @key), 'alice@example.com');
+
+-- Decrypt SSN
+SELECT AES_DECRYPT(ssn, @key) FROM customers WHERE id = 1;
+```
+
+### DEK vs KEK Rotation
+
+<Vs items={[
+{
+    label: "DEK Rotation (data-level)",
+    points: [
+      "Regenerate new DEK for each record",
+      "Re-encrypt data with new DEK",
+      "Requires reading/writing all data (slow)",
+      "When: Compromise suspected, compliance"
+    ]
+  },
+{
+    label: "KEK Rotation (key-level)",
+    points: [
+      "Generate new KEK in vault",
+      "Old encrypted DEKs still decryptable with old KEK",
+      "New records use new KEK",
+      "No data re-encryption needed (fast)",
+      "When: Scheduled (90 days), best practice"
+    ]
+  }
+]} />
+
+## Practical Examples
+
+<Tabs>
+  <TabItem value="envelope" label="Envelope Encryption" default>
+    ```javascript
+    // Using AWS KMS + local encryption
+    const AWS = require('aws-sdk');
+    const crypto = require('crypto');
+    const kms = new AWS.KMS();
+
+    async function encryptRecord(data, kmsKeyId) {
+      // Generate DEK
+      const dek = crypto.randomBytes(32); // 256-bit key
+
+      // Encrypt DEK with KEK (in KMS)
+      const encrypted_dek = await kms.encrypt({
+        KeyId: kmsKeyId,
+        Plaintext: dek
+      }).promise();
+
+      // Encrypt data with DEK
+      const cipher = crypto.createCipheriv('aes-256-gcm', dek, crypto.randomBytes(12));
+      let encrypted_data = cipher.update(data, 'utf8', 'hex');
+      encrypted_data += cipher.final('hex');
+      const authTag = cipher.getAuthTag();
+
+      return {
+        encrypted_data: encrypted_data,
+        encrypted_dek: encrypted_dek.CiphertextBlob.toString('base64'),
+        iv: cipher.iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        key_version: '2025-02'
+      };
+    }
+
+    async function decryptRecord(record, kmsKeyId) {
+      // Decrypt DEK with KEK (from KMS)
+      const decrypted_dek = await kms.decrypt({
+        CiphertextBlob: Buffer.from(record.encrypted_dek, 'base64')
+      }).promise();
+
+      const dek = decrypted_dek.Plaintext;
+
+      // Decrypt data with DEK
+      const decipher = crypto.createDecipheriv(
+        'aes-256-gcm',
+        dek,
+        Buffer.from(record.iv, 'hex')
+      );
+      decipher.setAuthTag(Buffer.from(record.authTag, 'hex'));
+
+      let data = decipher.update(record.encrypted_data, 'hex', 'utf8');
+      data += decipher.final('utf8');
+
+      return data;
+    }
+
+    // Usage
+    const encrypted = await encryptRecord('credit_card_4111111111111111', 'kms-key-id');
+    const decrypted = await decryptRecord(encrypted, 'kms-key-id');
+    ```
+  </TabItem>
+
+  <TabItem value="tde" label="Transparent Data Encryption (Oracle)">
+    ```sql
+    -- Enable TDE in Oracle
+    ALTER SYSTEM SET DB_RECOVERY_FILE_DEST='/oracle/backup';
+    ALTER SYSTEM SET DB_RECOVERY_FILE_DEST_SIZE=100G;
+
+    -- Create wallet (stores encryption keys)
+    ADMINISTER KEY MANAGEMENT CREATE KEYSTORE '/oracle/wallet' IDENTIFIED BY "keystore_password";
+
+    -- Open wallet
+    ADMINISTER KEY MANAGEMENT SET KEYSTORE OPEN IDENTIFIED BY "keystore_password";
+
+    -- Create master encryption key
+    ADMINISTER KEY MANAGEMENT CREATE KEY IDENTIFIED BY "key_password" WITH ALGORITHM AES;
+
+    -- Enable TDE for tablespace
+    CREATE TABLESPACE customer_data
+      DATAFILE '/oracle/customer_data.dbf' SIZE 100M
+      ENCRYPTION USING 'AES256'
+      DEFAULT STORAGE (ENCRYPT);
+
+    -- All data in this tablespace automatically encrypted/decrypted
+    ```
+  </TabItem>
+
+  <TabItem value="mysql" label="MySQL Field Encryption">
+    ```javascript
+    // MySQL with AES encryption
+    const mysql = require('mysql');
+
+    const connection = mysql.createConnection({
+      host: 'localhost',
+      user: 'root',
+      password: 'password',
+      database: 'customers'
+    });
+
+    // Store encryption key (should be in vault)
+    const encryptionKey = '0x...'; // 32-character hex
+
+    // Encrypt data
+    connection.query(
+      'INSERT INTO customers (name, ssn) VALUES (?, AES_ENCRYPT(?, UNHEX(?)))',
+      ['Alice', '123-45-6789', encryptionKey.slice(2)],
+      (err, result) => {
+        console.log(result);
+      }
+    );
+
+    // Decrypt data
+    connection.query(
+      'SELECT name, AES_DECRYPT(ssn, UNHEX(?)) AS ssn FROM customers WHERE id = ?',
+      [encryptionKey.slice(2), 1],
+      (err, results) => {
+        console.log(results[0]); // { name: 'Alice', ssn: '123-45-6789' }
+      }
+    );
+    ```
+  </TabItem>
+
+  <TabItem value="rotation" label="KEK Rotation">
+    ```javascript
+    // Monthly KEK rotation (no data re-encryption)
+    async function rotateKEK() {
+      // Create new KEK version in KMS
+      const newKeyId = await kms.createKey({
+        Description: 'Customer data encryption key v2025-03'
+      }).promise();
+
+      // All new encryptions use newKeyId
+      // Old data decryptable with old KEK (KMS tracks key versions)
+      // During audit, can re-encrypt old DEKs with new KEK
+
+      console.log(`KEK rotated. New Key ID: ${newKeyId.KeyMetadata.KeyId}`);
+    }
+
+    // Schedule monthly: cron or Lambda
+    schedule.scheduleJob('0 0 1 * *', rotateKEK);
+    ```
+  </TabItem>
+</Tabs>
+
+## When to Use / When Not to Use
+
+<Vs highlight={[0,1,0,0]} items={[
+{
+    label: "Use Envelope Encryption When",
+    points: [
+      "Storing sensitive data (PII, health, financial)",
+      "Compliance required (HIPAA, PCI, GDPR)",
+      "Data breach impact is high",
+      "Key rotation needed without data re-encryption",
+      "Scalable encryption of many records"
+    ],
+    highlightTone: "positive"
+  },
+{
+    label: "Use TDE When",
+    points: [
+      "Whole database encryption needed",
+      "Zero application changes desired",
+      "Compliance requires encrypted storage",
+      "Performance overhead acceptable",
+      "Database supports TDE natively"
+    ],
+    highlightTone: "positive"
+  }
+]} />
+
+## Patterns and Pitfalls
+
+**Pitfall**: Storing DEK alongside encrypted data in plaintext. Attacker decrypts everything.
+
+**Pattern**: Always encrypt DEK with KEK. KEK in vault, never in code.
+
+**Pitfall**: One key for all data. If key compromised, all data at risk.
+
+**Pattern**: Separate keys per data classification. Financial data, health data, logs all different keys.
+
+**Pitfall**: Forgetting to encrypt backups. Backup stolen = plaintext data.
+
+**Pattern**: Backup encryption same as production (envelope encryption works across backups).
+
+**Pitfall**: No key versioning. Can't rotate keys without breaking old encrypted data.
+
+**Pattern**: Tag encrypted data with key_version (2025-02). System knows which key to use for decryption.
+
+## Design Review Checklist
+
+- [ ] Sensitive data classified (PII, health, financial)
+- [ ] Envelope encryption designed (DEK + KEK)
+- [ ] KEK stored in vault/KMS (not in code)
+- [ ] DEK rotated periodically (or regenerated per record)
+- [ ] KEK rotation automated (90-day cycle minimum)
+- [ ] Encryption covers backups and archives
+- [ ] Key versioning implemented
+- [ ] Database encryption enabled (TDE or field-level)
+- [ ] Performance impact assessed
+- [ ] Audit logs track key usage
+- [ ] Recovery procedure tested (can decrypt old data?)
+
+## Self-Check
+
+- What's the difference between DEK and KEK?
+- Why store DEK-encrypted-with-KEK alongside data?
+- How would you rotate KEK without re-encrypting all data?
+
+:::info One Takeaway
+Envelope encryption + KEK in vault = data stays protected even if storage medium is stolen.
+
+:::
+
+## Next Steps
+
+- Read **Key Management** for KEK lifecycle and HSM
+- Study **Encryption in Transit** for end-to-end encryption
+- Explore **Compliance Frameworks** for regulatory data handling
+
+## References
+
+- NIST SP 800-175B: Guideline for Use of Cryptographic Standards
+- AWS KMS Envelope Encryption
+- OWASP Data Protection Cheat Sheet
+- Oracle TDE Documentation

@@ -1,0 +1,403 @@
+---
+sidebar_position: 5
+title: "Data Migration Patterns"
+description: "Safely migrate data between systems using dual writes, backfill, and change data capture."
+docType: deep-dive
+difficulty: intermediate
+estimatedTime: 14
+lastReviewed: "2025-02-14"
+personas: [architect, engineer, lead]
+keywords: [modernization, migration, patterns, refactoring]
+image: /img/archman-social-card.webp
+tags: [modernization, migration, patterns, refactoring]
+hide_title: true
+---
+
+<Hero title="Data Migration Patterns" subtitle="Safely migrate data between systems using dual writes, backfill, and change data capture." imageAlt="modernization illustration" size="large" />
+
+## TL;DR
+
+Safely migrate data between systems using dual writes, backfill, and change data capture. Rather than risky big-bang replacements, these patterns enable incremental, low-risk transitions that keep systems running while you modernize. They require discipline and clear governance but dramatically reduce modernization risk.
+
+## Learning Objectives
+
+- Understand the pattern and when to apply it
+- Learn how to avoid common modernization pitfalls
+- Apply risk mitigation techniques for major changes
+- Plan and execute incremental transitions safely
+- Manage team and organizational change during modernization
+
+## Motivating Scenario
+
+You have a legacy system that is becoming a bottleneck. Rewriting it would take a year and risk breaking critical functionality. Instead, you incrementally replace it with new services while keeping the old system running, gradually shifting traffic and functionality. Six months later, the legacy system handles 10 percent of traffic and serves as a fallback. Eventually, you can retire it completely. This pattern turns a risky all-or-nothing gamble into a managed, incremental transition.
+
+## Core Concepts
+
+### Migration Risk
+
+Major system changes carry existential risk: downtime impacts revenue, data corruption destroys trust, performance regression loses customers. These patterns manage that risk through incremental change and careful rollback planning.
+
+### Incremental Transition
+
+Rather than "old system" then "new system", these patterns create "old plus new coexisting" then "new plus old as fallback" then "new only". This gives you multiple checkpoints to verify things are working.
+
+<Admonition type="tip">
+The key insight: You do not need to be perfect on day one. You just need to be good enough to carry traffic safely, with a fallback if something goes wrong.
+</Admonition>
+
+### Dual-Write and Data Consistency
+
+When migrating data, you typically need both systems to have current data for a period. Dual writes keep both systems in sync, backfill catches up old data, and CDC (Change Data Capture) handles streaming updates.
+
+### Abstraction Layers
+
+Rather than replacing a system wholesale, you wrap it with an abstraction (facade or anti-corruption layer). The abstraction routes traffic gradually: initially 100 percent to old, then 99 percent old / 1 percent new, then 50/50, then eventually 100 percent new.
+
+## Practical Example
+
+<Tabs>
+<TabItem value="strangler" label="Strangler Fig Timeline">
+
+```yaml
+Phase 1: Preparation (Weeks 1-4)
+  New service deployed but offline
+  Load balancer configured to route traffic
+  Both systems connected to same database
+  Risk: Low (new service not receiving traffic)
+
+Phase 2: Canary (Weeks 5-6)
+  Traffic Distribution: 1 percent to new, 99 percent to old
+  Monitoring: Compare response times, error rates
+  Verify data consistency
+  Rollback: Instant (revert to 100 percent old)
+  Risk: Very low (affects 1 percent of traffic)
+
+Phase 3: Ramp (Weeks 7-12)
+  Gradual Increase: 5 percent, 10 percent, 25 percent, 50 percent
+  Continuous comparison with old system
+  Alert on any divergence
+  Rollback: Revert traffic distribution instantly
+  Risk: Medium (affects majority by end)
+
+Phase 4: Retirement (Weeks 13+)
+  New service handles all traffic independently
+  Old system monitored but not actively used
+  Archive old system after stable period
+  Extract data and lessons learned
+```
+
+</TabItem>
+<TabItem value="strategies" label="Migration Strategies">
+
+```
+Core Strategies:
+
+Strangler Fig Pattern:
+  Grow new functionality alongside old
+  Gradually shift traffic
+  Old system stays running as safety net
+  Works for mostly stateless systems
+
+Branch by Abstraction:
+  Use feature flags and abstraction layers
+  Hide complexity behind clean interface
+  Transition implementation at runtime
+
+Dual Write and Backfill:
+  New system writes all new data
+  Old system maintains historical data
+  Backfill job copies old data to new system
+  Both stay consistent until cutover
+
+Anti-Corruption Layers:
+  Wrap legacy systems with adapters
+  Translate between old and new interfaces
+  Insulate new code from legacy complexity
+
+Domain-Aligned Decomposition:
+  Decompose monolith along domain boundaries
+  Each domain becomes new microservice
+  Easier to coordinate
+  Reduces coupling
+```
+
+</TabItem>
+<TabItem value="verification" label="Verification Checklist">
+
+```
+Data Consistency:
+  - Old and new systems return identical data
+  - Both systems show same transaction count
+  - Randomly sampled records match in both
+  - Metadata (timestamps, IDs) consistent
+
+Functionality:
+  - All major features work in new system
+  - Error cases handled identically
+  - Edge cases verified
+  - Security rules enforced identically
+
+Performance:
+  - New system has acceptable latency
+  - New system has acceptable error rate
+  - Database resources not over-utilized
+  - No unexpected slow queries
+
+Operations:
+  - Monitoring and alerting working
+  - Logs contain expected entries
+  - Can trace requests across systems
+  - Runbooks updated for new system
+
+Rollback:
+  - Can quickly switch all traffic back
+  - Old system receives traffic without issues
+  - Data not corrupted if rollback needed
+  - Team has tested rollback procedure
+```
+
+</TabItem>
+</Tabs>
+
+## Key Success Factors
+
+1. **Clear success criteria:** You know what "done" looks like
+2. **Incremental approach:** Big changes done in small, verifiable steps
+3. **Comprehensive testing:** Automated tests at multiple levels
+4. **Constant verification:** Continuous comparison between old and new
+5. **Fast rollback:** Can switch back to old system in minutes
+6. **Team alignment:** Everyone understands the approach and timeline
+7. **Transparent communication:** Stakeholders understand progress and risks
+
+## Pitfalls to Avoid
+
+❌ All-or-nothing thinking: "Just rewrite it" instead of incremental migration
+❌ Ignoring data consistency: Assuming old and new data will magically sync
+❌ No fallback plan: If new system fails, you are stuck
+❌ Invisible progress: Weeks of work with no deployed functionality
+❌ Parallel maintenance: Maintaining old and new systems forever
+❌ Rushing to cleanup: Retiring old system before new one is truly stable
+❌ Team turnover: Key knowledge not documented
+
+## Related Patterns
+
+- Strangler Fig: Wrap and gradually replace legacy systems
+- Feature Flags: Control which code path executes at runtime
+- Blue-Green Deployment: Switch entire systems at once
+- Canary Releases: Route small percentage to new version
+
+## Checklist: Before Modernization
+
+- [ ] Clear business case: Why modernize? What is the benefit?
+- [ ] Phased approach defined: How will you migrate incrementally?
+- [ ] Success criteria explicit: What does "done" look like?
+- [ ] Risk mitigation planned: What could go wrong? How will you recover?
+- [ ] Testing strategy defined: How will you verify correctness?
+- [ ] Monitoring in place: Can you detect problems in new system?
+- [ ] Team capacity sufficient: Do you have capacity for both?
+- [ ] Communication plan ready: How will you keep stakeholders informed?
+
+## Self-Check
+
+1. **Can you do this migration in phases?** If not, find a way to break it up.
+2. **Can you roll back in less than 1 hour?** If not, design a faster rollback.
+3. **Have you tested the fallback procedure?** If not, do it now.
+4. **Does everyone understand the timeline?** If not, communicate more clearly.
+
+## Takeaway
+
+Modernization is not about technology—it is about managing risk while delivering business value. The best migrations are the ones teams do not notice: they happen gradually, safely, with multiple checkpoints. Time is your friend in modernization; rushing increases risk without proportional gain.
+
+## Next Steps
+
+1. **Define the scope:** What exactly are you modernizing?
+2. **Identify the risks:** What could go wrong? How will you mitigate?
+3. **Plan in phases:** How can you migrate incrementally?
+4. **Design verification:** How will you prove old and new are equivalent?
+5. **Prepare rollback:** How will you revert if something goes wrong?
+
+## Deep-Dive: Dual-Write Implementation
+
+### Phase 1: Writes Only to Old System
+
+```python
+def create_order(order_data):
+    # Only old system gets written to
+    order = old_system.create_order(order_data)
+
+    # New system gets data via CDC (Change Data Capture)
+    # CDC listens to old database transactions, replicates to new
+    # This is transparent to application code
+
+    return order
+```
+
+### Phase 2: Dual Writes (New System Secondary)
+
+```python
+async def create_order(order_data):
+    # Old system is primary - must succeed
+    try:
+        order = old_system.create_order(order_data)
+    except Exception as e:
+        raise  # Old system failure is fatal
+
+    # New system is secondary - failure is logged but not fatal
+    try:
+        new_order = new_system.create_order({
+            'id': order['id'],
+            'customer_id': order['customer_id'],
+            'total_cents': order['total_cents']
+        })
+
+        if new_order['id'] != order['id']:
+            log_error(f"Data mismatch: old={order['id']}, new={new_order['id']}")
+    except Exception as e:
+        log_error(f"New system write failed: {e}")
+        # Continue - old system succeeded, that's what matters
+
+    return order
+```
+
+### Phase 3: Dual Writes (Both Required)
+
+```python
+async def create_order(order_data):
+    results = await asyncio.gather(
+        old_system.create_order(order_data),
+        new_system.create_order(order_data),
+        return_exceptions=True
+    )
+
+    old_result, new_result = results
+
+    if isinstance(old_result, Exception):
+        raise old_result  # Old failure is fatal
+
+    if isinstance(new_result, Exception):
+        # New system failed but old succeeded
+        # Queue for retry
+        queue_for_retry(order_data)
+        # Return old result, but flag for investigation
+        log_error(f"New system write failed: {new_result}")
+
+    return old_result  # Return old system result (it's authoritative)
+```
+
+### Phase 4: New System is Primary
+
+```python
+async def create_order(order_data):
+    # New system is primary
+    try:
+        order = new_system.create_order(order_data)
+    except Exception as e:
+        raise  # New system failure is fatal
+
+    # Old system shadows (for verification)
+    try:
+        old_system.create_order({
+            'id': order['id'],
+            'customer_id': order['customer_id'],
+            'total_cents': order['total_cents']
+        })
+    except:
+        pass  # Old system failure is not critical
+
+    return order
+```
+
+## CDC (Change Data Capture) Patterns
+
+**Using Database Logs (Binlog)**
+
+```
+Old Database (PostgreSQL):
+  1. Application writes data
+  2. Transaction is logged to WAL (Write-Ahead Log)
+  3. CDC tool (e.g., Debezium) reads WAL
+  4. CDC publishes changes to Kafka topic
+  5. New system subscribes to Kafka
+  6. Data is replicated in near real-time
+```
+
+**Using Polling**
+
+```python
+class PollingCDC:
+    def sync(self):
+        last_sync_time = self.get_last_sync()
+
+        new_records = old_db.query(
+            "SELECT * FROM orders WHERE updated_at > ?",
+            last_sync_time
+        )
+
+        for record in new_records:
+            new_db.upsert(record)
+
+        self.set_last_sync(now())
+```
+
+## Data Validation Strategies
+
+```python
+def validate_data_parity():
+    """Verify old and new systems have same data"""
+
+    # Strategy 1: Count comparison
+    old_count = old_db.count_records('orders')
+    new_count = new_db.count_records('orders')
+    assert old_count == new_count, f"Count mismatch: {old_count} vs {new_count}"
+
+    # Strategy 2: Checksum comparison
+    old_checksum = old_db.query("SELECT MD5(GROUP_CONCAT(id)) FROM orders")
+    new_checksum = new_db.query("SELECT MD5(GROUP_CONCAT(id)) FROM orders")
+    assert old_checksum == new_checksum, "Checksum mismatch"
+
+    # Strategy 3: Random sampling
+    for i in range(100):
+        sample_id = random.choice(all_order_ids)
+        old_record = old_db.get(sample_id)
+        new_record = new_db.get(sample_id)
+        assert old_record == new_record, f"Mismatch in {sample_id}"
+
+    # Strategy 4: Per-field comparison
+    for order_id in all_order_ids:
+        old = old_db.get(order_id)
+        new = new_db.get(order_id)
+
+        assert old['customer_id'] == new['customer_id']
+        assert old['total_cents'] == new['total_cents']
+        assert old['created_at'] == new['created_at'].isoformat()
+```
+
+## Self-Check
+
+1. Can you do this migration in phases? (If not, break it up smaller)
+2. Can you roll back in less than 1 hour? (If not, design faster rollback)
+3. Have you tested the fallback procedure? (Practice at least once)
+4. Does everyone understand the timeline? (Communicate clearly)
+5. What's the data validation strategy? (Define before migrating)
+
+:::info One Takeaway
+Data migrations are the riskiest part of system migration. Dual writes, backfill, and CDC together provide confidence: you can verify data parity, sync asynchronously, and roll back quickly if anything goes wrong. Invest time in data validation—it's the difference between a successful migration and a disaster.
+
+:::
+
+## Next Steps
+
+1. **Define data mapping**: Document every field transformation
+2. **Choose CDC method**: Binlog (fast, complex) or polling (slow, simple)
+3. **Implement validation**: Count, checksum, sampling, field-by-field
+4. **Plan backfill**: How long will historical data migration take?
+5. **Test rollback**: Practice reverting dual writes
+6. **Monitor sync lag**: How close are old and new systems?
+
+## References
+
+1. <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="nofollow noopener noreferrer">Martin Fowler: Strangler Fig Application ↗️</a>
+2. <a href="https://www.amazon.com/Building-Microservices-Designing-Fine-Grained-Systems/dp/1491950358" target="_blank" rel="nofollow noopener noreferrer">Sam Newman: Building Microservices ↗️</a>
+3. <a href="https://www.amazon.com/Release-It-Production-Ready-Software-Pragmatic/dp/1680502395" target="_blank" rel="nofollow noopener noreferrer">Michael Nygard: Release It! ↗️</a>
+4. <a href="https://debezium.io/" target="_blank" rel="nofollow noopener noreferrer">Debezium: Change Data Capture ↗️</a>
+5. <a href="https://kafka.apache.org/" target="_blank" rel="nofollow noopener noreferrer">Apache Kafka Documentation ↗️</a>
