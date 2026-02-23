@@ -84,7 +84,10 @@ const config: Config = {
   ],
 
   // Ensure a resilient GA setup: define a gtag stub early if the network script is blocked/slow
-  clientModules: [require.resolve("./src/client/gtag-fallback.js")],
+  clientModules: [
+    require.resolve("./src/client/gtag-fallback.js"),
+    require.resolve("./src/client/ads-loader.js"),
+  ],
 
   plugins: [
     //   [
@@ -240,10 +243,10 @@ const config: Config = {
   themes: ["@docusaurus/theme-mermaid"],
   scripts: [
     {
-      src: 'https://app.rybbit.io/api/script.js',
+      src: "https://app.rybbit.io/api/script.js",
       async: true,
       defer: true,
-      'data-site-id': '2401',
+      "data-site-id": "2401",
     },
   ],
 };
